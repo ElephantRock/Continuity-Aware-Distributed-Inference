@@ -297,6 +297,12 @@ C1 rejects:
 
 Paper 1 C1 therefore has no implicit Evidence-authority escalation policy.
 
+## Output Evidence references
+
+An `Output` may only be created with Evidence IDs that already resolve in the semantic Evidence store.
+
+C1 does not model pending/unresolved Output Evidence references. A missing Evidence reference is rejected at `create_output()` so the public transition API cannot create a state that violates the independent Output-to-Evidence integrity invariant.
+
 ---
 
 # 9. Semantic Event Identity and Idempotence
@@ -558,20 +564,21 @@ Python 3.12
 Python 3.13
 ```
 
-Latest post-review-fix completion-candidate result:
+Latest completion-candidate result after all review fixes:
 
 ```text
-116 passed
+117 passed
 ```
 
-All three CI matrix jobs succeeded on the reviewed post-fix code head.
+The final review-regression set verifies that:
 
-The final four review-regression tests verify that:
-
+- Attempt execution status cannot regress through its nonterminal state machine;
+- Phase status cannot regress through its nonterminal state machine;
 - time-sensitive operation replay rejects omitted replay time;
 - replayed finalization remains deterministic across different wall-clock times;
 - replayed migration commit remains deterministic across different wall-clock times;
-- the independent oracle rejects corrupted same-Attempt Phase-provenance temporal inversion.
+- the independent oracle rejects corrupted same-Attempt Phase-provenance temporal inversion;
+- Output creation rejects unresolved Evidence references instead of storing oracle-invalid state.
 
 The full suite includes:
 
@@ -584,6 +591,7 @@ The full suite includes:
 - Phase-order and Phase-status monotonicity tests;
 - Attempt execution-status monotonicity tests;
 - DERIVED Evidence provenance tests;
+- Output/Evidence referential-integrity tests;
 - canonical snapshot round trips;
 - Event JSONL round trips;
 - Operation JSONL deterministic replay;
@@ -610,7 +618,13 @@ The eight planned C1 exit artifacts are now implemented:
 
 Implementation exit criteria are therefore satisfied.
 
-The previous Codex review identified two correctness issues—wall-clock-dependent operation replay and missing independent Phase-dependency ordering validation. Both are fixed and covered by regression tests.
+Codex review identified three correctness inconsistencies during closure:
+
+1. wall-clock-dependent time-sensitive operation replay;
+2. missing independent Phase-dependency ordering validation in restored/corrupted State provenance;
+3. public Output creation accepting unresolved Evidence references while the oracle rejected them.
+
+All three are fixed and covered by regression tests.
 
 Formal milestone closure still requires:
 
