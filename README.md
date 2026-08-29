@@ -1,16 +1,16 @@
 # Continuity-Aware Distributed Inference
 
-**Continuity-Aware Distributed Inference (CADI)** is a provider-neutral distributed-systems research project studying how stateful generative workloads can preserve causal execution continuity and reusable-state lineage across retries, branches, asynchronous gaps, state movement, and failures.
+**Continuity-Aware Distributed Inference (CADI)** is a provider-neutral distributed-systems research project studying how stateful generative workloads can preserve causal execution continuity and reusable-state lineage across retries, phases, branches, asynchronous gaps, state movement, and failures.
 
 ## Current status
 
 - **C0.1 Research Specification:** complete
 - **Gate G0:** PASS
-- **C1 Deterministic Continuity Core:** initial kernel implemented
-- **Local C1 validation:** 19 deterministic/invariant tests passing
+- **C1 Deterministic Continuity Core:** completion candidate; implementation exit criteria satisfied, pending final review/merge
+- **C1 validation:** 110 deterministic/invariant/adversarial tests passing on Python 3.11, 3.12, and 3.13
 - **C2 simulator / performance modeling:** intentionally not started
 
-The repository is now the canonical system of record for the project.
+The repository is the canonical system of record for the project.
 
 ## Paper 1 scope
 
@@ -27,14 +27,35 @@ The core semantic model separates:
 - Attempt execution outcome from Attempt authority;
 - reusable-State lineage from physical replicas;
 - State lifecycle from State validity;
-- observations/Evidence from committed semantic truth.
+- observations/Evidence from committed semantic truth;
+- immutable semantic Events from state-changing semantic Operations.
+
+## C1 semantic reference
+
+The deterministic core now includes:
+
+- Program → Session → Continuation → LogicalRequest → Attempt → Phase identity;
+- `CurrentAttempt` / `CommittedAttempt` fencing;
+- producer-aware and Phase-aware reusable-State compatibility;
+- State lifecycle and validity;
+- BindingID + monotonic epoch migration fencing;
+- Evidence authority/status/scope/freshness and explicit DERIVED Evidence provenance;
+- fail-closed reconciliation;
+- semantic Event identity/idempotence;
+- canonical snapshots and fingerprints;
+- schema-versioned Event and Operation JSONL traces;
+- deterministic semantic-operation replay;
+- an independent invariant oracle;
+- all 12 mandatory Failure Model traces;
+- a deterministic adversarial sequence matrix plus seeded sequence fuzzing;
+- an executable 37-invariant-to-test coverage registry.
 
 ## Repository layout
 
 ```text
-spec/               canonical research specification and milestone records
-continuity/         deterministic semantic kernel
-tests/              invariant and adversarial trace tests
+spec/               canonical research specification, coverage registry, milestone records
+continuity/         deterministic semantic kernel, serialization, replay
+tests/              invariant, failure-trace, replay, and adversarial tests
 .github/workflows/  reproducibility / CI
 ```
 
@@ -45,7 +66,7 @@ python -m pip install pytest
 python -m pytest
 ```
 
-The current C1 artifact deliberately excludes queueing, networking, GPU timing, trace ingestion, and performance simulation. Those enter at C2 and later milestones only after the semantic kernel satisfies its invariant coverage requirements.
+C1 deliberately excludes queueing, networking, accelerator timing, public-trace ingestion, and performance simulation. Those enter at C2 and later milestones only after the C1 completion PR is cleanly reviewed and merged.
 
 ## Research discipline
 
