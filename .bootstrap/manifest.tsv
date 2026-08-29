@@ -1,4 +1,3 @@
-.github/workflows/ci.yml	.bootstrap/text/p0000
 .gitignore	.bootstrap/text/p0001
 README.md	.bootstrap/text/p0002
 continuity/__init__.py	.bootstrap/text/p0003
