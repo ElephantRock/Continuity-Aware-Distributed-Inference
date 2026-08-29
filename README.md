@@ -7,6 +7,7 @@
 - **C0.1 Research Specification:** complete
 - **Gate G0:** PASS
 - **C1 Deterministic Continuity Core:** initial kernel implemented
+- **Local C1 validation:** 13 deterministic/invariant tests passing
 - **C2 simulator / performance modeling:** intentionally not started
 
 The repository is now the canonical system of record for the project.
