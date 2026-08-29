@@ -1,6 +1,6 @@
 from __future__ import annotations
 from .core import ContinuityCore
-from .entities import AttemptAuthority, BindingStatus, RequestStatus, StateValidity
+from .entities import AttemptAuthority, BindingStatus, EvidenceAuthority, EvidenceStatus, RequestStatus, StateValidity
 
 class InvariantOracle:
     """Independent structural checks over normalized core state."""
@@ -15,6 +15,7 @@ class InvariantOracle:
         self._phase_ordering()
         self._state_provenance()
         self._binding_authority()
+        self._evidence_derivation()
         self._event_identity()
         self._state_validity()
 
@@ -75,6 +76,21 @@ class InvariantOracle:
         for b in self.c.bindings.values():
             if b.status==BindingStatus.ACTIVE:
                 assert self.c.current_binding_by_subject.get(b.subject_id)==b.id
+
+    def _evidence_derivation(self):
+        for evidence in self.c.evidence.values():
+            has_derivation = bool(evidence.derived_from or evidence.derivation_rule)
+            if evidence.authority == EvidenceAuthority.DERIVED:
+                assert evidence.derived_from
+                assert evidence.derivation_rule
+            else:
+                assert not has_derivation
+            if evidence.derived_from:
+                supports = [self.c.evidence[eid] for eid in evidence.derived_from]
+                union_scope = set().union(*(set(s.scope) for s in supports)) if supports else set()
+                assert set(evidence.scope).issubset(union_scope)
+                if evidence.status == EvidenceStatus.VALID:
+                    assert all(s.status == EvidenceStatus.VALID for s in supports)
 
     def _event_identity(self):
         assert len(self.c.event_order) == len(set(self.c.event_order))

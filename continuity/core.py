@@ -410,6 +410,27 @@ class ContinuityCore:
             if existing == e:
                 return existing
             raise SemanticViolation("conflicting duplicate Evidence identity")
+
+        has_derivation = bool(e.derived_from or e.derivation_rule)
+        if e.authority == EvidenceAuthority.DERIVED:
+            if not e.derived_from or not e.derivation_rule:
+                raise SemanticViolation("DERIVED Evidence requires support IDs and an explicit derivation rule")
+        elif has_derivation:
+            raise SemanticViolation("derived Evidence provenance cannot silently escalate authority in C1")
+
+        if e.derived_from:
+            supports = []
+            for support_id in e.derived_from:
+                support = self.evidence.get(support_id)
+                if support is None:
+                    raise SemanticViolation("DERIVED Evidence references unknown supporting Evidence")
+                supports.append(support)
+            union_scope = set().union(*(set(s.scope) for s in supports)) if supports else set()
+            if not set(e.scope).issubset(union_scope):
+                raise SemanticViolation("DERIVED Evidence scope exceeds supporting Evidence scope")
+            if e.status == EvidenceStatus.VALID and any(s.status != EvidenceStatus.VALID for s in supports):
+                raise SemanticViolation("VALID DERIVED Evidence requires VALID supporting Evidence")
+
         self._unique(e.id); self.evidence[e.id] = e; return e
 
     def require_evidence(self, action: str, evidence_ids: Iterable[str], *, now: Optional[float] = None,

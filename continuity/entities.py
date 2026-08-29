@@ -151,6 +151,8 @@ class Evidence:
     scope: FrozenSet[tuple[str, str]] = frozenset()
     valid_until: Optional[float] = None
     confidence: Optional[float] = None
+    derived_from: FrozenSet[str] = frozenset()
+    derivation_rule: Optional[str] = None
 
 @dataclass(frozen=True)
 class Output:
