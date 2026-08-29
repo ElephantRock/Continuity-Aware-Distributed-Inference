@@ -1,0 +1,48 @@
+{
+  "schema": "cadi.invariant-coverage.v1",
+  "catalogue": "spec/03-invariants.md",
+  "invariants": {
+    "A1": {"title": "Entity Identity Uniqueness", "tests": ["tests/invariants/test_catalogue_obligations.py::test_a1_entity_identity_uniqueness_is_enforced_globally"]},
+    "A2": {"title": "Parent-Scope Consistency", "tests": ["tests/invariants/test_catalogue_obligations.py::test_a2_parent_scope_consistency_rejects_cross_session_continuation_parent"]},
+    "A3": {"title": "Continuation Graph Acyclicity", "tests": ["tests/invariants/test_catalogue_obligations.py::test_a3_oracle_detects_continuation_cycle_corruption"]},
+    "A4": {"title": "State Provenance Resolvability", "tests": ["tests/invariants/test_catalogue_obligations.py::test_a4_state_provenance_resolves_exactly_one_continuation"]},
+
+    "B1": {"title": "Single Current Attempt Authority", "tests": ["tests/invariants/test_attempts.py::test_late_success_can_be_superseded"]},
+    "B2": {"title": "Attempt Ownership", "tests": ["tests/invariants/test_catalogue_obligations.py::test_b2_oracle_detects_cross_request_attempt_authority_corruption"]},
+    "B3": {"title": "Attempt Generation Monotonicity", "tests": ["tests/invariants/test_catalogue_obligations.py::test_b3_attempt_generations_are_monotonic_and_oracle_checked"]},
+    "B4": {"title": "Supersession Irreversibility", "tests": ["tests/invariants/test_attempts.py::test_late_success_can_be_superseded"]},
+    "B5": {"title": "Finalization Authority and Committed Producer", "tests": ["tests/invariants/test_attempts.py::test_superseded_output_cannot_finalize"]},
+    "B6": {"title": "Terminal Request Immutability", "tests": ["tests/invariants/test_attempts.py::test_completed_output_immutable"]},
+    "B7": {"title": "Superseded-Event and State-Producer Fencing", "tests": ["tests/invariants/test_state.py::test_superseded_producer_state_rejected", "tests/counterexamples/test_failure_model_traces.py::test_ftr1_late_stale_completion_cannot_regain_authority"]},
+
+    "C1": {"title": "State Reuse Requires Execution-Context Compatibility", "tests": ["tests/invariants/test_state.py::test_state_compatibility_validates_entire_execution_context"]},
+    "C2": {"title": "Same Session Is Insufficient", "tests": ["tests/invariants/test_state.py::test_wrong_sibling_state_rejected"]},
+    "C3": {"title": "Physical Locality Is Insufficient", "tests": ["tests/counterexamples/test_failure_model_traces.py::test_ftr12_abandoned_branch_residual_state_cannot_reactivate_or_cross_branch"]},
+    "C4": {"title": "State Invalidity Dominates Locality", "tests": ["tests/invariants/test_state.py::test_invalid_state_never_compatible"]},
+    "C5": {"title": "Replica Identity Does Not Change Logical State Identity", "tests": ["tests/invariants/test_catalogue_obligations.py::test_c5_multiple_replicas_preserve_one_logical_state_identity"]},
+    "C6": {"title": "Lost Replica Does Not Erase Logical Provenance", "tests": ["tests/counterexamples/test_failure_model_traces.py::test_ftr5_total_physical_state_loss_preserves_logical_provenance"]},
+    "C7": {"title": "State Derivation Graph Acyclicity", "tests": ["tests/invariants/test_catalogue_obligations.py::test_c7_oracle_detects_state_derivation_cycle_corruption"]},
+
+    "D1": {"title": "Single Current Binding", "tests": ["tests/invariants/test_binding_evidence.py::test_concurrent_migration_candidate_fencing"]},
+    "D2": {"title": "Binding Epoch Monotonicity and Unique Candidate Generations", "tests": ["tests/invariants/test_binding_evidence.py::test_concurrent_migration_candidate_fencing"]},
+    "D3": {"title": "Stale Binding and Candidate Fencing", "tests": ["tests/counterexamples/test_failure_model_traces.py::test_ftr8_late_old_binding_observation_cannot_restore_old_owner"]},
+    "D4": {"title": "Migration Has One Semantic Commit Point", "tests": ["tests/counterexamples/test_failure_model_traces.py::test_ftr6_partial_migration_does_not_commit_destination"]},
+    "D5": {"title": "Migration Evidence Sufficiency", "tests": ["tests/counterexamples/test_failure_model_traces.py::test_ftr7_destination_failure_before_commit_leaves_source_authoritative"]},
+
+    "E1": {"title": "Observation Does Not Equal Authority", "tests": ["tests/counterexamples/test_failure_model_traces.py::test_ftr8_late_old_binding_observation_cannot_restore_old_owner"]},
+    "E2": {"title": "Evidence Status and Authority Are Independent", "tests": ["tests/invariants/test_binding_evidence.py::test_estimated_evidence_insufficient_for_finalize", "tests/invariants/test_binding_evidence.py::test_ambiguous_evidence_fails_closed"]},
+    "E3": {"title": "Evidence Sufficiency Before Correctness-Sensitive Commit", "tests": ["tests/invariants/test_binding_evidence.py::test_estimated_evidence_insufficient_for_finalize"]},
+    "E4": {"title": "Ambiguity Cannot Become Semantic Success", "tests": ["tests/invariants/test_binding_evidence.py::test_ambiguous_evidence_fails_closed"]},
+    "E5": {"title": "Evidence Scope Integrity", "tests": ["tests/counterexamples/test_mandatory_traces.py::test_replica_evidence_scoped_to_exact_state_and_replica"]},
+    "E6": {"title": "Derived Evidence Cannot Exceed Its Derivation Rule", "tests": ["tests/invariants/test_derived_evidence.py::test_derived_provenance_cannot_silently_promote_to_authoritative", "tests/invariants/test_derived_evidence.py::test_derived_evidence_scope_cannot_exceed_support_scope"]},
+    "E7": {"title": "Freshness Does Not Establish Causal Newness", "tests": ["tests/counterexamples/test_failure_model_traces.py::test_ftr3_reordered_old_retry_event_cannot_override_committed_attempt", "tests/counterexamples/test_failure_model_traces.py::test_ftr10_stale_high_authority_evidence_is_insufficient"]},
+
+    "F1": {"title": "Semantic Commit Idempotence", "tests": ["tests/invariants/test_attempts.py::test_completed_output_immutable"]},
+    "F2": {"title": "Duplicate Observation Safety", "tests": ["tests/invariants/test_events.py::test_duplicate_semantic_event_delivery_is_idempotent", "tests/invariants/test_events.py::test_duplicate_evidence_delivery_is_idempotent"]},
+    "F3": {"title": "Reordered Observation Safety", "tests": ["tests/counterexamples/test_failure_model_traces.py::test_ftr3_reordered_old_retry_event_cannot_override_committed_attempt"]},
+    "F4": {"title": "Terminal Continuation Irreversibility", "tests": ["tests/invariants/test_catalogue_obligations.py::test_f4_terminal_continuation_cannot_reactivate"]},
+    "F5": {"title": "Abandoned Continuation Irreversibility", "tests": ["tests/counterexamples/test_failure_model_traces.py::test_ftr12_abandoned_branch_residual_state_cannot_reactivate_or_cross_branch"]},
+    "F6": {"title": "State Invalidation Monotonicity", "tests": ["tests/invariants/test_catalogue_obligations.py::test_f6_invalid_state_cannot_be_resurrected"]},
+    "F7": {"title": "Completed Request Output Immutability", "tests": ["tests/invariants/test_attempts.py::test_completed_output_immutable"]}
+  }
+}
