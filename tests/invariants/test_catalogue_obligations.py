@@ -116,3 +116,13 @@ def test_phase_status_cannot_move_backward(core):
     core.set_phase_status('phase', PhaseStatus.RUNNING)
     with pytest.raises(InvalidTransition):
         core.set_phase_status('phase', PhaseStatus.CREATED)
+
+
+def test_output_rejects_unresolved_evidence_reference(core):
+    import pytest
+    from continuity.errors import SemanticViolation
+    core.create_program('p'); core.create_session('s', 'p'); core.create_continuation('c', 's')
+    core.create_request('r', 'c'); core.start_attempt('a', 'r')
+    with pytest.raises(SemanticViolation):
+        core.create_output('o', 'a', True, ['later'])
+    assert 'o' not in core.outputs

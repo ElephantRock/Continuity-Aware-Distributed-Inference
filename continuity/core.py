@@ -185,7 +185,11 @@ class ContinuityCore:
 
     def create_output(self, id_: str, attempt_id: str, terminal: bool, evidence_ids: Iterable[str] = ()) -> Output:
         self._unique(id_); self.attempts[attempt_id]
-        o = Output(id_, attempt_id, terminal, frozenset(evidence_ids)); self.outputs[id_] = o; return o
+        evidence = frozenset(evidence_ids)
+        missing = sorted(eid for eid in evidence if eid not in self.evidence)
+        if missing:
+            raise SemanticViolation(f"Output references unknown Evidence: {missing}")
+        o = Output(id_, attempt_id, terminal, evidence); self.outputs[id_] = o; return o
 
     def finalize_request(self, request_id: str, output_id: str, now: Optional[float] = None) -> LogicalRequest:
         r, o = self.requests[request_id], self.outputs[output_id]
