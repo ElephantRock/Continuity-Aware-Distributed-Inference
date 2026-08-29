@@ -1,0 +1,45 @@
+Status.READY); self.requests[id_] = r; return r
+
+    def start_attempt(self, id_: str, request_id: str) -> Attempt:
+        self._unique(id_); r = self.requests[request_id]
+        if r.status in {RequestStatus.COMPLETED, RequestStatus.FAILED, RequestStatus.CANCELLED}:
+            raise InvalidTransition("cannot start Attempt for terminal request")
+        existing = [a for a in self.attempts.values() if a.request_id == request_id]
+        generation = max([a.generation for a in existing], default=0) + 1
+        if r.current_attempt_id:
+            old = self.attempts[r.current_attempt_id]
+            if old.authority_status != AttemptAuthority.CURRENT:
+                raise SemanticViolation("CurrentAttempt pointer is not CURRENT")
+            self.attempts[old.id] = replace(old, authority_status=AttemptAuthority.SUPERSEDED)
+        a = Attempt(id_, request_id, generation, ExecutionStatus.CREATED, AttemptAuthority.CURRENT)
+        self.attempts[id_] = a
+        self.requests[request_id] = replace(r, status=RequestStatus.RUNNING, current_attempt_id=id_)
+        return a
+
+    def set_attempt_execution(self, attempt_id: str, status: ExecutionStatus) -> Attempt:
+        a = self.attempts[attempt_id]
+        terminal = {ExecutionStatus.SUCCEEDED, ExecutionStatus.FAILED, ExecutionStatus.CANCELLED}
+        if a.execution_status in terminal and status != a.execution_status:
+            raise InvalidTransition("terminal execution outcome is immutable")
+        a = replace(a, execution_status=status); self.attempts[attempt_id] = a; return a
+
+    def complete_attempt(self, attempt_id: str, succeeded: bool = True) -> Attempt:
+        return self.set_attempt_execution(attempt_id, ExecutionStatus.SUCCEEDED if succeeded else ExecutionStatus.FAILED)
+
+    def create_output(self, id_: str, attempt_id: str, terminal: bool, evidence_ids: Iterable[str] = ()) -> Output:
+        self._unique(id_); self.attempts[attempt_id]
+        o = Output(id_, attempt_id, terminal, frozenset(evidence_ids)); self.outputs[id_] = o; return o
+
+    def finalize_request(self, request_id: str, output_id: str, now: Optional[float] = None) -> LogicalRequest:
+        r, o = self.requests[request_id], self.outputs[output_id]
+        a = self.attempts[o.attempt_id]
+        if r.status == RequestStatus.COMPLETED:
+            if r.authoritative_output_id == output_id: return r
+            raise InvalidTransition("completed request output is immutable")
+        if o.attempt_id != r.current_attempt_id or a.authority_status != AttemptAuthority.CURRENT:
+            raise SemanticViolation("only CURRENT Attempt may finalize")
+        if a.execution_status != ExecutionStatus.SUCCEEDED or not o.terminal:
+            raise SemanticViolation("Attempt must have terminal successful output")
+        self.require_evidence("finalize", o.evidence_ids, now=now, required_scope={("attempt", a.id)})
+        a = replace(a, authority_status=AttemptAuthority.COMMITTED); self.attempts[a.id] = a
+        r = replace(r, 
