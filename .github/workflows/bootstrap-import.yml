@@ -56,9 +56,7 @@ jobs:
           python -m pytest
 
       - name: Remove bootstrap transport
-        run: |
-          rm -rf .bootstrap
-          rm -f .github/workflows/bootstrap-import.yml
+        run: rm -rf .bootstrap
 
       - name: Commit canonical bootstrap
         run: |
