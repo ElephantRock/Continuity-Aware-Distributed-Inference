@@ -18,6 +18,12 @@ class ExecutionStatus(Enum):
 class AttemptAuthority(Enum):
     NONE = auto(); CURRENT = auto(); COMMITTED = auto(); SUPERSEDED = auto()
 
+class PhaseType(Enum):
+    PREFILL = auto(); DECODE = auto(); STATE_PULL = auto(); STATE_TRANSFER = auto(); OTHER = auto()
+
+class PhaseStatus(Enum):
+    CREATED = auto(); RUNNING = auto(); COMPLETED = auto(); FAILED = auto(); CANCELLED = auto()
+
 class StateLifecycle(Enum):
     ACTIVE = auto(); WAITING = auto(); SPECULATIVE = auto(); TERMINAL = auto()
 
@@ -85,6 +91,14 @@ class Attempt:
     authority_status: AttemptAuthority = AttemptAuthority.NONE
 
 @dataclass(frozen=True)
+class Phase:
+    id: str
+    attempt_id: str
+    ordinal: int
+    phase_type: PhaseType
+    status: PhaseStatus = PhaseStatus.CREATED
+
+@dataclass(frozen=True)
 class ExecutionContext:
     program_id: str
     session_id: str
@@ -106,6 +120,7 @@ class ReusableState:
     lifecycle: StateLifecycle = StateLifecycle.TERMINAL
     validity: StateValidity = StateValidity.VALID
     derived_from: FrozenSet[str] = frozenset()
+    producer_phase_id: Optional[str] = None
 
 @dataclass(frozen=True)
 class StateReplica:

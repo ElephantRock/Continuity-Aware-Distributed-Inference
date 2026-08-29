@@ -6,7 +6,7 @@ import time
 from .entities import (
     Attempt, AttemptAuthority, Binding, BindingStatus, Continuation, ContinuationLifecycle,
     Evidence, EvidenceAuthority, EvidenceStatus, ExecutionContext, ExecutionStatus,
-    LogicalRequest, Output, Program, ProgramStatus, ReconcileOutcome, ReplicaStatus,
+    LogicalRequest, Output, Phase, PhaseStatus, PhaseType, Program, ProgramStatus, ReconcileOutcome, ReplicaStatus,
     RequestStatus, ReusableState, SemanticEvent, Session, StateLifecycle, StateReplica, StateValidity,
 )
 from .errors import InvalidTransition, InsufficientEvidence, SemanticViolation
@@ -28,6 +28,7 @@ class ContinuityCore:
         self.continuations: dict[str, Continuation] = {}
         self.requests: dict[str, LogicalRequest] = {}
         self.attempts: dict[str, Attempt] = {}
+        self.phases: dict[str, Phase] = {}
         self.states: dict[str, ReusableState] = {}
         self.replicas: dict[str, StateReplica] = {}
         self.bindings: dict[str, Binding] = {}
@@ -43,7 +44,7 @@ class ContinuityCore:
     # ---------- identity / graph ----------
     def _unique(self, id_: str) -> None:
         collections = (self.programs, self.sessions, self.continuations, self.requests,
-                       self.attempts, self.states, self.replicas, self.bindings,
+                       self.attempts, self.phases, self.states, self.replicas, self.bindings,
                        self.evidence, self.outputs, self.events)
         if any(id_ in c for c in collections):
             raise SemanticViolation(f"duplicate logical identifier: {id_}")
@@ -145,6 +146,31 @@ class ContinuityCore:
     def complete_attempt(self, attempt_id: str, succeeded: bool = True) -> Attempt:
         return self.set_attempt_execution(attempt_id, ExecutionStatus.SUCCEEDED if succeeded else ExecutionStatus.FAILED)
 
+    # ---------- phases ----------
+    def create_phase(self, id_: str, attempt_id: str, phase_type: PhaseType, ordinal: Optional[int] = None) -> Phase:
+        self._unique(id_)
+        self.attempts[attempt_id]
+        existing = [p for p in self.phases.values() if p.attempt_id == attempt_id]
+        next_ordinal = max((p.ordinal for p in existing), default=0) + 1
+        ordinal = next_ordinal if ordinal is None else ordinal
+        if ordinal != next_ordinal:
+            raise SemanticViolation("Phase ordinals must be contiguous and monotonic within an Attempt")
+        p = Phase(id_, attempt_id, ordinal, phase_type, PhaseStatus.CREATED)
+        self.phases[id_] = p
+        return p
+
+    def set_phase_status(self, phase_id: str, status: PhaseStatus) -> Phase:
+        p = self.phases[phase_id]
+        terminal = {PhaseStatus.COMPLETED, PhaseStatus.FAILED, PhaseStatus.CANCELLED}
+        if p.status in terminal and status != p.status:
+            raise InvalidTransition("terminal Phase is immutable")
+        p = replace(p, status=status)
+        self.phases[phase_id] = p
+        return p
+
+    def complete_phase(self, phase_id: str) -> Phase:
+        return self.set_phase_status(phase_id, PhaseStatus.COMPLETED)
+
     def create_output(self, id_: str, attempt_id: str, terminal: bool, evidence_ids: Iterable[str] = ()) -> Output:
         self._unique(id_); self.attempts[attempt_id]
         o = Output(id_, attempt_id, terminal, frozenset(evidence_ids)); self.outputs[id_] = o; return o
@@ -170,15 +196,18 @@ class ContinuityCore:
                      semantic_type: str = "PREFIX", representation: str = "OPAQUE",
                      derived_from: Iterable[str] = ()) -> ReusableState:
         self._unique(id_)
-        oc, orq, pa = self._resolve_origin(origin_type, origin_id)
+        oc, orq, pa, pp = self._resolve_origin(origin_type, origin_id)
         dependencies = frozenset(derived_from)
         for sid in dependencies:
             dependency = self.states[sid]
             if not self.is_ancestor(dependency.origin_continuation_id, oc):
                 raise SemanticViolation("derived State dependency must be a causal ancestor of the declared origin")
-        x = ReusableState(id_, origin_type, origin_id, oc, orq, pa, semantic_type,
-                          representation, StateLifecycle.TERMINAL, StateValidity.VALID,
-                          dependencies)
+        x = ReusableState(
+            id=id_, origin_type=origin_type, origin_id=origin_id, origin_continuation_id=oc,
+            origin_request_id=orq, producer_attempt_id=pa, semantic_type=semantic_type,
+            representation=representation, lifecycle=StateLifecycle.TERMINAL,
+            validity=StateValidity.VALID, derived_from=dependencies, producer_phase_id=pp
+        )
         self.states[id_] = x
         if self._state_cycle():
             del self.states[id_]; raise SemanticViolation("State provenance cycle")
@@ -186,11 +215,17 @@ class ContinuityCore:
 
     def _resolve_origin(self, origin_type: str, origin_id: str):
         if origin_type == "continuation":
-            c = self.continuations[origin_id]; return c.id, None, None
+            c = self.continuations[origin_id]; return c.id, None, None, None
         if origin_type == "request":
-            r = self.requests[origin_id]; return r.continuation_id, r.id, r.committed_attempt_id
+            r = self.requests[origin_id]; return r.continuation_id, r.id, r.committed_attempt_id, None
         if origin_type == "attempt":
-            a = self.attempts[origin_id]; r = self.requests[a.request_id]; return r.continuation_id, r.id, a.id
+            a = self.attempts[origin_id]; r = self.requests[a.request_id]; return r.continuation_id, r.id, a.id, None
+        if origin_type == "phase":
+            p = self.phases[origin_id]
+            if p.status != PhaseStatus.COMPLETED:
+                raise SemanticViolation("Phase-origin State requires a COMPLETED producer Phase")
+            a = self.attempts[p.attempt_id]; r = self.requests[a.request_id]
+            return r.continuation_id, r.id, a.id, p.id
         raise SemanticViolation(f"unsupported origin_type: {origin_type}")
 
     def _state_cycle(self) -> bool:
@@ -226,10 +261,6 @@ class ContinuityCore:
             self.states[sid] = replace(x, lifecycle=life)
 
     def _context_consistent(self, ctx: ExecutionContext) -> bool:
-        # C1 does not yet model Phase entities. A phase-scoped context must therefore
-        # fail closed until Phase identity is represented by the deterministic core.
-        if ctx.phase_id is not None:
-            return False
         p = self.programs.get(ctx.program_id)
         s = self.sessions.get(ctx.session_id)
         c = self.continuations.get(ctx.continuation_id)
@@ -243,6 +274,12 @@ class ContinuityCore:
             return False
         if r.current_attempt_id != a.id or a.authority_status != AttemptAuthority.CURRENT:
             return False
+        if ctx.phase_id is not None:
+            phase = self.phases.get(ctx.phase_id)
+            if phase is None or phase.attempt_id != a.id:
+                return False
+            if phase.status not in {PhaseStatus.RUNNING, PhaseStatus.COMPLETED}:
+                return False
         return True
 
     def state_compatible(self, state_id: str, ctx: ExecutionContext) -> bool:
@@ -272,6 +309,13 @@ class ContinuityCore:
                     elif pa.id != ctx.attempt_id or pa.authority_status != AttemptAuthority.CURRENT:
                         return False
                 elif pa.id != ctx.attempt_id or pa.authority_status != AttemptAuthority.CURRENT:
+                    return False
+            if x.producer_phase_id and x.producer_attempt_id == ctx.attempt_id:
+                if ctx.phase_id is None:
+                    return False
+                producer_phase = self.phases[x.producer_phase_id]
+                consumer_phase = self.phases[ctx.phase_id]
+                if consumer_phase.ordinal <= producer_phase.ordinal:
                     return False
             for dependency_id in x.derived_from:
                 if not self._state_compatible_recursive(dependency_id, ctx, visiting):

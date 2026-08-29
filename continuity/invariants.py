@@ -12,6 +12,7 @@ class InvariantOracle:
         self._attempt_authority()
         self._request_commit_consistency()
         self._continuation_dags()
+        self._phase_ordering()
         self._state_provenance()
         self._binding_authority()
         self._event_identity()
@@ -43,6 +44,12 @@ class InvariantOracle:
         for sid in self.c.sessions:
             assert not self.c._has_cycle(sid)
 
+    def _phase_ordering(self):
+        for attempt_id in self.c.attempts:
+            phases = sorted((p for p in self.c.phases.values() if p.attempt_id == attempt_id), key=lambda p: p.ordinal)
+            assert [p.ordinal for p in phases] == list(range(1, len(phases) + 1))
+            assert all(p.attempt_id == attempt_id for p in phases)
+
     def _state_provenance(self):
         assert not self.c._state_cycle()
         for x in self.c.states.values():
@@ -54,6 +61,10 @@ class InvariantOracle:
                 a=self.c.attempts[x.producer_attempt_id]
                 if x.origin_request_id:
                     assert a.request_id == x.origin_request_id
+            if x.producer_phase_id:
+                phase = self.c.phases[x.producer_phase_id]
+                assert phase.attempt_id == x.producer_attempt_id
+                assert phase.status.name == "COMPLETED"
 
     def _binding_authority(self):
         for subj,bid in self.c.current_binding_by_subject.items():
