@@ -37,6 +37,16 @@ _ALLOWED_ACTIONS = frozenset({
     "record_event",
 })
 
+_TIME_SENSITIVE_ACTIONS = frozenset({"finalize_request", "commit_migration"})
+
+
+def _require_explicit_replay_time(action: str, arguments: dict[str, Any]) -> None:
+    """Prevent replay semantics from depending on the host wall clock."""
+    if action in _TIME_SENSITIVE_ACTIONS and (
+        "now" not in arguments or arguments["now"] is None
+    ):
+        raise ValueError(f"semantic replay action {action!r} requires explicit 'now'")
+
 
 @dataclass(frozen=True)
 class SemanticOperation:
@@ -48,6 +58,7 @@ class SemanticOperation:
 
     @classmethod
     def build(cls, id: str, action: str, **arguments: Any) -> "SemanticOperation":
+        _require_explicit_replay_time(action, arguments)
         return cls(id=id, action=action, arguments=tuple(sorted(arguments.items())))
 
     def kwargs(self) -> dict[str, Any]:
@@ -75,6 +86,7 @@ def operation_from_record(record: dict[str, Any]) -> SemanticOperation:
     arguments = _decode(record.get("arguments", {"$dict": []}))
     if not isinstance(arguments, dict) or not all(isinstance(k, str) for k in arguments):
         raise ValueError("semantic operation arguments must decode to a string-keyed mapping")
+    _require_explicit_replay_time(action, arguments)
     return SemanticOperation.build(operation_id, action, **arguments)
 
 
@@ -100,8 +112,10 @@ def operations_from_jsonl(text: str) -> list[SemanticOperation]:
 def apply_operation(core: ContinuityCore, operation: SemanticOperation) -> Any:
     if operation.action not in _ALLOWED_ACTIONS:
         raise ValueError(f"unsupported semantic operation action: {operation.action!r}")
+    arguments = operation.kwargs()
+    _require_explicit_replay_time(operation.action, arguments)
     method = getattr(core, operation.action)
-    return method(**operation.kwargs())
+    return method(**arguments)
 
 
 def replay_operations(core: ContinuityCore, operations: Iterable[SemanticOperation]) -> ContinuityCore:
