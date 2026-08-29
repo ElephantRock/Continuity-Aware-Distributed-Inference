@@ -1,0 +1,57 @@
+ngs[id_] = b; return b
+
+    def activate_initial_binding(self, id_: str, subject_id: str, location_id: str) -> Binding:
+        if subject_id in self.current_binding_by_subject:
+            raise InvalidTransition("subject already has current Binding")
+        b = self.propose_binding(id_, subject_id, location_id)
+        b = replace(b, status=BindingStatus.ACTIVE)
+        self.bindings[id_] = b
+        self.current_binding_by_subject[subject_id] = id_
+        self.current_epoch_by_subject[subject_id] = b.epoch
+        return b
+
+    def begin_migration(self, binding_id: str) -> Binding:
+        b = self.bindings[binding_id]
+        if b.status != BindingStatus.PROPOSED: raise InvalidTransition("candidate not PROPOSED")
+        b = replace(b, status=BindingStatus.MIGRATING); self.bindings[b.id] = b; return b
+
+    def commit_migration(self, binding_id: str, evidence_ids: Iterable[str], now: Optional[float] = None) -> Binding:
+        b = self.bindings[binding_id]
+        current_epoch = self.current_epoch_by_subject.get(b.subject_id, 0)
+        if b.base_epoch != current_epoch:
+            raise SemanticViolation("migration candidate base_epoch is stale")
+        if b.status not in {BindingStatus.PROPOSED, BindingStatus.MIGRATING}:
+            raise InvalidTransition("candidate not eligible")
+        self.require_evidence("commit_migration", evidence_ids, now=now,
+                              required_scope={("binding", b.id), ("epoch", str(b.epoch))})
+        old_id = self.current_binding_by_subject.get(b.subject_id)
+        if old_id:
+            old = self.bindings[old_id]
+            self.bindings[old_id] = replace(old, status=BindingStatus.SUPERSEDED)
+        b = replace(b, status=BindingStatus.ACTIVE); self.bindings[b.id] = b
+        self.current_binding_by_subject[b.subject_id] = b.id
+        self.current_epoch_by_subject[b.subject_id] = b.epoch
+        return b
+
+    # ---------- evidence / reconcile ----------
+    def record_evidence(self, e: Evidence) -> Evidence:
+        self._unique(e.id); self.evidence[e.id] = e; return e
+
+    def require_evidence(self, action: str, evidence_ids: Iterable[str], *, now: Optional[float] = None,
+                         required_scope: set[tuple[str,str]] | None = None, max_age: Optional[float] = None) -> list[Evidence]:
+        now = time.time() if now is None else now
+        req = self.REQUIRED_AUTHORITY[action]
+        evs = [self.evidence[eid] for eid in evidence_ids]
+        good=[]
+        for e in evs:
+            if e.status != EvidenceStatus.VALID: continue
+            if e.authority < req: continue
+            if e.valid_until is not None and now > e.valid_until: continue
+            if max_age is not None and now - e.observed_at > max_age: continue
+            if required_scope and not required_scope.issubset(set(e.scope)): continue
+            good.append(e)
+        if not good:
+            raise InsufficientEvidence(f"insufficient Evidence for {action}")
+        return good
+
+    def reconcil
