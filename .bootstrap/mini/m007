@@ -1,0 +1,56 @@
+status=RequestStatus.COMPLETED, current_attempt_id=None,
+                    committed_attempt_id=a.id, authoritative_output_id=o.id)
+        self.requests[request_id] = r; return r
+
+    # ---------- State ----------
+    def create_state(self, id_: str, *, origin_type: str, origin_id: str,
+                     semantic_type: str = "PREFIX", representation: str = "OPAQUE",
+                     derived_from: Iterable[str] = ()) -> ReusableState:
+        self._unique(id_)
+        oc, orq, pa = self._resolve_origin(origin_type, origin_id)
+        for sid in derived_from: self.states[sid]
+        x = ReusableState(id_, origin_type, origin_id, oc, orq, pa, semantic_type,
+                          representation, StateLifecycle.TERMINAL, StateValidity.VALID,
+                          frozenset(derived_from))
+        self.states[id_] = x
+        if self._state_cycle():
+            del self.states[id_]; raise SemanticViolation("State provenance cycle")
+        self._refresh_state_lifecycles(); return self.states[id_]
+
+    def _resolve_origin(self, origin_type: str, origin_id: str):
+        if origin_type == "continuation":
+            c = self.continuations[origin_id]; return c.id, None, None
+        if origin_type == "request":
+            r = self.requests[origin_id]; return r.continuation_id, r.id, r.committed_attempt_id
+        if origin_type == "attempt":
+            a = self.attempts[origin_id]; r = self.requests[a.request_id]; return r.continuation_id, r.id, a.id
+        raise SemanticViolation(f"unsupported origin_type: {origin_type}")
+
+    def _state_cycle(self) -> bool:
+        visiting, visited = set(), set()
+        def dfs(s):
+            if s in visiting: return True
+            if s in visited: return False
+            visiting.add(s)
+            for p in self.states[s].derived_from:
+                if dfs(p): return True
+            visiting.remove(s); visited.add(s); return False
+        return any(dfs(s) for s in self.states if s not in visited)
+
+    def set_state_validity(self, state_id: str, validity: StateValidity) -> ReusableState:
+        x = self.states[state_id]
+        if x.validity == StateValidity.INVALID and validity != StateValidity.INVALID:
+            raise InvalidTransition("INVALID logical State cannot be resurrected")
+        x = replace(x, validity=validity); self.states[state_id] = x; return x
+
+    def _refresh_state_lifecycles(self) -> None:
+        rank = {ContinuationLifecycle.ACTIVE: StateLifecycle.ACTIVE,
+                ContinuationLifecycle.WAITING: StateLifecycle.WAITING,
+                ContinuationLifecycle.SPECULATIVE: StateLifecycle.SPECULATIVE}
+        for sid, x in list(self.states.items()):
+            candidates=[]
+            for c in self.continuations.values():
+                if self.is_ancestor(x.origin_continuation_id, c.id) and c.lifecycle in rank:
+                    candidates.append(rank[c.lifecycle])
+            life = StateLifecycle.TERMINAL
+            if StateLifecycle.ACTIVE in candidates
