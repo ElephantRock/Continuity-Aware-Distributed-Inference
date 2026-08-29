@@ -14,6 +14,7 @@ class InvariantOracle:
         self._continuation_dags()
         self._state_provenance()
         self._binding_authority()
+        self._event_identity()
         self._state_validity()
 
     def _attempt_authority(self):
@@ -63,6 +64,12 @@ class InvariantOracle:
         for b in self.c.bindings.values():
             if b.status==BindingStatus.ACTIVE:
                 assert self.c.current_binding_by_subject.get(b.subject_id)==b.id
+
+    def _event_identity(self):
+        assert len(self.c.event_order) == len(set(self.c.event_order))
+        assert set(self.c.event_order) == set(self.c.events)
+        for event_id in self.c.event_order:
+            assert self.c.events[event_id].id == event_id
 
     def _state_validity(self):
         for x in self.c.states.values():

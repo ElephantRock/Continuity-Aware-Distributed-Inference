@@ -43,6 +43,14 @@ class ReconcileOutcome(Enum):
     MATCHED = auto(); WAIT = auto(); RETRY = auto(); RECOMPUTE = auto(); MIGRATE = auto(); REJECT = auto(); REPAIR = auto(); FAIL = auto(); AMBIGUOUS = auto()
 
 @dataclass(frozen=True)
+class SemanticEvent:
+    id: str
+    kind: str
+    subject_type: str
+    subject_id: str
+    payload: FrozenSet[tuple[str, str]] = frozenset()
+
+@dataclass(frozen=True)
 class Program:
     id: str
     status: ProgramStatus = ProgramStatus.CREATED

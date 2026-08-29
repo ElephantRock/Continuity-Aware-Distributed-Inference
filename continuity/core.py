@@ -7,7 +7,7 @@ from .entities import (
     Attempt, AttemptAuthority, Binding, BindingStatus, Continuation, ContinuationLifecycle,
     Evidence, EvidenceAuthority, EvidenceStatus, ExecutionContext, ExecutionStatus,
     LogicalRequest, Output, Program, ProgramStatus, ReconcileOutcome, ReplicaStatus,
-    RequestStatus, ReusableState, Session, StateLifecycle, StateReplica, StateValidity,
+    RequestStatus, ReusableState, SemanticEvent, Session, StateLifecycle, StateReplica, StateValidity,
 )
 from .errors import InvalidTransition, InsufficientEvidence, SemanticViolation
 
@@ -33,6 +33,8 @@ class ContinuityCore:
         self.bindings: dict[str, Binding] = {}
         self.evidence: dict[str, Evidence] = {}
         self.outputs: dict[str, Output] = {}
+        self.events: dict[str, SemanticEvent] = {}
+        self.event_order: list[str] = []
         self.current_binding_by_subject: dict[str, str] = {}
         self.current_epoch_by_subject: dict[str, int] = {}
         self.last_allocated_epoch_by_subject: dict[str, int] = {}
@@ -42,7 +44,7 @@ class ContinuityCore:
     def _unique(self, id_: str) -> None:
         collections = (self.programs, self.sessions, self.continuations, self.requests,
                        self.attempts, self.states, self.replicas, self.bindings,
-                       self.evidence, self.outputs)
+                       self.evidence, self.outputs, self.events)
         if any(id_ in c for c in collections):
             raise SemanticViolation(f"duplicate logical identifier: {id_}")
 
@@ -340,8 +342,25 @@ class ContinuityCore:
         self.current_epoch_by_subject[b.subject_id] = b.epoch
         return b
 
+    # ---------- events ----------
+    def record_event(self, event: SemanticEvent) -> SemanticEvent:
+        existing = self.events.get(event.id)
+        if existing is not None:
+            if existing == event:
+                return existing
+            raise SemanticViolation("conflicting duplicate semantic event identity")
+        self._unique(event.id)
+        self.events[event.id] = event
+        self.event_order.append(event.id)
+        return event
+
     # ---------- evidence / reconcile ----------
     def record_evidence(self, e: Evidence) -> Evidence:
+        existing = self.evidence.get(e.id)
+        if existing is not None:
+            if existing == e:
+                return existing
+            raise SemanticViolation("conflicting duplicate Evidence identity")
         self._unique(e.id); self.evidence[e.id] = e; return e
 
     def require_evidence(self, action: str, evidence_ids: Iterable[str], *, now: Optional[float] = None,
