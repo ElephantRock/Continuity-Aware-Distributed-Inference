@@ -1,0 +1,60 @@
+from __future__ import annotations
+from dataclasses import replace
+from typing import Callable, Iterable, Optional
+import time
+
+from .entities import (
+    Attempt, AttemptAuthority, Binding, BindingStatus, Continuation, ContinuationLifecycle,
+    Evidence, EvidenceAuthority, EvidenceStatus, ExecutionContext, ExecutionStatus,
+    LogicalRequest, Output, Program, ProgramStatus, ReconcileOutcome, ReplicaStatus,
+    RequestStatus, ReusableState, Session, StateLifecycle, StateReplica, StateValidity,
+)
+from .errors import InvalidTransition, InsufficientEvidence, SemanticViolation
+
+class ContinuityCore:
+    """Single-authority deterministic semantic core for Paper 1 C1."""
+
+    REQUIRED_AUTHORITY = {
+        "finalize": EvidenceAuthority.EXACT_OBSERVATION,
+        "consume_state": EvidenceAuthority.EXACT_OBSERVATION,
+        "commit_migration": EvidenceAuthority.EXACT_OBSERVATION,
+        "rank_endpoint": EvidenceAuthority.ESTIMATED,
+        "estimate_reuse": EvidenceAuthority.ESTIMATED,
+    }
+
+    def __init__(self, semantic_validity: Optional[Callable[[ReusableState, ExecutionContext], bool]] = None):
+        self.programs: dict[str, Program] = {}
+        self.sessions: dict[str, Session] = {}
+        self.continuations: dict[str, Continuation] = {}
+        self.requests: dict[str, LogicalRequest] = {}
+        self.attempts: dict[str, Attempt] = {}
+        self.states: dict[str, ReusableState] = {}
+        self.replicas: dict[str, StateReplica] = {}
+        self.bindings: dict[str, Binding] = {}
+        self.evidence: dict[str, Evidence] = {}
+        self.outputs: dict[str, Output] = {}
+        self.current_binding_by_subject: dict[str, str] = {}
+        self.current_epoch_by_subject: dict[str, int] = {}
+        self.last_allocated_epoch_by_subject: dict[str, int] = {}
+        self.semantic_validity = semantic_validity or (lambda state, ctx: True)
+
+    # ---------- identity / graph ----------
+    def _unique(self, id_: str) -> None:
+        collections = (self.programs, self.sessions, self.continuations, self.requests,
+                       self.attempts, self.states, self.replicas, self.bindings,
+                       self.evidence, self.outputs)
+        if any(id_ in c for c in collections):
+            raise SemanticViolation(f"duplicate logical identifier: {id_}")
+
+    def create_program(self, id_: str) -> Program:
+        self._unique(id_); p = Program(id_); self.programs[id_] = p; return p
+
+    def set_program_status(self, program_id: str, status: ProgramStatus) -> Program:
+        p = self.programs[program_id]
+        if p.status in {ProgramStatus.COMPLETED, ProgramStatus.FAILED, ProgramStatus.CANCELLED} and status != p.status:
+            raise InvalidTransition("terminal Program is immutable")
+        p = replace(p, status=status); self.programs[program_id] = p; return p
+
+    def create_session(self, id_: str, program_id: str) -> Session:
+        self._unique(id_); self.programs[program_id]
+        s = Session(id_, program_id); self.sessio
