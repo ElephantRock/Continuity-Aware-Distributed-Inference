@@ -1,0 +1,132 @@
+name: c1-phase-model-bootstrap
+
+on:
+  push:
+    branches: [c1/deterministic-core]
+    paths: [.github/workflows/c1-phase-model-bootstrap.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c1/deterministic-core
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Apply Phase identity and ordering patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one match in {path}: {old!r}; got {count}")
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'continuity/entities.py',
+              'class AttemptAuthority(Enum):\n    NONE = auto(); CURRENT = auto(); COMMITTED = auto(); SUPERSEDED = auto()\n\nclass StateLifecycle(Enum):',
+              'class AttemptAuthority(Enum):\n    NONE = auto(); CURRENT = auto(); COMMITTED = auto(); SUPERSEDED = auto()\n\nclass PhaseType(Enum):\n    PREFILL = auto(); DECODE = auto(); STATE_PULL = auto(); STATE_TRANSFER = auto(); OTHER = auto()\n\nclass PhaseStatus(Enum):\n    CREATED = auto(); RUNNING = auto(); COMPLETED = auto(); FAILED = auto(); CANCELLED = auto()\n\nclass StateLifecycle(Enum):'
+          )
+          replace_once(
+              'continuity/entities.py',
+              '@dataclass(frozen=True)\nclass ExecutionContext:',
+              '@dataclass(frozen=True)\nclass Phase:\n    id: str\n    attempt_id: str\n    ordinal: int\n    phase_type: PhaseType\n    status: PhaseStatus = PhaseStatus.CREATED\n\n@dataclass(frozen=True)\nclass ExecutionContext:'
+          )
+          replace_once(
+              'continuity/entities.py',
+              '    derived_from: FrozenSet[str] = frozenset()\n\n@dataclass(frozen=True)\nclass StateReplica:',
+              '    derived_from: FrozenSet[str] = frozenset()\n    producer_phase_id: Optional[str] = None\n\n@dataclass(frozen=True)\nclass StateReplica:'
+          )
+
+          replace_once(
+              'continuity/core.py',
+              '    LogicalRequest, Output, Program, ProgramStatus, ReconcileOutcome, ReplicaStatus,\n    RequestStatus, ReusableState, SemanticEvent, Session, StateLifecycle, StateReplica, StateValidity,\n)',
+              '    LogicalRequest, Output, Phase, PhaseStatus, PhaseType, Program, ProgramStatus, ReconcileOutcome, ReplicaStatus,\n    RequestStatus, ReusableState, SemanticEvent, Session, StateLifecycle, StateReplica, StateValidity,\n)'
+          )
+          replace_once(
+              'continuity/core.py',
+              '        self.attempts: dict[str, Attempt] = {}\n        self.states: dict[str, ReusableState] = {}',
+              '        self.attempts: dict[str, Attempt] = {}\n        self.phases: dict[str, Phase] = {}\n        self.states: dict[str, ReusableState] = {}'
+          )
+          replace_once(
+              'continuity/core.py',
+              '        collections = (self.programs, self.sessions, self.continuations, self.requests,\n                       self.attempts, self.states, self.replicas, self.bindings,',
+              '        collections = (self.programs, self.sessions, self.continuations, self.requests,\n                       self.attempts, self.phases, self.states, self.replicas, self.bindings,'
+          )
+          replace_once(
+              'continuity/core.py',
+              '    def complete_attempt(self, attempt_id: str, succeeded: bool = True) -> Attempt:\n        return self.set_attempt_execution(attempt_id, ExecutionStatus.SUCCEEDED if succeeded else ExecutionStatus.FAILED)\n\n    def create_output',
+              '    def complete_attempt(self, attempt_id: str, succeeded: bool = True) -> Attempt:\n        return self.set_attempt_execution(attempt_id, ExecutionStatus.SUCCEEDED if succeeded else ExecutionStatus.FAILED)\n\n    # ---------- phases ----------\n    def create_phase(self, id_: str, attempt_id: str, phase_type: PhaseType, ordinal: Optional[int] = None) -> Phase:\n        self._unique(id_)\n        self.attempts[attempt_id]\n        existing = [p for p in self.phases.values() if p.attempt_id == attempt_id]\n        next_ordinal = max((p.ordinal for p in existing), default=0) + 1\n        ordinal = next_ordinal if ordinal is None else ordinal\n        if ordinal != next_ordinal:\n            raise SemanticViolation("Phase ordinals must be contiguous and monotonic within an Attempt")\n        p = Phase(id_, attempt_id, ordinal, phase_type, PhaseStatus.CREATED)\n        self.phases[id_] = p\n        return p\n\n    def set_phase_status(self, phase_id: str, status: PhaseStatus) -> Phase:\n        p = self.phases[phase_id]\n        terminal = {PhaseStatus.COMPLETED, PhaseStatus.FAILED, PhaseStatus.CANCELLED}\n        if p.status in terminal and status != p.status:\n            raise InvalidTransition("terminal Phase is immutable")\n        p = replace(p, status=status)\n        self.phases[phase_id] = p\n        return p\n\n    def complete_phase(self, phase_id: str) -> Phase:\n        return self.set_phase_status(phase_id, PhaseStatus.COMPLETED)\n\n    def create_output'
+          )
+          replace_once(
+              'continuity/core.py',
+              '        oc, orq, pa = self._resolve_origin(origin_type, origin_id)\n',
+              '        oc, orq, pa, pp = self._resolve_origin(origin_type, origin_id)\n'
+          )
+          replace_once(
+              'continuity/core.py',
+              '        x = ReusableState(id_, origin_type, origin_id, oc, orq, pa, semantic_type,\n                          representation, StateLifecycle.TERMINAL, StateValidity.VALID,\n                          dependencies)\n',
+              '        x = ReusableState(\n            id=id_, origin_type=origin_type, origin_id=origin_id, origin_continuation_id=oc,\n            origin_request_id=orq, producer_attempt_id=pa, semantic_type=semantic_type,\n            representation=representation, lifecycle=StateLifecycle.TERMINAL,\n            validity=StateValidity.VALID, derived_from=dependencies, producer_phase_id=pp\n        )\n'
+          )
+          replace_once(
+              'continuity/core.py',
+              '        if origin_type == "continuation":\n            c = self.continuations[origin_id]; return c.id, None, None\n        if origin_type == "request":\n            r = self.requests[origin_id]; return r.continuation_id, r.id, r.committed_attempt_id\n        if origin_type == "attempt":\n            a = self.attempts[origin_id]; r = self.requests[a.request_id]; return r.continuation_id, r.id, a.id\n        raise SemanticViolation(f"unsupported origin_type: {origin_type}")',
+              '        if origin_type == "continuation":\n            c = self.continuations[origin_id]; return c.id, None, None, None\n        if origin_type == "request":\n            r = self.requests[origin_id]; return r.continuation_id, r.id, r.committed_attempt_id, None\n        if origin_type == "attempt":\n            a = self.attempts[origin_id]; r = self.requests[a.request_id]; return r.continuation_id, r.id, a.id, None\n        if origin_type == "phase":\n            p = self.phases[origin_id]\n            if p.status != PhaseStatus.COMPLETED:\n                raise SemanticViolation("Phase-origin State requires a COMPLETED producer Phase")\n            a = self.attempts[p.attempt_id]; r = self.requests[a.request_id]\n            return r.continuation_id, r.id, a.id, p.id\n        raise SemanticViolation(f"unsupported origin_type: {origin_type}")'
+          )
+          replace_once(
+              'continuity/core.py',
+              '    def _context_consistent(self, ctx: ExecutionContext) -> bool:\n        # C1 does not yet model Phase entities. A phase-scoped context must therefore\n        # fail closed until Phase identity is represented by the deterministic core.\n        if ctx.phase_id is not None:\n            return False\n        p = self.programs.get(ctx.program_id)',
+              '    def _context_consistent(self, ctx: ExecutionContext) -> bool:\n        p = self.programs.get(ctx.program_id)'
+          )
+          replace_once(
+              'continuity/core.py',
+              '        if r.current_attempt_id != a.id or a.authority_status != AttemptAuthority.CURRENT:\n            return False\n        return True\n',
+              '        if r.current_attempt_id != a.id or a.authority_status != AttemptAuthority.CURRENT:\n            return False\n        if ctx.phase_id is not None:\n            phase = self.phases.get(ctx.phase_id)\n            if phase is None or phase.attempt_id != a.id:\n                return False\n            if phase.status not in {PhaseStatus.RUNNING, PhaseStatus.COMPLETED}:\n                return False\n        return True\n'
+          )
+          replace_once(
+              'continuity/core.py',
+              '            for dependency_id in x.derived_from:\n',
+              '            if x.producer_phase_id and x.producer_attempt_id == ctx.attempt_id:\n                if ctx.phase_id is None:\n                    return False\n                producer_phase = self.phases[x.producer_phase_id]\n                consumer_phase = self.phases[ctx.phase_id]\n                if consumer_phase.ordinal <= producer_phase.ordinal:\n                    return False\n            for dependency_id in x.derived_from:\n'
+          )
+
+          replace_once(
+              'continuity/invariants.py',
+              '        self._continuation_dags()\n        self._state_provenance()\n',
+              '        self._continuation_dags()\n        self._phase_ordering()\n        self._state_provenance()\n'
+          )
+          replace_once(
+              'continuity/invariants.py',
+              '    def _state_provenance(self):\n',
+              '    def _phase_ordering(self):\n        for attempt_id in self.c.attempts:\n            phases = sorted((p for p in self.c.phases.values() if p.attempt_id == attempt_id), key=lambda p: p.ordinal)\n            assert [p.ordinal for p in phases] == list(range(1, len(phases) + 1))\n            assert all(p.attempt_id == attempt_id for p in phases)\n\n    def _state_provenance(self):\n'
+          )
+          replace_once(
+              'continuity/invariants.py',
+              '            if x.producer_attempt_id:\n                a=self.c.attempts[x.producer_attempt_id]\n                if x.origin_request_id:\n                    assert a.request_id == x.origin_request_id\n',
+              '            if x.producer_attempt_id:\n                a=self.c.attempts[x.producer_attempt_id]\n                if x.origin_request_id:\n                    assert a.request_id == x.origin_request_id\n            if x.producer_phase_id:\n                phase = self.c.phases[x.producer_phase_id]\n                assert phase.attempt_id == x.producer_attempt_id\n                assert phase.status.name == "COMPLETED"\n'
+          )
+
+          Path('tests/invariants/test_phases.py').write_text('''import pytest\n\nfrom continuity.entities import ExecutionContext, PhaseStatus, PhaseType\nfrom continuity.errors import SemanticViolation\nfrom continuity.invariants import InvariantOracle\n\n\ndef setup_attempt(core):\n    core.create_program('p'); core.create_session('s', 'p'); core.create_continuation('c', 's')\n    core.create_request('r', 'c'); core.start_attempt('a', 'r')\n\n\ndef test_phase_ordinals_are_contiguous_and_monotonic(core):\n    setup_attempt(core)\n    p1 = core.create_phase('p1', 'a', PhaseType.PREFILL)\n    p2 = core.create_phase('p2', 'a', PhaseType.DECODE)\n    assert (p1.ordinal, p2.ordinal) == (1, 2)\n    with pytest.raises(SemanticViolation):\n        core.create_phase('p4', 'a', PhaseType.OTHER, ordinal=4)\n    InvariantOracle(core).assert_all()\n\n\ndef test_phase_origin_state_requires_completed_phase(core):\n    setup_attempt(core)\n    core.create_phase('p1', 'a', PhaseType.PREFILL)\n    core.set_phase_status('p1', PhaseStatus.RUNNING)\n    with pytest.raises(SemanticViolation):\n        core.create_state('x', origin_type='phase', origin_id='p1')\n    core.complete_phase('p1')\n    x = core.create_state('x', origin_type='phase', origin_id='p1')\n    assert x.producer_phase_id == 'p1'\n    assert x.producer_attempt_id == 'a'\n\n\ndef test_phase_context_must_belong_to_same_attempt(core):\n    core.create_program('p'); core.create_session('s', 'p'); core.create_continuation('c', 's')\n    core.create_request('r1', 'c'); core.start_attempt('a1', 'r1')\n    core.create_phase('a1p1', 'a1', PhaseType.PREFILL); core.set_phase_status('a1p1', PhaseStatus.RUNNING)\n    core.create_request('r2', 'c'); core.start_attempt('a2', 'r2')\n    core.create_phase('a2p1', 'a2', PhaseType.PREFILL); core.set_phase_status('a2p1', PhaseStatus.RUNNING)\n    core.create_state('x', origin_type='continuation', origin_id='c')\n    bad = ExecutionContext('p', 's', 'c', 'r2', 'a2', 'a1p1')\n    good = ExecutionContext('p', 's', 'c', 'r2', 'a2', 'a2p1')\n    assert not core.state_compatible('x', bad)\n    assert core.state_compatible('x', good)\n\n\ndef test_same_attempt_phase_state_requires_later_consumer_phase(core):\n    setup_attempt(core)\n    core.create_phase('prefill', 'a', PhaseType.PREFILL); core.set_phase_status('prefill', PhaseStatus.RUNNING); core.complete_phase('prefill')\n    core.create_state('kv', origin_type='phase', origin_id='prefill')\n    core.create_phase('decode', 'a', PhaseType.DECODE); core.set_phase_status('decode', PhaseStatus.RUNNING)\n    same_phase = ExecutionContext('p', 's', 'c', 'r', 'a', 'prefill')\n    later_phase = ExecutionContext('p', 's', 'c', 'r', 'a', 'decode')\n    no_phase = ExecutionContext('p', 's', 'c', 'r', 'a')\n    assert not core.state_compatible('kv', same_phase)\n    assert not core.state_compatible('kv', no_phase)\n    assert core.state_compatible('kv', later_phase)\n    InvariantOracle(core).assert_all()\n''')
+          PY
+      - name: Run deterministic C1 tests
+        run: |
+          python -m pip install --upgrade pip pytest
+          python -m pytest -q
+      - name: Commit Phase model and remove bootstrap workflow
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add continuity/entities.py continuity/core.py continuity/invariants.py tests/invariants/test_phases.py
+          git rm .github/workflows/c1-phase-model-bootstrap.yml
+          git commit -m 'Add Phase identity and State production ordering'
+          git push origin HEAD:c1/deterministic-core
