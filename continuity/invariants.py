@@ -46,6 +46,9 @@ class InvariantOracle:
         assert not self.c._state_cycle()
         for x in self.c.states.values():
             assert x.origin_continuation_id in self.c.continuations
+            for dependency_id in x.derived_from:
+                dependency = self.c.states[dependency_id]
+                assert self.c.is_ancestor(dependency.origin_continuation_id, x.origin_continuation_id)
             if x.producer_attempt_id:
                 a=self.c.attempts[x.producer_attempt_id]
                 if x.origin_request_id:

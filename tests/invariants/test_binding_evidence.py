@@ -27,3 +27,15 @@ def test_ambiguous_evidence_fails_closed(core):
 def test_estimated_evidence_insufficient_for_finalize(core):
     ev(core,'e',{('attempt','a')},authority=EvidenceAuthority.ESTIMATED)
     with pytest.raises(InsufficientEvidence): core.require_evidence('finalize',['e'],now=10,required_scope={('attempt','a')})
+
+def test_unknown_evidence_fails_closed_in_reconciliation(core):
+    assert core.reconcile('finalize', ['missing'], now=10, required_scope={('attempt', 'a')}) is ReconcileOutcome.WAIT
+
+
+def test_unknown_evidence_fails_closed_in_state_consumption(core):
+    from continuity.entities import ExecutionContext
+    core.create_program('p'); core.create_session('s', 'p'); core.create_continuation('c', 's')
+    core.create_request('r', 'c'); core.start_attempt('a', 'r')
+    core.create_state('x', origin_type='continuation', origin_id='c'); core.add_replica('rp', 'x', 'w')
+    ctx = ExecutionContext('p', 's', 'c', 'r', 'a')
+    assert not core.can_consume_state('x', 'rp', ctx, ['missing'], now=10)

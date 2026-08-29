@@ -71,6 +71,7 @@ class ContinuityCore:
         if self._has_cycle(session_id):
             del self.continuations[id_]
             raise SemanticViolation("Continuation DAG cycle")
+        self._refresh_state_lifecycles()
         return c
 
     def _has_cycle(self, session_id: str) -> bool:
@@ -168,10 +169,14 @@ class ContinuityCore:
                      derived_from: Iterable[str] = ()) -> ReusableState:
         self._unique(id_)
         oc, orq, pa = self._resolve_origin(origin_type, origin_id)
-        for sid in derived_from: self.states[sid]
+        dependencies = frozenset(derived_from)
+        for sid in dependencies:
+            dependency = self.states[sid]
+            if not self.is_ancestor(dependency.origin_continuation_id, oc):
+                raise SemanticViolation("derived State dependency must be a causal ancestor of the declared origin")
         x = ReusableState(id_, origin_type, origin_id, oc, orq, pa, semantic_type,
                           representation, StateLifecycle.TERMINAL, StateValidity.VALID,
-                          frozenset(derived_from))
+                          dependencies)
         self.states[id_] = x
         if self._state_cycle():
             del self.states[id_]; raise SemanticViolation("State provenance cycle")
@@ -218,25 +223,60 @@ class ContinuityCore:
             elif StateLifecycle.SPECULATIVE in candidates: life = StateLifecycle.SPECULATIVE
             self.states[sid] = replace(x, lifecycle=life)
 
+    def _context_consistent(self, ctx: ExecutionContext) -> bool:
+        # C1 does not yet model Phase entities. A phase-scoped context must therefore
+        # fail closed until Phase identity is represented by the deterministic core.
+        if ctx.phase_id is not None:
+            return False
+        p = self.programs.get(ctx.program_id)
+        s = self.sessions.get(ctx.session_id)
+        c = self.continuations.get(ctx.continuation_id)
+        r = self.requests.get(ctx.request_id)
+        a = self.attempts.get(ctx.attempt_id)
+        if None in {p, s, c, r, a}:
+            return False
+        if s.program_id != p.id or c.session_id != s.id:
+            return False
+        if r.continuation_id != c.id or a.request_id != r.id:
+            return False
+        if r.current_attempt_id != a.id or a.authority_status != AttemptAuthority.CURRENT:
+            return False
+        return True
+
     def state_compatible(self, state_id: str, ctx: ExecutionContext) -> bool:
-        x = self.states[state_id]
-        if x.validity != StateValidity.VALID: return False
-        c = self.continuations[ctx.continuation_id]
-        s = self.sessions[c.session_id]
-        if s.id != ctx.session_id or s.program_id != ctx.program_id: return False
-        if not self.is_ancestor(x.origin_continuation_id, ctx.continuation_id): return False
-        if x.producer_attempt_id:
-            pa = self.attempts[x.producer_attempt_id]
-            if pa.authority_status == AttemptAuthority.SUPERSEDED: return False
-            if x.origin_request_id:
-                pr = self.requests[x.origin_request_id]
-                if pr.status == RequestStatus.COMPLETED:
-                    if pr.committed_attempt_id != pa.id: return False
-                else:
-                    if pa.id != ctx.attempt_id or pa.authority_status != AttemptAuthority.CURRENT: return False
-            elif pa.id != ctx.attempt_id or pa.authority_status != AttemptAuthority.CURRENT:
+        if not self._context_consistent(ctx):
+            return False
+        return self._state_compatible_recursive(state_id, ctx, set())
+
+    def _state_compatible_recursive(self, state_id: str, ctx: ExecutionContext, visiting: set[str]) -> bool:
+        x = self.states.get(state_id)
+        if x is None or x.validity != StateValidity.VALID:
+            return False
+        if state_id in visiting:
+            return False
+        visiting.add(state_id)
+        try:
+            if not self.is_ancestor(x.origin_continuation_id, ctx.continuation_id):
                 return False
-        return bool(self.semantic_validity(x, ctx))
+            if x.producer_attempt_id:
+                pa = self.attempts[x.producer_attempt_id]
+                if pa.authority_status == AttemptAuthority.SUPERSEDED:
+                    return False
+                if x.origin_request_id:
+                    pr = self.requests[x.origin_request_id]
+                    if pr.status == RequestStatus.COMPLETED:
+                        if pr.committed_attempt_id != pa.id:
+                            return False
+                    elif pa.id != ctx.attempt_id or pa.authority_status != AttemptAuthority.CURRENT:
+                        return False
+                elif pa.id != ctx.attempt_id or pa.authority_status != AttemptAuthority.CURRENT:
+                    return False
+            for dependency_id in x.derived_from:
+                if not self._state_compatible_recursive(dependency_id, ctx, visiting):
+                    return False
+            return bool(self.semantic_validity(x, ctx))
+        finally:
+            visiting.remove(state_id)
 
     def add_replica(self, id_: str, state_id: str, location_id: str, status: ReplicaStatus = ReplicaStatus.VALID) -> StateReplica:
         self._unique(id_); self.states[state_id]
@@ -308,7 +348,7 @@ class ContinuityCore:
                          required_scope: set[tuple[str,str]] | None = None, max_age: Optional[float] = None) -> list[Evidence]:
         now = time.time() if now is None else now
         req = self.REQUIRED_AUTHORITY[action]
-        evs = [self.evidence[eid] for eid in evidence_ids]
+        evs = [self.evidence[eid] for eid in evidence_ids if eid in self.evidence]
         good=[]
         for e in evs:
             if e.status != EvidenceStatus.VALID: continue
@@ -323,10 +363,11 @@ class ContinuityCore:
 
     def reconcile(self, action: str, evidence_ids: Iterable[str], *, now: Optional[float] = None,
                   required_scope: set[tuple[str,str]] | None = None) -> ReconcileOutcome:
-        evs=[self.evidence[eid] for eid in evidence_ids]
+        ids = tuple(evidence_ids)
+        evs=[self.evidence[eid] for eid in ids if eid in self.evidence]
         if any(e.status == EvidenceStatus.AMBIGUOUS for e in evs): return ReconcileOutcome.AMBIGUOUS
         try:
-            self.require_evidence(action, evidence_ids, now=now, required_scope=required_scope)
+            self.require_evidence(action, ids, now=now, required_scope=required_scope)
             return ReconcileOutcome.MATCHED
         except InsufficientEvidence:
             return ReconcileOutcome.WAIT
