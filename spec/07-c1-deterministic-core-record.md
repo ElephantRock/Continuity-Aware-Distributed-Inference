@@ -91,6 +91,24 @@ SemanticOperation identity
 
 Attempt generations are monotonically and contiguously allocated per LogicalRequest and independently checked by the invariant oracle.
 
+## Attempt execution status
+
+Attempt execution status is monotonic across the nonterminal path:
+
+```text
+CREATED → DISPATCHED → RUNNING
+```
+
+A nonterminal status cannot move backward, and terminal outcomes:
+
+```text
+SUCCEEDED
+FAILED
+CANCELLED
+```
+
+are immutable once established.
+
 ---
 
 # 4. Phase Semantics and State Production Ordering
@@ -116,6 +134,14 @@ Phase ordinal = 1, 2, 3, ...
 ```
 
 and Phase ordinals are contiguous and monotonic.
+
+Phase status follows the monotonic nonterminal path:
+
+```text
+CREATED → RUNNING
+```
+
+and cannot regress from `RUNNING` to `CREATED`; terminal Phase outcomes are immutable.
 
 Phase-origin State requires a `COMPLETED` producer Phase.
 
@@ -368,7 +394,7 @@ canonical arguments
 
 Replay only dispatches explicitly whitelisted semantic actions.
 
-Duplicate operation identities are rejected rather than treated as delivery duplicates.
+Duplicate operation identities within a trace are rejected rather than treated as delivery duplicates.
 
 Two fresh cores replaying the same valid operation trace must produce identical canonical snapshots and identical snapshot fingerprints.
 
@@ -528,15 +554,15 @@ Python 3.12
 Python 3.13
 ```
 
-Latest completion-candidate result:
+Latest completion-candidate result after the final monotonicity audit:
 
 ```text
-110 passed
+112 passed
 ```
 
-on the full C1 test corpus, with all three matrix jobs successful.
+The two final regression tests specifically verify that Attempt execution status and Phase status cannot move backward through their nonterminal state machines.
 
-The suite includes:
+The full suite includes:
 
 - unit-level transition tests;
 - independent invariant-oracle tests;
@@ -544,7 +570,8 @@ The suite includes:
 - mandatory Failure Model counterexamples;
 - deterministic adversarial parameter matrices;
 - event idempotence tests;
-- Phase-order tests;
+- Phase-order and Phase-status monotonicity tests;
+- Attempt execution-status monotonicity tests;
 - DERIVED Evidence provenance tests;
 - canonical snapshot round trips;
 - Event JSONL round trips;
