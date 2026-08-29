@@ -1,0 +1,54 @@
+name: bootstrap-remaining-specs
+
+on:
+  push:
+    branches:
+      - bootstrap/c0.1-c1
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: bootstrap/c0.1-c1
+          fetch-depth: 0
+
+      - name: Reconstruct canonical C0.1 specifications
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .bootstrap/specs.part* > /tmp/specs.b64
+          base64 -d /tmp/specs.b64 > /tmp/specs.txz
+          echo 'b89a297b28f1b2561a34953cc575d6b85d56f1e5416fefa89eebaf4c49569d98  /tmp/specs.txz' | sha256sum -c -
+          tar -xJf /tmp/specs.txz
+          cat > /tmp/specs.sha256 <<'EOF'
+          294b90e32ae8ff0d89883f3778539366aab97b0f45c80ca5259dfd8b366a3adf  spec/02-continuity-model.md
+          ef30f36b0e3fc096a764045a78bfead83fdbafd22ce6f4ddaf962f704a281966  spec/03-invariants.md
+          9ca242d5c640565869f179d98d59fbdab0cea50f12d520b34bcecb8ab22e7f8f  spec/04-failure-model.md
+          0f909207c3ee4106342f2d26f55a9aa9945902aaad312a72df6b20932ae9ad37  spec/05-experimental-plan.md
+          a89e21a164457a4890db9f1abbd1102a385d407825fa2b7bc2a9d93ae40d46e5  spec/06-gate-g0-consistency-review.md
+          EOF
+          sed -i 's/^          //' /tmp/specs.sha256
+          sha256sum -c /tmp/specs.sha256
+
+      - name: Commit exact specifications and remove bootstrap staging
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            spec/02-continuity-model.md \
+            spec/03-invariants.md \
+            spec/04-failure-model.md \
+            spec/05-experimental-plan.md \
+            spec/06-gate-g0-consistency-review.md
+          git rm .bootstrap/specs.part*
+          git rm .github/workflows/bootstrap-specs.yml
+          git commit -m 'Import remaining C0.1 specifications'
+          git push origin HEAD:bootstrap/c0.1-c1
