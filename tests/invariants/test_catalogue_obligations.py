@@ -94,3 +94,25 @@ def test_oracle_detects_broken_replica_parent(core):
     core.replicas['rp'] = replace(core.replicas['rp'], state_id='missing')
     with pytest.raises(AssertionError):
         InvariantOracle(core).assert_all()
+
+
+def test_attempt_execution_status_cannot_move_backward(core):
+    from continuity.entities import ExecutionStatus
+    core.create_program('p'); core.create_session('s', 'p'); core.create_continuation('c', 's')
+    core.create_request('r', 'c'); core.start_attempt('a', 'r')
+    core.set_attempt_execution('a', ExecutionStatus.DISPATCHED)
+    core.set_attempt_execution('a', ExecutionStatus.RUNNING)
+    with pytest.raises(InvalidTransition):
+        core.set_attempt_execution('a', ExecutionStatus.DISPATCHED)
+    with pytest.raises(InvalidTransition):
+        core.set_attempt_execution('a', ExecutionStatus.CREATED)
+
+
+def test_phase_status_cannot_move_backward(core):
+    from continuity.entities import PhaseStatus, PhaseType
+    core.create_program('p'); core.create_session('s', 'p'); core.create_continuation('c', 's')
+    core.create_request('r', 'c'); core.start_attempt('a', 'r')
+    core.create_phase('phase', 'a', PhaseType.PREFILL)
+    core.set_phase_status('phase', PhaseStatus.RUNNING)
+    with pytest.raises(InvalidTransition):
+        core.set_phase_status('phase', PhaseStatus.CREATED)

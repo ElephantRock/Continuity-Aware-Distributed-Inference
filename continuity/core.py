@@ -141,6 +141,14 @@ class ContinuityCore:
         terminal = {ExecutionStatus.SUCCEEDED, ExecutionStatus.FAILED, ExecutionStatus.CANCELLED}
         if a.execution_status in terminal and status != a.execution_status:
             raise InvalidTransition("terminal execution outcome is immutable")
+        nonterminal_rank = {
+            ExecutionStatus.CREATED: 0,
+            ExecutionStatus.DISPATCHED: 1,
+            ExecutionStatus.RUNNING: 2,
+        }
+        if a.execution_status in nonterminal_rank and status in nonterminal_rank:
+            if nonterminal_rank[status] < nonterminal_rank[a.execution_status]:
+                raise InvalidTransition("Attempt execution status cannot move backward")
         a = replace(a, execution_status=status); self.attempts[attempt_id] = a; return a
 
     def complete_attempt(self, attempt_id: str, succeeded: bool = True) -> Attempt:
@@ -164,6 +172,10 @@ class ContinuityCore:
         terminal = {PhaseStatus.COMPLETED, PhaseStatus.FAILED, PhaseStatus.CANCELLED}
         if p.status in terminal and status != p.status:
             raise InvalidTransition("terminal Phase is immutable")
+        nonterminal_rank = {PhaseStatus.CREATED: 0, PhaseStatus.RUNNING: 1}
+        if p.status in nonterminal_rank and status in nonterminal_rank:
+            if nonterminal_rank[status] < nonterminal_rank[p.status]:
+                raise InvalidTransition("Phase status cannot move backward")
         p = replace(p, status=status)
         self.phases[phase_id] = p
         return p
