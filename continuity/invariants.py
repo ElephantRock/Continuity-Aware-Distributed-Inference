@@ -9,15 +9,35 @@ class InvariantOracle:
         self.c = core
 
     def assert_all(self) -> None:
+        self._parent_scopes()
         self._attempt_authority()
+        self._attempt_generations()
         self._request_commit_consistency()
         self._continuation_dags()
         self._phase_ordering()
         self._state_provenance()
+        self._replica_integrity()
         self._binding_authority()
+        self._binding_generations()
         self._evidence_derivation()
         self._event_identity()
+        self._output_integrity()
         self._state_validity()
+
+    def _parent_scopes(self):
+        for session in self.c.sessions.values():
+            assert session.program_id in self.c.programs
+        for continuation in self.c.continuations.values():
+            assert continuation.session_id in self.c.sessions
+            for parent_id in continuation.parent_ids:
+                parent = self.c.continuations[parent_id]
+                assert parent.session_id == continuation.session_id
+        for request in self.c.requests.values():
+            assert request.continuation_id in self.c.continuations
+        for attempt in self.c.attempts.values():
+            assert attempt.request_id in self.c.requests
+        for phase in self.c.phases.values():
+            assert phase.attempt_id in self.c.attempts
 
     def _attempt_authority(self):
         for rid, r in self.c.requests.items():
@@ -32,6 +52,12 @@ class InvariantOracle:
             for a in self.c.attempts.values():
                 if a.request_id==rid and a.authority_status==AttemptAuthority.SUPERSEDED:
                     assert a.id != r.current_attempt_id and a.id != r.committed_attempt_id
+
+    def _attempt_generations(self):
+        for request_id in self.c.requests:
+            attempts = [a for a in self.c.attempts.values() if a.request_id == request_id]
+            generations = sorted(a.generation for a in attempts)
+            assert generations == list(range(1, len(attempts) + 1))
 
     def _request_commit_consistency(self):
         for r in self.c.requests.values():
@@ -67,6 +93,13 @@ class InvariantOracle:
                 assert phase.attempt_id == x.producer_attempt_id
                 assert phase.status.name == "COMPLETED"
 
+    def _replica_integrity(self):
+        for replica in self.c.replicas.values():
+            assert replica.state_id in self.c.states
+            if replica.binding_id is not None:
+                binding = self.c.bindings[replica.binding_id]
+                assert replica.binding_epoch == binding.epoch
+
     def _binding_authority(self):
         for subj,bid in self.c.current_binding_by_subject.items():
             b=self.c.bindings[bid]
@@ -76,6 +109,19 @@ class InvariantOracle:
         for b in self.c.bindings.values():
             if b.status==BindingStatus.ACTIVE:
                 assert self.c.current_binding_by_subject.get(b.subject_id)==b.id
+
+    def _binding_generations(self):
+        by_subject = {}
+        for binding in self.c.bindings.values():
+            by_subject.setdefault(binding.subject_id, []).append(binding)
+            assert binding.epoch > binding.base_epoch
+        for subject, bindings in by_subject.items():
+            epochs = [b.epoch for b in bindings]
+            assert len(epochs) == len(set(epochs))
+            assert self.c.last_allocated_epoch_by_subject[subject] == max(epochs)
+            current_epoch = self.c.current_epoch_by_subject.get(subject)
+            if current_epoch is not None:
+                assert current_epoch in epochs
 
     def _evidence_derivation(self):
         for evidence in self.c.evidence.values():
@@ -97,6 +143,12 @@ class InvariantOracle:
         assert set(self.c.event_order) == set(self.c.events)
         for event_id in self.c.event_order:
             assert self.c.events[event_id].id == event_id
+
+    def _output_integrity(self):
+        for output in self.c.outputs.values():
+            assert output.attempt_id in self.c.attempts
+            for evidence_id in output.evidence_ids:
+                assert evidence_id in self.c.evidence
 
     def _state_validity(self):
         for x in self.c.states.values():
