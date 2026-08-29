@@ -84,6 +84,14 @@ class InvariantOracle:
             for dependency_id in x.derived_from:
                 dependency = self.c.states[dependency_id]
                 assert self.c.is_ancestor(dependency.origin_continuation_id, x.origin_continuation_id)
+                if (
+                    x.producer_phase_id
+                    and dependency.producer_phase_id
+                    and dependency.producer_attempt_id == x.producer_attempt_id
+                ):
+                    producer_phase = self.c.phases[x.producer_phase_id]
+                    dependency_phase = self.c.phases[dependency.producer_phase_id]
+                    assert dependency_phase.ordinal < producer_phase.ordinal
             if x.producer_attempt_id:
                 a=self.c.attempts[x.producer_attempt_id]
                 if x.origin_request_id:
