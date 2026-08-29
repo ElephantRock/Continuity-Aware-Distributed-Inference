@@ -7,7 +7,7 @@
 - **C0.1 Research Specification:** complete
 - **Gate G0:** PASS
 - **C1 Deterministic Continuity Core:** completion candidate; implementation exit criteria satisfied, pending final review/merge
-- **C1 validation:** 112 deterministic/invariant/adversarial tests passing; permanent CI covers Python 3.11, 3.12, and 3.13
+- **C1 validation:** 116 deterministic/invariant/adversarial tests passing; permanent CI covers Python 3.11, 3.12, and 3.13
 - **C2 simulator / performance modeling:** intentionally not started
 
 The repository is the canonical system of record for the project.
@@ -45,8 +45,8 @@ The deterministic core now includes:
 - semantic Event identity/idempotence;
 - canonical snapshots and fingerprints;
 - schema-versioned Event and Operation JSONL traces;
-- deterministic semantic-operation replay;
-- an independent invariant oracle;
+- deterministic semantic-operation replay with explicit replay time for time-sensitive actions;
+- an independent invariant oracle including Phase-dependency temporal-order validation;
 - all 12 mandatory Failure Model traces;
 - a deterministic adversarial sequence matrix plus seeded sequence fuzzing;
 - an executable 37-invariant-to-test coverage registry.
