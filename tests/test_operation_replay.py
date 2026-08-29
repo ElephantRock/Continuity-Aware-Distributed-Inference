@@ -42,6 +42,28 @@ def operation_trace():
     ]
 
 
+def finalization_trace():
+    evidence = Evidence(
+        'terminal-evidence', 'terminal output observed', 'test',
+        EvidenceAuthority.EXACT_OBSERVATION, EvidenceStatus.VALID, 10.0,
+        frozenset({('attempt', 'a')}), valid_until=100.0,
+    )
+    return [
+        SemanticOperation.build('op01', 'create_program', id_='p'),
+        SemanticOperation.build('op02', 'create_session', id_='s', program_id='p'),
+        SemanticOperation.build('op03', 'create_continuation', id_='c', session_id='s'),
+        SemanticOperation.build('op04', 'create_request', id_='r', continuation_id='c'),
+        SemanticOperation.build('op05', 'start_attempt', id_='a', request_id='r'),
+        SemanticOperation.build('op06', 'complete_attempt', attempt_id='a', succeeded=True),
+        SemanticOperation.build('op07', 'record_evidence', e=evidence),
+        SemanticOperation.build(
+            'op08', 'create_output', id_='o', attempt_id='a', terminal=True,
+            evidence_ids=['terminal-evidence'],
+        ),
+        SemanticOperation.build('op09', 'finalize_request', request_id='r', output_id='o', now=50.0),
+    ]
+
+
 def test_operation_jsonl_is_canonical_and_round_trips():
     operations = operation_trace()
     text = operations_to_jsonl(operations)
@@ -104,3 +126,33 @@ def test_unknown_operation_schema_is_rejected():
     record = {'schema': 'future', 'operation_id': 'op', 'action': 'create_program', 'arguments': {'$dict': []}}
     with pytest.raises(ValueError):
         operations_from_jsonl(json.dumps(record) + '\n')
+
+
+def test_time_sensitive_replay_operations_require_explicit_now():
+    with pytest.raises(ValueError):
+        SemanticOperation.build('finalize', 'finalize_request', request_id='r', output_id='o')
+    with pytest.raises(ValueError):
+        SemanticOperation.build('migrate', 'commit_migration', binding_id='b', evidence_ids=[])
+
+
+def test_time_sensitive_record_without_now_is_rejected_during_parse():
+    operation = SemanticOperation(
+        id='finalize', action='finalize_request',
+        arguments=(('output_id', 'o'), ('request_id', 'r')),
+    )
+    text = operations_to_jsonl([operation])
+    with pytest.raises(ValueError):
+        operations_from_jsonl(text)
+
+
+def test_explicit_replay_time_makes_expiring_evidence_deterministic():
+    trace = operations_to_jsonl(finalization_trace())
+    first = ContinuityCore()
+    second = ContinuityCore()
+    replay_operation_jsonl(first, trace)
+    replay_operation_jsonl(second, trace)
+    assert first.requests['r'].committed_attempt_id == 'a'
+    assert second.requests['r'].committed_attempt_id == 'a'
+    assert snapshot_core(first) == snapshot_core(second)
+    InvariantOracle(first).assert_all()
+    InvariantOracle(second).assert_all()
