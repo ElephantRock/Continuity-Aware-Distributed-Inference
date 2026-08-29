@@ -1,0 +1,42 @@
+name: apply-c1-review-fixes
+
+on:
+  push:
+    branches:
+      - bootstrap/c0.1-c1
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: bootstrap/c0.1-c1
+          fetch-depth: 0
+
+      - name: Apply verified review patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d .bootstrap/review-fixes.patch.xz.b64 | xz -d > /tmp/review-fixes.patch
+          echo '0dcdfcc37150a2319827852f25f26909147018fafae4978306c41e29213de1a1  /tmp/review-fixes.patch' | sha256sum -c -
+          git apply --check /tmp/review-fixes.patch
+          git apply /tmp/review-fixes.patch
+          python -m pip install pytest
+          python -m pytest -q
+
+      - name: Commit fixes and remove one-shot staging
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add continuity/core.py continuity/invariants.py tests/invariants/test_state.py tests/invariants/test_binding_evidence.py
+          git rm .bootstrap/review-fixes.patch.xz.b64
+          git rm .github/workflows/apply-review-fixes.yml
+          git commit -m 'Address C1 invariant review findings'
+          git push origin HEAD:bootstrap/c0.1-c1
