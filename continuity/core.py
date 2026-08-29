@@ -202,6 +202,11 @@ class ContinuityCore:
             dependency = self.states[sid]
             if not self.is_ancestor(dependency.origin_continuation_id, oc):
                 raise SemanticViolation("derived State dependency must be a causal ancestor of the declared origin")
+            if pp and dependency.producer_phase_id and dependency.producer_attempt_id == pa:
+                producer_phase = self.phases[pp]
+                dependency_phase = self.phases[dependency.producer_phase_id]
+                if dependency_phase.ordinal >= producer_phase.ordinal:
+                    raise SemanticViolation("derived State cannot depend on same-or-later Phase State within an Attempt")
         x = ReusableState(
             id=id_, origin_type=origin_type, origin_id=origin_id, origin_continuation_id=oc,
             origin_request_id=orq, producer_attempt_id=pa, semantic_type=semantic_type,

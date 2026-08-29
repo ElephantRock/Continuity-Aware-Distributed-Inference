@@ -57,3 +57,12 @@ def test_same_attempt_phase_state_requires_later_consumer_phase(core):
     assert not core.state_compatible('kv', no_phase)
     assert core.state_compatible('kv', later_phase)
     InvariantOracle(core).assert_all()
+
+
+def test_phase_origin_state_rejects_future_phase_dependency(core):
+    setup_attempt(core)
+    core.create_phase('prefill', 'a', PhaseType.PREFILL); core.set_phase_status('prefill', PhaseStatus.RUNNING); core.complete_phase('prefill')
+    core.create_phase('decode', 'a', PhaseType.DECODE); core.set_phase_status('decode', PhaseStatus.RUNNING); core.complete_phase('decode')
+    core.create_state('late', origin_type='phase', origin_id='decode')
+    with pytest.raises(SemanticViolation):
+        core.create_state('invalid', origin_type='phase', origin_id='prefill', derived_from=['late'])
