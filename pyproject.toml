@@ -1,0 +1,10 @@
+[project]
+name = "continuity-aware-inference"
+version = "0.1.0"
+description = "Deterministic semantic core for Continuity-Aware Distributed Inference"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
