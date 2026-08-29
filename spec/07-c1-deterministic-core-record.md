@@ -396,7 +396,9 @@ Replay only dispatches explicitly whitelisted semantic actions.
 
 Duplicate operation identities within a trace are rejected rather than treated as delivery duplicates.
 
-Two fresh cores replaying the same valid operation trace must produce identical canonical snapshots and identical snapshot fingerprints.
+Time-sensitive replay actions are deterministic by construction: replayed `finalize_request` and `commit_migration` operations must carry an explicit `now` argument. Replay rejects those actions when replay time is omitted rather than falling back to wall-clock time.
+
+Two fresh cores replaying the same valid operation trace must therefore produce identical canonical snapshots and identical snapshot fingerprints independently of when replay occurs.
 
 This distinction keeps:
 
@@ -430,6 +432,7 @@ Continuation DAG acyclicity
 Phase ownership and ordinal ordering
 State provenance graph acyclicity
 State producer Attempt/Phase consistency
+same-Attempt Phase dependency temporal ordering
 Replica → logical State integrity
 single current Binding consistency
 Binding epoch uniqueness and allocation consistency
@@ -445,7 +448,8 @@ The test suite also deliberately corrupts otherwise unreachable internal states 
 - cross-request Attempt authority;
 - non-monotonic Attempt generation;
 - State derivation cycles;
-- broken Replica parentage.
+- broken Replica parentage;
+- Phase-provenance temporal inversion inside a State derivation.
 
 This prevents the oracle from being merely a mirror of public transition guards.
 
@@ -554,13 +558,20 @@ Python 3.12
 Python 3.13
 ```
 
-Latest completion-candidate result after the final monotonicity audit:
+Latest post-review-fix completion-candidate result:
 
 ```text
-112 passed
+116 passed
 ```
 
-The two final regression tests specifically verify that Attempt execution status and Phase status cannot move backward through their nonterminal state machines.
+All three CI matrix jobs succeeded on the reviewed post-fix code head.
+
+The final four review-regression tests verify that:
+
+- time-sensitive operation replay rejects omitted replay time;
+- replayed finalization remains deterministic across different wall-clock times;
+- replayed migration commit remains deterministic across different wall-clock times;
+- the independent oracle rejects corrupted same-Attempt Phase-provenance temporal inversion.
 
 The full suite includes:
 
@@ -576,6 +587,7 @@ The full suite includes:
 - canonical snapshot round trips;
 - Event JSONL round trips;
 - Operation JSONL deterministic replay;
+- replay-clock determinism tests;
 - seeded operation-sequence fuzzing;
 - invariant-registry self-validation.
 
@@ -598,12 +610,14 @@ The eight planned C1 exit artifacts are now implemented:
 
 Implementation exit criteria are therefore satisfied.
 
+The previous Codex review identified two correctness issues—wall-clock-dependent operation replay and missing independent Phase-dependency ordering validation. Both are fixed and covered by regression tests.
+
 Formal milestone closure still requires:
 
 ```text
 fresh review of the final PR head
 clean permanent CI on that head
-resolution of any review findings
+resolution of all review threads
 merge of the C1 completion PR to main
 ```
 
