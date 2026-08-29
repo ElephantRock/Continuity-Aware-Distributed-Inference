@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from continuity.entities import ExecutionContext, PhaseStatus, PhaseType
@@ -66,3 +68,14 @@ def test_phase_origin_state_rejects_future_phase_dependency(core):
     core.create_state('late', origin_type='phase', origin_id='decode')
     with pytest.raises(SemanticViolation):
         core.create_state('invalid', origin_type='phase', origin_id='prefill', derived_from=['late'])
+
+
+def test_oracle_detects_corrupted_phase_dependency_temporal_inversion(core):
+    setup_attempt(core)
+    core.create_phase('prefill', 'a', PhaseType.PREFILL); core.set_phase_status('prefill', PhaseStatus.RUNNING); core.complete_phase('prefill')
+    core.create_phase('decode', 'a', PhaseType.DECODE); core.set_phase_status('decode', PhaseStatus.RUNNING); core.complete_phase('decode')
+    core.create_state('early', origin_type='phase', origin_id='prefill')
+    core.create_state('late', origin_type='phase', origin_id='decode')
+    core.states['early'] = replace(core.states['early'], derived_from=frozenset({'late'}))
+    with pytest.raises(AssertionError):
+        InvariantOracle(core).assert_all()
