@@ -1,0 +1,9 @@
+e(self, action: str, evidence_ids: Iterable[str], *, now: Optional[float] = None,
+                  required_scope: set[tuple[str,str]] | None = None) -> ReconcileOutcome:
+        evs=[self.evidence[eid] for eid in evidence_ids]
+        if any(e.status == EvidenceStatus.AMBIGUOUS for e in evs): return ReconcileOutcome.AMBIGUOUS
+        try:
+            self.require_evidence(action, evidence_ids, now=now, required_scope=required_scope)
+            return ReconcileOutcome.MATCHED
+        except InsufficientEvidence:
+            return ReconcileOutcome.WAIT
