@@ -1,0 +1,71 @@
+---
+
+# 5. Initial Test Result
+
+Command:
+
+```text
+python -m pytest
+```
+
+Result:
+
+```text
+13 passed
+```
+
+Covered cases include:
+
+```text
+late successful superseded Attempt
+tainted/stale Attempt finalization rejection
+completed output immutability
+wrong sibling State
+valid ancestor State
+superseded-producer State
+invalid logical State
+concurrent migration candidate fencing
+ambiguous Evidence fail-closed behavior
+insufficient estimated finalization Evidence
+tool-wait descendant creation
+exact State/Replica Evidence scope
+seeded operation-sequence fuzzing
+```
+
+---
+
+# 6. Deliberately Not Implemented in C1
+
+The initial kernel does not implement:
+
+```text
+queueing simulation
+network timing
+worker performance
+accelerator cost models
+public trace ingestion
+routing optimization
+retention optimization
+migration optimization
+Gateway API integration
+real distributed process execution
+```
+
+Those belong to C2 and later milestones.
+
+---
+
+# 7. C1 Next Steps
+
+Before C1 is considered complete, extend the deterministic artifact with:
+
+1. broader mandatory Failure Model trace coverage;
+2. larger adversarial sequence corpus;
+3. explicit event identity/idempotence model;
+4. Phase entities where needed for State production ordering;
+5. more independent oracle checks rather than implementation-self-checks;
+6. deterministic snapshots/replay;
+7. machine-readable semantic trace format;
+8. coverage mapping from every core invariant to at least one named test.
+
+Once these are complete, C1 can close and C2 discrete-event simulation can begin.
