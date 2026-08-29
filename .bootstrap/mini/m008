@@ -1,0 +1,53 @@
+: life = StateLifecycle.ACTIVE
+            elif StateLifecycle.WAITING in candidates: life = StateLifecycle.WAITING
+            elif StateLifecycle.SPECULATIVE in candidates: life = StateLifecycle.SPECULATIVE
+            self.states[sid] = replace(x, lifecycle=life)
+
+    def state_compatible(self, state_id: str, ctx: ExecutionContext) -> bool:
+        x = self.states[state_id]
+        if x.validity != StateValidity.VALID: return False
+        c = self.continuations[ctx.continuation_id]
+        s = self.sessions[c.session_id]
+        if s.id != ctx.session_id or s.program_id != ctx.program_id: return False
+        if not self.is_ancestor(x.origin_continuation_id, ctx.continuation_id): return False
+        if x.producer_attempt_id:
+            pa = self.attempts[x.producer_attempt_id]
+            if pa.authority_status == AttemptAuthority.SUPERSEDED: return False
+            if x.origin_request_id:
+                pr = self.requests[x.origin_request_id]
+                if pr.status == RequestStatus.COMPLETED:
+                    if pr.committed_attempt_id != pa.id: return False
+                else:
+                    if pa.id != ctx.attempt_id or pa.authority_status != AttemptAuthority.CURRENT: return False
+            elif pa.id != ctx.attempt_id or pa.authority_status != AttemptAuthority.CURRENT:
+                return False
+        return bool(self.semantic_validity(x, ctx))
+
+    def add_replica(self, id_: str, state_id: str, location_id: str, status: ReplicaStatus = ReplicaStatus.VALID) -> StateReplica:
+        self._unique(id_); self.states[state_id]
+        r = StateReplica(id_, state_id, location_id, status); self.replicas[id_] = r; return r
+
+    def set_replica_status(self, replica_id: str, status: ReplicaStatus) -> StateReplica:
+        r = replace(self.replicas[replica_id], status=status); self.replicas[replica_id] = r; return r
+
+    def can_consume_state(self, state_id: str, replica_id: str, ctx: ExecutionContext,
+                          evidence_ids: Iterable[str], now: Optional[float] = None) -> bool:
+        r = self.replicas[replica_id]
+        if r.state_id != state_id or r.status != ReplicaStatus.VALID: return False
+        if not self.state_compatible(state_id, ctx): return False
+        try:
+            self.require_evidence("consume_state", evidence_ids, now=now,
+                                  required_scope={("state", state_id), ("replica", replica_id)})
+        except InsufficientEvidence:
+            return False
+        return True
+
+    # ---------- binding / migration ----------
+    def propose_binding(self, id_: str, subject_id: str, location_id: str) -> Binding:
+        self._unique(id_)
+        base = self.current_epoch_by_subject.get(subject_id, 0)
+        last = self.last_allocated_epoch_by_subject.get(subject_id, base)
+        epoch = last + 1
+        self.last_allocated_epoch_by_subject[subject_id] = epoch
+        b = Binding(id_, subject_id, location_id, base, epoch, BindingStatus.PROPOSED)
+        self.bindi
