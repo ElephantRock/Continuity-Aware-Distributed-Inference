@@ -1,11 +1,21 @@
 import json
+import subprocess
+import sys
 from dataclasses import replace
+
 import pytest
 
 from continuity.core import ContinuityCore
 from continuity.entities import (
-    AttemptAuthority, Evidence, EvidenceAuthority, EvidenceStatus, ExecutionStatus, PhaseStatus, PhaseType,
+    AttemptAuthority,
+    Evidence,
+    EvidenceAuthority,
+    EvidenceStatus,
+    ExecutionStatus,
+    PhaseStatus,
+    PhaseType,
     SemanticEvent,
+    Session,
 )
 from continuity.invariants import InvariantOracle
 from continuity.serialization import (
@@ -128,3 +138,84 @@ def test_restore_rejects_snapshot_that_violates_invariant_oracle():
     snapshot = snapshot_core(core)
     with pytest.raises(ValueError, match='snapshot violates Continuity invariants'):
         restore_core(snapshot)
+
+
+@pytest.mark.parametrize('corruption', ['failed_attempt', 'nonterminal_output'])
+def test_restore_rechecks_completed_request_finalization_postconditions(
+    corruption, exact_evidence
+):
+    core = ContinuityCore()
+    core.create_program('p'); core.create_session('s', 'p'); core.create_continuation('c', 's')
+    core.create_request('r', 'c'); core.start_attempt('a', 'r'); core.complete_attempt('a', True)
+    exact_evidence(core, 'e', {('attempt', 'a')})
+    core.create_output('o', 'a', True, ['e'])
+    core.finalize_request('r', 'o', now=10)
+    if corruption == 'failed_attempt':
+        core.attempts['a'] = replace(
+            core.attempts['a'], execution_status=ExecutionStatus.FAILED
+        )
+    else:
+        core.outputs['o'] = replace(core.outputs['o'], terminal=False)
+    with pytest.raises(ValueError, match='snapshot violates Continuity invariants'):
+        restore_core(snapshot_core(core))
+
+
+def test_restore_rejects_wrong_entity_member_type():
+    core = ContinuityCore()
+    core.create_program('p')
+    payload = json.loads(snapshot_core(core))
+    payload['state']['programs'] = {'$dict': [['p', 'not-a-program']]}
+    with pytest.raises(ValueError, match='snapshot violates Continuity schema'):
+        restore_core(json.dumps(payload))
+
+
+def test_restore_rejects_wrong_enum_type_inside_entity():
+    core = ContinuityCore()
+    core.create_program('p')
+    payload = json.loads(snapshot_core(core))
+    program = payload['state']['programs']['$dict'][0][1]
+    program['fields']['status'] = {'$enum': 'RequestStatus', 'name': 'READY'}
+    with pytest.raises(ValueError, match='snapshot violates Continuity schema'):
+        restore_core(json.dumps(payload))
+
+
+def test_restore_rejects_cross_collection_global_id_reuse():
+    core = ContinuityCore()
+    core.create_program('p')
+    core.sessions['p'] = Session('p', 'p')
+    with pytest.raises(ValueError):
+        restore_core(snapshot_core(core))
+
+
+def test_restore_validation_survives_python_optimized_mode():
+    core = ContinuityCore()
+    core.create_program('p'); core.create_session('s', 'p'); core.create_continuation('c', 's')
+    core.create_request('r', 'c'); core.start_attempt('a1', 'r'); core.start_attempt('a2', 'r')
+    core.attempts['a1'] = replace(
+        core.attempts['a1'], authority_status=AttemptAuthority.CURRENT
+    )
+    snapshot = snapshot_core(core)
+    code = (
+        "import sys\n"
+        "from continuity.serialization import restore_core\n"
+        "try:\n"
+        "    restore_core(sys.stdin.read())\n"
+        "except ValueError:\n"
+        "    raise SystemExit(0)\n"
+        "raise SystemExit(1)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, '-O', '-c', code],
+        input=snapshot,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_invariant_oracle_contains_no_strippable_assert_nodes():
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path('continuity/invariants.py').read_text())
+    assert not any(isinstance(node, ast.Assert) for node in ast.walk(tree))
