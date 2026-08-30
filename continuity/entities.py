@@ -18,6 +18,12 @@ class ExecutionStatus(Enum):
 class AttemptAuthority(Enum):
     NONE = auto(); CURRENT = auto(); COMMITTED = auto(); SUPERSEDED = auto()
 
+class PhaseType(Enum):
+    PREFILL = auto(); DECODE = auto(); STATE_PULL = auto(); STATE_TRANSFER = auto(); OTHER = auto()
+
+class PhaseStatus(Enum):
+    CREATED = auto(); RUNNING = auto(); COMPLETED = auto(); FAILED = auto(); CANCELLED = auto()
+
 class StateLifecycle(Enum):
     ACTIVE = auto(); WAITING = auto(); SPECULATIVE = auto(); TERMINAL = auto()
 
@@ -41,6 +47,14 @@ class EvidenceStatus(Enum):
 
 class ReconcileOutcome(Enum):
     MATCHED = auto(); WAIT = auto(); RETRY = auto(); RECOMPUTE = auto(); MIGRATE = auto(); REJECT = auto(); REPAIR = auto(); FAIL = auto(); AMBIGUOUS = auto()
+
+@dataclass(frozen=True)
+class SemanticEvent:
+    id: str
+    kind: str
+    subject_type: str
+    subject_id: str
+    payload: FrozenSet[tuple[str, str]] = frozenset()
 
 @dataclass(frozen=True)
 class Program:
@@ -77,6 +91,14 @@ class Attempt:
     authority_status: AttemptAuthority = AttemptAuthority.NONE
 
 @dataclass(frozen=True)
+class Phase:
+    id: str
+    attempt_id: str
+    ordinal: int
+    phase_type: PhaseType
+    status: PhaseStatus = PhaseStatus.CREATED
+
+@dataclass(frozen=True)
 class ExecutionContext:
     program_id: str
     session_id: str
@@ -98,6 +120,7 @@ class ReusableState:
     lifecycle: StateLifecycle = StateLifecycle.TERMINAL
     validity: StateValidity = StateValidity.VALID
     derived_from: FrozenSet[str] = frozenset()
+    producer_phase_id: Optional[str] = None
 
 @dataclass(frozen=True)
 class StateReplica:
@@ -128,6 +151,8 @@ class Evidence:
     scope: FrozenSet[tuple[str, str]] = frozenset()
     valid_until: Optional[float] = None
     confidence: Optional[float] = None
+    derived_from: FrozenSet[str] = frozenset()
+    derivation_rule: Optional[str] = None
 
 @dataclass(frozen=True)
 class Output:
