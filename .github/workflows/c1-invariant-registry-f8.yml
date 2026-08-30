@@ -1,0 +1,68 @@
+name: c1-invariant-registry-f8
+
+on:
+  push:
+    branches: [c1/deterministic-core]
+    paths:
+      - .github/workflows/c1-invariant-registry-f8.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c1/deterministic-core
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Align registry with canonical invariant catalogue
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          registry_path = Path('spec/invariant-coverage.json')
+          registry = json.loads(registry_path.read_text())
+          registry['invariants']['F8'] = {
+              'title': 'Graph History Is Append/Annotate, Not Rewrite',
+              'tests': ['tests/invariants/test_catalogue_obligations.py::test_f8_logical_parent_and_origin_fields_are_immutable_values'],
+          }
+          registry_path.write_text(json.dumps(registry, indent=2, ensure_ascii=False) + '\n')
+
+          test_path = Path('tests/test_invariant_coverage_registry.py')
+          source = test_path.read_text()
+          start = source.index('EXPECTED_INVARIANTS = {')
+          end = source.index('\n\n\ndef load_registry', start)
+          replacement = '''def canonical_invariant_ids():\n    catalogue = Path('spec/03-invariants.md').read_text()\n    return set(re.findall(r'^# \\d+\\. ([A-F]\\d+) — ', catalogue, re.MULTILINE))'''
+          source = source[:start] + replacement + source[end:]
+          source = source.replace(
+              "    assert set(registry['invariants']) == EXPECTED_INVARIANTS\n    assert len(registry['invariants']) == 37\n",
+              "    expected = canonical_invariant_ids()\n    assert expected\n    assert set(registry['invariants']) == expected\n    assert len(registry['invariants']) == len(expected)\n",
+          )
+          test_path.write_text(source)
+
+          obligations = Path('tests/invariants/test_catalogue_obligations.py')
+          text = obligations.read_text()
+          text = text.replace('from dataclasses import replace\n', 'from dataclasses import FrozenInstanceError, replace\n', 1)
+          text += '''\n\ndef test_f8_logical_parent_and_origin_fields_are_immutable_values(core):\n    core.create_program('p')\n    core.create_session('s', 'p')\n    core.create_continuation('c', 's')\n    core.create_request('r', 'c')\n    attempt = core.start_attempt('a', 'r')\n    state = core.create_state('x', origin_type='continuation', origin_id='c')\n\n    with pytest.raises(FrozenInstanceError):\n        attempt.request_id = 'rewritten-request'\n    with pytest.raises(FrozenInstanceError):\n        state.origin_id = 'rewritten-origin'\n\n    assert core.attempts['a'].request_id == 'r'\n    assert core.states['x'].origin_id == 'c'\n    InvariantOracle(core).assert_all()\n'''
+          obligations.write_text(text)
+          PY
+      - name: Validate full C1 suite
+        run: |
+          python -m pip install --upgrade pip pytest
+          python -m pytest
+      - name: Commit validated registry fix and remove workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/c1-invariant-registry-f8.yml
+          git add spec/invariant-coverage.json tests/test_invariant_coverage_registry.py tests/invariants/test_catalogue_obligations.py
+          git commit -m "Cover canonical F8 invariant and derive registry IDs from spec"
+          git push origin HEAD:c1/deterministic-core
