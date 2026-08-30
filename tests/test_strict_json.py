@@ -19,7 +19,12 @@ def test_snapshot_rejects_non_finite_numbers(value):
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
 def test_operation_jsonl_rejects_non_finite_numbers(value):
-    op = SemanticOperation.build('op', 'finalize_request', request_id='r', output_id='o', now=value)
+    # Bypass SemanticOperation.build() deliberately so this test continues to
+    # exercise the canonical JSON emitter's allow_nan=False boundary.
+    op = SemanticOperation(
+        id='op', action='finalize_request',
+        arguments=(('now', value), ('output_id', 'o'), ('request_id', 'r')),
+    )
     with pytest.raises(ValueError):
         operations_to_jsonl([op])
 
