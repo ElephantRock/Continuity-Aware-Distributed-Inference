@@ -112,8 +112,11 @@ class InvariantOracle:
             return
         if x.origin_type == "request":
             request = self.c.requests[x.origin_id]
+            assert request.status == RequestStatus.COMPLETED
+            assert request.committed_attempt_id is not None
             assert x.origin_request_id == request.id
             assert x.origin_continuation_id == request.continuation_id
+            assert x.producer_attempt_id == request.committed_attempt_id
             assert x.producer_phase_id is None
             return
         if x.origin_type == "attempt":

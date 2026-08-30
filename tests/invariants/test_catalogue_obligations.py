@@ -136,3 +136,25 @@ def test_oracle_rejects_mismatched_declared_phase_origin(core):
     core.states['x'] = replace(core.states['x'], origin_id='p2')
     with pytest.raises(AssertionError):
         InvariantOracle(core).assert_all()
+
+
+def test_request_origin_state_requires_completed_request(core):
+    core.create_program('p'); core.create_session('s', 'p'); core.create_continuation('c', 's')
+    core.create_request('r', 'c'); core.start_attempt('a', 'r')
+    with pytest.raises(SemanticViolation):
+        core.create_state('x', origin_type='request', origin_id='r')
+
+
+def test_oracle_rejects_request_origin_wrong_committed_producer(core, exact_evidence):
+    from continuity.entities import ExecutionStatus
+    core.create_program('p'); core.create_session('s', 'p'); core.create_continuation('c', 's')
+    core.create_request('r', 'c')
+    core.start_attempt('a1', 'r')
+    core.start_attempt('a2', 'r'); core.complete_attempt('a2', True)
+    exact_evidence(core, 'e2', {('attempt', 'a2')})
+    core.create_output('o2', 'a2', True, ['e2']); core.finalize_request('r', 'o2', now=10)
+    state = core.create_state('x', origin_type='request', origin_id='r')
+    assert state.producer_attempt_id == 'a2'
+    core.states['x'] = replace(core.states['x'], producer_attempt_id='a1')
+    with pytest.raises(AssertionError):
+        InvariantOracle(core).assert_all()

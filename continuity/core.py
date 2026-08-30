@@ -238,7 +238,10 @@ class ContinuityCore:
         if origin_type == "continuation":
             c = self.continuations[origin_id]; return c.id, None, None, None
         if origin_type == "request":
-            r = self.requests[origin_id]; return r.continuation_id, r.id, r.committed_attempt_id, None
+            r = self.requests[origin_id]
+            if r.status != RequestStatus.COMPLETED or r.committed_attempt_id is None:
+                raise SemanticViolation("request-origin State requires a COMPLETED request with a committed Attempt")
+            return r.continuation_id, r.id, r.committed_attempt_id, None
         if origin_type == "attempt":
             a = self.attempts[origin_id]; r = self.requests[a.request_id]; return r.continuation_id, r.id, a.id, None
         if origin_type == "phase":
