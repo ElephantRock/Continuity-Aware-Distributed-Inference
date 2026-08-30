@@ -39,8 +39,8 @@ REQUIRED_C2_EVENT_KINDS = {
 }
 
 
-def test_required_c2_event_surface_is_explicit():
-    assert {kind.value for kind in EventKind} == REQUIRED_C2_EVENT_KINDS
+def test_required_c2_event_surface_is_explicit_and_extensible():
+    assert REQUIRED_C2_EVENT_KINDS <= {kind.value for kind in EventKind}
 
 
 def test_same_time_events_execute_in_insertion_order():

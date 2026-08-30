@@ -20,6 +20,7 @@ class EventKind(str, Enum):
     STATE_MATERIALIZED = "STATE_MATERIALIZED"
     STATE_TRANSFER_STARTED = "STATE_TRANSFER_STARTED"
     STATE_TRANSFER_COMPLETED = "STATE_TRANSFER_COMPLETED"
+    STATE_TRANSFER_FAILED = "STATE_TRANSFER_FAILED"
     STATE_MOVED = "STATE_MOVED"
     STATE_EVICTED = "STATE_EVICTED"
     STATE_LOST = "STATE_LOST"
@@ -30,6 +31,9 @@ class EventKind(str, Enum):
 
     WORKER_FAILED = "WORKER_FAILED"
     WORKER_RECOVERED = "WORKER_RECOVERED"
+    WORKER_TASK_ENQUEUED = "WORKER_TASK_ENQUEUED"
+    WORKER_TASK_COMPLETED = "WORKER_TASK_COMPLETED"
+    WORKER_TASK_FAILED = "WORKER_TASK_FAILED"
 
     OBSERVATION_CREATED = "OBSERVATION_CREATED"
     OBSERVATION_DELAYED = "OBSERVATION_DELAYED"
@@ -70,8 +74,7 @@ def freeze_payload(payload: Mapping[str, Any] | None) -> tuple[tuple[str, Any], 
         return ()
     if not isinstance(payload, Mapping):
         raise TypeError("event payload must be a string-keyed mapping")
-    frozen = _freeze_value(payload)
-    return frozen
+    return _freeze_value(payload)
 
 
 @dataclass(frozen=True, order=True, slots=True)
