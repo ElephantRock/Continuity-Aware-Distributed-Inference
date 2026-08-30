@@ -1,6 +1,22 @@
 from __future__ import annotations
+
 from .core import ContinuityCore
-from .entities import AttemptAuthority, BindingStatus, EvidenceAuthority, EvidenceStatus, RequestStatus, StateValidity
+from .entities import (
+    AttemptAuthority,
+    BindingStatus,
+    EvidenceAuthority,
+    EvidenceStatus,
+    ExecutionStatus,
+    RequestStatus,
+    StateValidity,
+)
+
+
+def _require(condition, message=None):
+    """Non-strippable invariant check used by the independent oracle."""
+    if not condition:
+        raise AssertionError(message or "Continuity invariant violation")
+
 
 class InvariantOracle:
     """Independent structural checks over normalized core state."""
@@ -9,6 +25,7 @@ class InvariantOracle:
         self.c = core
 
     def assert_all(self) -> None:
+        self._global_identity_uniqueness()
         self._parent_scopes()
         self._attempt_authority()
         self._attempt_generations()
@@ -24,184 +41,239 @@ class InvariantOracle:
         self._output_integrity()
         self._state_validity()
 
+    def _global_identity_uniqueness(self):
+        collections = (
+            self.c.programs,
+            self.c.sessions,
+            self.c.continuations,
+            self.c.requests,
+            self.c.attempts,
+            self.c.phases,
+            self.c.states,
+            self.c.replicas,
+            self.c.bindings,
+            self.c.evidence,
+            self.c.outputs,
+            self.c.events,
+        )
+        seen = set()
+        for collection in collections:
+            for key, entity in collection.items():
+                _require(entity.id == key)
+                _require(key not in seen)
+                seen.add(key)
+
     def _parent_scopes(self):
         for session in self.c.sessions.values():
-            assert session.program_id in self.c.programs
+            _require(session.program_id in self.c.programs)
         for continuation in self.c.continuations.values():
-            assert continuation.session_id in self.c.sessions
+            _require(continuation.session_id in self.c.sessions)
             for parent_id in continuation.parent_ids:
                 parent = self.c.continuations[parent_id]
-                assert parent.session_id == continuation.session_id
+                _require(parent.session_id == continuation.session_id)
         for request in self.c.requests.values():
-            assert request.continuation_id in self.c.continuations
+            _require(request.continuation_id in self.c.continuations)
         for attempt in self.c.attempts.values():
-            assert attempt.request_id in self.c.requests
+            _require(attempt.request_id in self.c.requests)
         for phase in self.c.phases.values():
-            assert phase.attempt_id in self.c.attempts
+            _require(phase.attempt_id in self.c.attempts)
 
     def _attempt_authority(self):
-        for rid, r in self.c.requests.items():
-            current=[a for a in self.c.attempts.values() if a.request_id==rid and a.authority_status==AttemptAuthority.CURRENT]
-            committed=[a for a in self.c.attempts.values() if a.request_id==rid and a.authority_status==AttemptAuthority.COMMITTED]
-            assert len(current) <= 1
-            assert len(committed) <= 1
-            if r.current_attempt_id is None: assert not current
-            else: assert len(current)==1 and current[0].id==r.current_attempt_id
-            if r.committed_attempt_id is None: assert not committed
-            else: assert len(committed)==1 and committed[0].id==r.committed_attempt_id
-            for a in self.c.attempts.values():
-                if a.request_id==rid and a.authority_status==AttemptAuthority.SUPERSEDED:
-                    assert a.id != r.current_attempt_id and a.id != r.committed_attempt_id
+        for rid, request in self.c.requests.items():
+            current = [
+                attempt for attempt in self.c.attempts.values()
+                if attempt.request_id == rid and attempt.authority_status == AttemptAuthority.CURRENT
+            ]
+            committed = [
+                attempt for attempt in self.c.attempts.values()
+                if attempt.request_id == rid and attempt.authority_status == AttemptAuthority.COMMITTED
+            ]
+            _require(len(current) <= 1)
+            _require(len(committed) <= 1)
+            if request.current_attempt_id is None:
+                _require(not current)
+            else:
+                _require(len(current) == 1 and current[0].id == request.current_attempt_id)
+            if request.committed_attempt_id is None:
+                _require(not committed)
+            else:
+                _require(len(committed) == 1 and committed[0].id == request.committed_attempt_id)
+            for attempt in self.c.attempts.values():
+                if attempt.request_id == rid and attempt.authority_status == AttemptAuthority.SUPERSEDED:
+                    _require(attempt.id != request.current_attempt_id)
+                    _require(attempt.id != request.committed_attempt_id)
 
     def _attempt_generations(self):
         for request_id in self.c.requests:
             attempts = [a for a in self.c.attempts.values() if a.request_id == request_id]
             generations = sorted(a.generation for a in attempts)
-            assert generations == list(range(1, len(attempts) + 1))
+            _require(generations == list(range(1, len(attempts) + 1)))
 
     def _request_commit_consistency(self):
-        for r in self.c.requests.values():
-            if r.status == RequestStatus.COMPLETED:
-                assert r.current_attempt_id is None
-                assert r.committed_attempt_id is not None
-                assert r.authoritative_output_id is not None
-                assert self.c.outputs[r.authoritative_output_id].attempt_id == r.committed_attempt_id
+        for request in self.c.requests.values():
+            if request.status == RequestStatus.COMPLETED:
+                _require(request.current_attempt_id is None)
+                _require(request.committed_attempt_id is not None)
+                _require(request.authoritative_output_id is not None)
+                attempt = self.c.attempts[request.committed_attempt_id]
+                output = self.c.outputs[request.authoritative_output_id]
+                _require(attempt.request_id == request.id)
+                _require(attempt.authority_status == AttemptAuthority.COMMITTED)
+                _require(attempt.execution_status == ExecutionStatus.SUCCEEDED)
+                _require(output.attempt_id == request.committed_attempt_id)
+                _require(output.terminal)
 
     def _continuation_dags(self):
-        for sid in self.c.sessions:
-            assert not self.c._has_cycle(sid)
+        for session_id in self.c.sessions:
+            _require(not self.c._has_cycle(session_id))
 
     def _phase_ordering(self):
         for attempt_id in self.c.attempts:
-            phases = sorted((p for p in self.c.phases.values() if p.attempt_id == attempt_id), key=lambda p: p.ordinal)
-            assert [p.ordinal for p in phases] == list(range(1, len(phases) + 1))
-            assert all(p.attempt_id == attempt_id for p in phases)
+            phases = sorted(
+                (p for p in self.c.phases.values() if p.attempt_id == attempt_id),
+                key=lambda p: p.ordinal,
+            )
+            _require([p.ordinal for p in phases] == list(range(1, len(phases) + 1)))
+            _require(all(p.attempt_id == attempt_id for p in phases))
 
     def _state_provenance(self):
-        assert not self.c._state_cycle()
-        for x in self.c.states.values():
-            assert x.origin_continuation_id in self.c.continuations
-            self._declared_state_origin(x)
-            for dependency_id in x.derived_from:
+        _require(not self.c._state_cycle())
+        for state in self.c.states.values():
+            _require(state.origin_continuation_id in self.c.continuations)
+            self._declared_state_origin(state)
+            for dependency_id in state.derived_from:
                 dependency = self.c.states[dependency_id]
-                assert self.c.is_ancestor(dependency.origin_continuation_id, x.origin_continuation_id)
+                _require(
+                    self.c.is_ancestor(
+                        dependency.origin_continuation_id,
+                        state.origin_continuation_id,
+                    )
+                )
                 if (
-                    x.producer_phase_id
+                    state.producer_phase_id
                     and dependency.producer_phase_id
-                    and dependency.producer_attempt_id == x.producer_attempt_id
+                    and dependency.producer_attempt_id == state.producer_attempt_id
                 ):
-                    producer_phase = self.c.phases[x.producer_phase_id]
+                    producer_phase = self.c.phases[state.producer_phase_id]
                     dependency_phase = self.c.phases[dependency.producer_phase_id]
-                    assert dependency_phase.ordinal < producer_phase.ordinal
-            if x.producer_attempt_id:
-                a=self.c.attempts[x.producer_attempt_id]
-                if x.origin_request_id:
-                    assert a.request_id == x.origin_request_id
-            if x.producer_phase_id:
-                phase = self.c.phases[x.producer_phase_id]
-                assert phase.attempt_id == x.producer_attempt_id
-                assert phase.status.name == "COMPLETED"
+                    _require(dependency_phase.ordinal < producer_phase.ordinal)
+            if state.producer_attempt_id:
+                attempt = self.c.attempts[state.producer_attempt_id]
+                if state.origin_request_id:
+                    _require(attempt.request_id == state.origin_request_id)
+            if state.producer_phase_id:
+                phase = self.c.phases[state.producer_phase_id]
+                _require(phase.attempt_id == state.producer_attempt_id)
+                _require(phase.status.name == "COMPLETED")
 
-    def _declared_state_origin(self, x):
-        if x.origin_type == "continuation":
-            continuation = self.c.continuations[x.origin_id]
-            assert x.origin_continuation_id == continuation.id
-            assert x.origin_request_id is None
-            assert x.producer_attempt_id is None
-            assert x.producer_phase_id is None
+    def _declared_state_origin(self, state):
+        if state.origin_type == "continuation":
+            continuation = self.c.continuations[state.origin_id]
+            _require(state.origin_continuation_id == continuation.id)
+            _require(state.origin_request_id is None)
+            _require(state.producer_attempt_id is None)
+            _require(state.producer_phase_id is None)
             return
-        if x.origin_type == "request":
-            request = self.c.requests[x.origin_id]
-            assert request.status == RequestStatus.COMPLETED
-            assert request.committed_attempt_id is not None
-            assert x.origin_request_id == request.id
-            assert x.origin_continuation_id == request.continuation_id
-            assert x.producer_attempt_id == request.committed_attempt_id
-            assert x.producer_phase_id is None
+        if state.origin_type == "request":
+            request = self.c.requests[state.origin_id]
+            _require(request.status == RequestStatus.COMPLETED)
+            _require(request.committed_attempt_id is not None)
+            _require(state.origin_request_id == request.id)
+            _require(state.origin_continuation_id == request.continuation_id)
+            _require(state.producer_attempt_id == request.committed_attempt_id)
+            _require(state.producer_phase_id is None)
             return
-        if x.origin_type == "attempt":
-            attempt = self.c.attempts[x.origin_id]
+        if state.origin_type == "attempt":
+            attempt = self.c.attempts[state.origin_id]
             request = self.c.requests[attempt.request_id]
-            assert x.producer_attempt_id == attempt.id
-            assert x.origin_request_id == request.id
-            assert x.origin_continuation_id == request.continuation_id
-            assert x.producer_phase_id is None
+            _require(state.producer_attempt_id == attempt.id)
+            _require(state.origin_request_id == request.id)
+            _require(state.origin_continuation_id == request.continuation_id)
+            _require(state.producer_phase_id is None)
             return
-        if x.origin_type == "phase":
-            phase = self.c.phases[x.origin_id]
+        if state.origin_type == "phase":
+            phase = self.c.phases[state.origin_id]
             attempt = self.c.attempts[phase.attempt_id]
             request = self.c.requests[attempt.request_id]
-            assert x.producer_phase_id == phase.id
-            assert x.producer_attempt_id == attempt.id
-            assert x.origin_request_id == request.id
-            assert x.origin_continuation_id == request.continuation_id
+            _require(state.producer_phase_id == phase.id)
+            _require(state.producer_attempt_id == attempt.id)
+            _require(state.origin_request_id == request.id)
+            _require(state.origin_continuation_id == request.continuation_id)
             return
-        raise AssertionError(f"unsupported State origin_type: {x.origin_type}")
+        raise AssertionError(f"unsupported State origin_type: {state.origin_type}")
 
     def _replica_integrity(self):
         for replica in self.c.replicas.values():
-            assert replica.state_id in self.c.states
+            _require(replica.state_id in self.c.states)
             if replica.binding_id is not None:
                 binding = self.c.bindings[replica.binding_id]
-                assert replica.binding_epoch == binding.epoch
+                _require(replica.binding_epoch == binding.epoch)
 
     def _binding_authority(self):
-        for subj,bid in self.c.current_binding_by_subject.items():
-            b=self.c.bindings[bid]
-            assert b.subject_id==subj
-            assert b.status==BindingStatus.ACTIVE
-            assert self.c.current_epoch_by_subject[subj]==b.epoch
-        for b in self.c.bindings.values():
-            if b.status==BindingStatus.ACTIVE:
-                assert self.c.current_binding_by_subject.get(b.subject_id)==b.id
+        for subject, binding_id in self.c.current_binding_by_subject.items():
+            binding = self.c.bindings[binding_id]
+            _require(binding.subject_id == subject)
+            _require(binding.status == BindingStatus.ACTIVE)
+            _require(self.c.current_epoch_by_subject[subject] == binding.epoch)
+        for binding in self.c.bindings.values():
+            if binding.status == BindingStatus.ACTIVE:
+                _require(self.c.current_binding_by_subject.get(binding.subject_id) == binding.id)
 
     def _binding_generations(self):
         by_subject = {}
         for binding in self.c.bindings.values():
             by_subject.setdefault(binding.subject_id, []).append(binding)
-            assert binding.epoch > binding.base_epoch
+            _require(binding.epoch > binding.base_epoch)
         for subject, bindings in by_subject.items():
-            epochs = [b.epoch for b in bindings]
-            assert len(epochs) == len(set(epochs))
-            assert self.c.last_allocated_epoch_by_subject[subject] == max(epochs)
+            epochs = [binding.epoch for binding in bindings]
+            _require(len(epochs) == len(set(epochs)))
+            _require(self.c.last_allocated_epoch_by_subject[subject] == max(epochs))
             current_epoch = self.c.current_epoch_by_subject.get(subject)
             if current_epoch is not None:
-                assert current_epoch in epochs
+                _require(current_epoch in epochs)
 
     def _evidence_derivation(self):
         for evidence in self.c.evidence.values():
             has_derivation = bool(evidence.derived_from or evidence.derivation_rule)
             if evidence.authority == EvidenceAuthority.DERIVED:
-                assert evidence.derived_from
-                assert evidence.derivation_rule
+                _require(evidence.derived_from)
+                _require(evidence.derivation_rule)
             else:
-                assert not has_derivation
+                _require(not has_derivation)
             if evidence.derived_from:
                 supports = [self.c.evidence[eid] for eid in evidence.derived_from]
                 union_scope = set().union(*(set(s.scope) for s in supports)) if supports else set()
-                assert set(evidence.scope).issubset(union_scope)
+                _require(set(evidence.scope).issubset(union_scope))
                 if evidence.status == EvidenceStatus.VALID:
-                    assert all(s.status == EvidenceStatus.VALID for s in supports)
+                    _require(all(s.status == EvidenceStatus.VALID for s in supports))
 
     def _event_identity(self):
-        assert len(self.c.event_order) == len(set(self.c.event_order))
-        assert set(self.c.event_order) == set(self.c.events)
+        _require(len(self.c.event_order) == len(set(self.c.event_order)))
+        _require(set(self.c.event_order) == set(self.c.events))
         for event_id in self.c.event_order:
-            assert self.c.events[event_id].id == event_id
+            _require(self.c.events[event_id].id == event_id)
 
     def _output_integrity(self):
         for output in self.c.outputs.values():
-            assert output.attempt_id in self.c.attempts
+            _require(output.attempt_id in self.c.attempts)
             for evidence_id in output.evidence_ids:
-                assert evidence_id in self.c.evidence
+                _require(evidence_id in self.c.evidence)
 
     def _state_validity(self):
-        for x in self.c.states.values():
-            if x.validity == StateValidity.INVALID:
-                # Oracle checks that invalid logical state is never claimed as compatible with any known context.
-                for r in self.c.requests.values():
-                    if r.current_attempt_id:
-                        c=self.c.continuations[r.continuation_id]; s=self.c.sessions[c.session_id]
-                        ctx=__import__('continuity.entities',fromlist=['ExecutionContext']).ExecutionContext(
-                            s.program_id,s.id,c.id,r.id,r.current_attempt_id)
-                        assert not self.c.state_compatible(x.id,ctx)
+        for state in self.c.states.values():
+            if state.validity == StateValidity.INVALID:
+                for request in self.c.requests.values():
+                    if request.current_attempt_id:
+                        continuation = self.c.continuations[request.continuation_id]
+                        session = self.c.sessions[continuation.session_id]
+                        context = __import__(
+                            "continuity.entities",
+                            fromlist=["ExecutionContext"],
+                        ).ExecutionContext(
+                            session.program_id,
+                            session.id,
+                            continuation.id,
+                            request.id,
+                            request.current_attempt_id,
+                        )
+                        _require(not self.c.state_compatible(state.id, context))
