@@ -365,7 +365,7 @@ Serialization is deterministic and canonical. Canonical JSON serialization rejec
 
 A SHA-256 snapshot fingerprint is available for semantic-state equivalence checks.
 
-Snapshot restore must reproduce the same canonical snapshot and satisfy the independent invariant oracle.
+Snapshot restore must reproduce the same canonical snapshot and satisfy the independent invariant oracle. `restore_core` validates the independent oracle before returning a live core and rejects invariant-invalid persisted state.
 
 External representation-specific `SemanticValidity` callables are intentionally not serialized and must be supplied again by the embedding adapter when required.
 
@@ -409,7 +409,7 @@ Duplicate operation identities within a trace are rejected rather than treated a
 
 Time-sensitive replay actions are deterministic by construction: replayed `finalize_request` and `commit_migration` operations must carry an explicit `now` argument. Replay rejects those actions when replay time is omitted rather than falling back to wall-clock time.
 
-Two fresh cores replaying the same valid operation trace must therefore produce identical canonical snapshots and identical snapshot fingerprints independently of when replay occurs. Event and Operation JSONL use the same strict finite-number canonical JSON rule.
+Two fresh cores replaying the same valid operation trace must therefore produce identical canonical snapshots and identical snapshot fingerprints independently of when replay occurs. Event and Operation JSONL use the same strict finite-number canonical JSON rule. Snapshot, Event JSONL, and Operation JSONL ingress likewise reject non-finite JSON constants before decoding or replay.
 
 This distinction keeps:
 
@@ -574,7 +574,7 @@ Python 3.13
 Latest completion-candidate result after all review fixes:
 
 ```text
-128 passed
+134 passed
 ```
 
 The final review-regression set verifies that:
@@ -589,7 +589,9 @@ The final review-regression set verifies that:
 - the independent oracle rejects a Phase-origin State whose declared `origin_id` disagrees with its cached producer Phase;
 - request-origin State is rejected before request completion, and the oracle rejects a request-origin State whose cached producer differs from `CommittedAttempt(request)`;
 - a superseded Attempt cannot authoritatively complete a Phase or produce new Attempt-/Phase-origin State;
-- canonical snapshots and Operation JSONL reject `NaN`, `+Infinity`, and `-Infinity`.
+- canonical snapshots and Operation JSONL reject `NaN`, `+Infinity`, and `-Infinity`;
+- snapshot, Event JSONL, and Operation JSONL parsers reject externally supplied non-finite constants;
+- `restore_core` rejects snapshots that violate the independent invariant oracle before exposing a live core.
 
 The full suite includes:
 
@@ -629,7 +631,7 @@ The eight planned C1 exit artifacts are now implemented:
 
 Implementation exit criteria are therefore satisfied.
 
-Codex review identified seven correctness inconsistencies during closure:
+Codex review identified nine correctness inconsistencies during closure:
 
 1. wall-clock-dependent time-sensitive operation replay;
 2. missing independent Phase-dependency ordering validation in restored/corrupted State provenance;
@@ -637,9 +639,11 @@ Codex review identified seven correctness inconsistencies during closure:
 4. restored/corrupted State could declare one Phase origin while carrying cached producer provenance from another Phase;
 5. request-origin State producer identity was ambiguous unless request completion was made a precondition;
 6. delayed Phase completion after Attempt supersession could still mutate semantic state and enable new State production;
-7. canonical JSON/JSONL serialization could emit non-standard `NaN`/`Infinity` tokens.
+7. canonical JSON/JSONL serialization could emit non-standard `NaN`/`Infinity` tokens;
+8. external JSON/JSONL parsing accepted non-finite constants that could bypass freshness semantics;
+9. snapshot restoration could expose invariant-invalid persisted state without running the independent oracle.
 
-All seven are fixed and covered by regression tests.
+All nine are fixed and covered by regression tests.
 
 Formal milestone closure still requires:
 
