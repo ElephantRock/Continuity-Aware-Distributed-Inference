@@ -10,7 +10,7 @@
 - **C1 validation:** 157 deterministic/invariant/adversarial tests passing; permanent CI covers Python 3.11, 3.12, and 3.13
 - **C1 closure review:** fifteen substantive Codex correctness/consistency findings plus two independent closure-audit findings fixed and regression-tested; all review threads resolved
 - **Final Codex rerun:** requested on the prior exact head but unavailable because the GitHub Codex integration reached its code-review usage limit; this is recorded as a tooling/quota limitation, not a successful review
-- **C2 simulator / performance modeling:** not started; the merged C1 semantic baseline is now available for C2
+- **C2 Discrete-Event Simulator:** **IN PROGRESS** — C2.1 event kernel CLOSED via PR #14 / `f4e854fa930b09c27d2ea2bea9ecbca04b7ff00d`; C2.2 resource model is next
 
 The repository is the canonical system of record for the project.
 
@@ -66,7 +66,8 @@ The deterministic core now includes:
 ```text
 spec/               canonical research specification, coverage registry, milestone records
 continuity/         deterministic semantic kernel, serialization, replay
-tests/              invariant, failure-trace, replay, and adversarial tests
+simulator/          deterministic C2 event/resource simulation substrate
+tests/              invariant, failure-trace, replay, simulator, and adversarial tests
 .github/workflows/  reproducibility / CI
 ```
 

@@ -4,7 +4,7 @@
 **Project:** Continuity-Aware Distributed Inference  
 **Milestone:** C2 — Discrete-Event Simulator  
 **Prerequisite:** C1 CLOSED on `main`  
-**Status:** IN PROGRESS — C2.1 event kernel
+**Status:** IN PROGRESS — C2.1 CLOSED; C2.2 resource model next
 
 ---
 
@@ -318,6 +318,22 @@ immutable/canonical payload conversion
 
 All existing C1 tests must continue passing unchanged.
 
+## C2.1 closure result
+
+C2.1 closed on 2026-08-30 when PR #14 was squash-merged to `main` as `f4e854fa930b09c27d2ea2bea9ecbca04b7ff00d`. The final PR head `d2a3ebba8e119331f21958b828a2d08605a4c6a4` passed the full repository suite on Python 3.11, 3.12, and 3.13 with:
+
+```text
+169 passed
+```
+
+A bounded exact-delta review found and fixed three event-kernel defects before merge:
+
+1. rejected scheduling consumed sequence numbers and shifted later automatic EventIDs;
+2. `max_events` could fail to remain the actual stop condition when queue exhaustion coincided with an `until` horizon;
+3. top-level payload validation did not enforce the documented string-keyed mapping boundary.
+
+Rejected scheduling is now side-effect-free, `max_events` is a strict stop condition, and top-level payloads must be mappings. All three are regression-tested.
+
 ---
 
 # 9. C2.2 Resource Model
@@ -470,8 +486,8 @@ Those remain C3–C7.
 ```text
 C1   CLOSED
 C2   IN PROGRESS
-C2.1 event kernel       implementation candidate
-C2.2 resource model     not started
+C2.1 event kernel       CLOSED — PR #14 / f4e854fa930b09c27d2ea2bea9ecbca04b7ff00d
+C2.2 resource model     next / not yet implemented
 C2.3 semantic adapter   not started
 C2.4 fault injection    not started
 C2.5 representability   not started
