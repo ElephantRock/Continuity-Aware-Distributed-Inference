@@ -103,6 +103,15 @@ def test_max_events_stops_without_artificial_clock_advance():
     assert sim.pending_events == (second,)
 
 
+def test_max_events_is_a_stop_condition_even_when_queue_becomes_empty():
+    sim = DiscreteEventSimulator()
+    only = sim.schedule(EventKind.REQUEST_CREATED, at=1)
+
+    assert sim.run(until=10, max_events=1) == (only,)
+    assert sim.now == 1.0
+    assert sim.pending_events == ()
+
+
 def test_same_seed_reproduces_random_draws_and_scheduled_trace():
     def build(seed):
         sim = DiscreteEventSimulator(seed=seed)
@@ -128,6 +137,21 @@ def test_event_ids_are_globally_unique_within_a_simulation():
     sim.schedule(EventKind.REQUEST_CREATED, event_id="same")
     with pytest.raises(ValueError, match="duplicate simulator event_id"):
         sim.schedule(EventKind.REQUEST_CREATED, event_id="same")
+
+
+def test_rejected_schedule_is_side_effect_free_for_sequence_and_auto_id():
+    sim = DiscreteEventSimulator()
+    first = sim.schedule(EventKind.REQUEST_CREATED, event_id="first")
+    assert first.sequence == 0
+
+    with pytest.raises(ValueError, match="duplicate simulator event_id"):
+        sim.schedule(EventKind.REQUEST_CREATED, event_id="first")
+    with pytest.raises(TypeError, match="string-keyed mapping"):
+        sim.schedule(EventKind.REQUEST_CREATED, payload=("not", "a", "mapping"))
+
+    second = sim.schedule(EventKind.ATTEMPT_STARTED)
+    assert second.sequence == 1
+    assert second.event_id == "event-00000001"
 
 
 def test_scheduler_rejects_time_regression_and_nonfinite_values():

@@ -4,7 +4,7 @@ import heapq
 import math
 import random
 from collections import defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from .events import EventKind, SimEvent, freeze_payload
@@ -55,7 +55,7 @@ class DiscreteEventSimulator:
         at: float | None = None,
         delay: float | None = None,
         event_id: str | None = None,
-        payload: dict[str, Any] | None = None,
+        payload: Mapping[str, Any] | None = None,
     ) -> SimEvent:
         if not isinstance(kind, EventKind):
             raise TypeError("kind must be EventKind")
@@ -70,20 +70,22 @@ class DiscreteEventSimulator:
                 raise ValueError("cannot schedule an event in the simulated past")
 
         sequence = self._next_sequence
-        self._next_sequence += 1
         actual_id = event_id if event_id is not None else f"event-{sequence:08d}"
         if not isinstance(actual_id, str) or not actual_id:
             raise ValueError("event_id must be a non-empty string")
         if actual_id in self._known_ids:
             raise ValueError(f"duplicate simulator event_id: {actual_id}")
 
+        frozen_payload = freeze_payload(payload)
         event = SimEvent(
             time=event_time,
             sequence=sequence,
             event_id=actual_id,
             kind=kind,
-            payload=freeze_payload(payload),
+            payload=frozen_payload,
         )
+
+        self._next_sequence += 1
         self._known_ids.add(actual_id)
         self._pending_ids.add(actual_id)
         heapq.heappush(self._queue, event)
@@ -117,9 +119,6 @@ class DiscreteEventSimulator:
             event = self._queue[0]
             if horizon is not None and event.time > horizon:
                 break
-            if max_events is not None and processed >= max_events:
-                hit_limit = True
-                break
 
             event = heapq.heappop(self._queue)
             self._pending_ids.discard(event.event_id)
@@ -135,6 +134,10 @@ class DiscreteEventSimulator:
 
             for handler in tuple(self._handlers.get(event.kind, ())):
                 handler(self, event)
+
+            if max_events is not None and processed >= max_events:
+                hit_limit = True
+                break
 
         if horizon is not None and not hit_limit and self.now < horizon:
             self.now = horizon

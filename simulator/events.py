@@ -68,9 +68,9 @@ def _freeze_value(value: Any) -> Any:
 def freeze_payload(payload: Mapping[str, Any] | None) -> tuple[tuple[str, Any], ...]:
     if payload is None:
         return ()
+    if not isinstance(payload, Mapping):
+        raise TypeError("event payload must be a string-keyed mapping")
     frozen = _freeze_value(payload)
-    if not isinstance(frozen, tuple):
-        raise TypeError("event payload must be a mapping")
     return frozen
 
 
