@@ -4,7 +4,7 @@
 **Project:** Continuity-Aware Distributed Inference  
 **Milestone:** C2.4 — Deterministic and Probabilistic Fault Injection  
 **Prerequisite:** C2.3 CLOSED on `main` via PR #16 / `e1ff3e7c3f63a12755d519b6061ad7fc2feecfb6`  
-**Status:** IN PROGRESS — C2.4.1 implementation candidate
+**Status:** IN PROGRESS — C2.4.1 CLOSED; C2.4.2 implementation candidate
 
 ---
 
@@ -36,8 +36,8 @@ Tracking:
 
 ```text
 #10  C2.4 umbrella
-#18  C2.4.1 fault metadata + delivery/resource transformation substrate
-#19  C2.4.2 mandatory failure-class injectors + semantic outcome linkage
+#18  C2.4.1 fault metadata + delivery/resource transformation substrate — CLOSED
+#19  C2.4.2 mandatory failure-class injectors + semantic outcome linkage — ACTIVE
 #20  C2.4.3 probabilistic campaign manifests + replay/reuse contract
 #21  C2.4.4 injector trust oracle + closure review
 #22  C2.4.5 post-merge documentation synchronization
@@ -67,7 +67,7 @@ optional probabilistic seed
 optional probabilistic draw
 ```
 
-The first fault classes are:
+C2.4.1 fault classes are:
 
 ```text
 DELIVERY_DELAY
@@ -79,6 +79,8 @@ REPLICA_LOSS
 ```
 
 These are simulator/physical facts, not semantic authority claims.
+
+`expected_safe_outcomes` are simulator-level analysis labels. They are not asserted to be members of the C1 `ReconcileOutcome` enum.
 
 ---
 
@@ -174,74 +176,255 @@ Current checks include:
 
 ```text
 cancelled delivery did not execute or remain pending
-fault-produced event remains pending or appears in trace
+fault-produced event remains pending, appears in trace, or is explicitly cancelled by a later fault
 reordered replacement executes after its anchor when both execute
-executed worker-failure event leaves Worker DOWN
+executed worker-failure event leaves Worker DOWN unless a later recovery occurs
 executed replica-loss event leaves ReplicaRuntime LOST
+executed replica-eviction event leaves ReplicaRuntime EVICTED
 ```
 
-The oracle deliberately validates injected physical truth only. Semantic outcome linkage is added in #19 so the injector does not silently become a second C1 oracle.
+The oracle validates injected physical truth only. It does not become a second C1 semantic oracle.
 
 ---
 
-# 8. C2.4.1 Validation Obligations
+# 8. C2.4.1 Closure
 
-The first slice must validate:
+C2.4.1 closed through PR #25.
+
+Final validated PR head:
 
 ```text
-delay cancellation/rescheduling
-drop suppression
-duplicate delivery
-duplicate observation EventKind
-same-time and different-time reorder
-FaultID uniqueness
-pending-event requirement
-probabilistic no-fault decision
-same-seed probabilistic reproducibility
-probability validation
-worker-failure delegation
-replica-loss delegation
-same-simulator ResourceModel requirement
-ground-truth validation before and after delivery
-all pre-existing C1/C2 tests remain green
+924e57b2ec4ca0a75a0cd3b6af35fc2bfe703627
+```
+
+Exact-head validation:
+
+```text
+Python 3.11  PASS
+Python 3.12  PASS
+Python 3.13  PASS
+222 passed
+```
+
+Squash merge on `main`:
+
+```text
+a469b3eae80e258b3580e20526099dd0ef6e278c
+```
+
+A bounded fault-boundary review found and fixed four defects before merge:
+
+1. rejected transformations could consume a FaultID;
+2. rejected probabilistic transformation could advance injector RNG state;
+3. composed fault chains could falsely fail ground-truth validation;
+4. worker failure followed by valid later recovery could be misclassified by final-state-only validation.
+
+The fixes make rejected application FaultID/RNG side-effect-safe and ground-truth validation trace/composition aware.
+
+---
+
+# 9. C2.4.2 Cross-Layer Fault Vocabulary
+
+C2.4.2 adds explicit cross-layer classes where the disturbance itself must be represented through existing C2.3/C2.2 public surfaces:
+
+```text
+ATTEMPT_TIMEOUT
+LATE_ATTEMPT_RESULT
+STALE_ATTEMPT_OBSERVATION
+REPLICA_EVICTION
+```
+
+`CrossLayerFaultInjector` is an internal extension of the C2.4.1 injector and therefore shares the same FaultID namespace.
+
+It may:
+
+```text
+schedule ATTEMPT_TIMEOUT through ContinuityAdapter
+schedule a LATE_RESULT through ContinuityAdapter
+schedule a stale terminal observation for a SUCCEEDED + SUPERSEDED Attempt through ContinuityAdapter
+delegate physical replica eviction to ResourceModel
+```
+
+It may not directly assign into `ContinuityCore` stores.
+
+Precondition checks establish fault ground truth at injection time. For example:
+
+```text
+late-result fault requires AttemptAuthority.SUPERSEDED
+stale terminal observation requires SUCCEEDED + SUPERSEDED
+retry-timeout fault targets the current Attempt at injection time
+```
+
+If a future scheduled fault becomes stale before delivery, the existing C2.3 adapter fences it according to current C1 authority.
+
+---
+
+# 10. Mandatory Failure-Class Composition Boundary
+
+C2.4 does not require a bespoke mutator for every FTR trace.
+
+The Failure Model classes are represented by composition when the underlying fault is already expressible:
+
+```text
+partial migration acknowledgment loss
+    -> DELIVERY_DROP / DELIVERY_DELAY on migration/transfer completion
+
+migration destination failure
+    -> WORKER_FAILURE on destination during transfer
+
+late old-binding observation
+    -> DELIVERY_DELAY / DELIVERY_REORDER
+
+ambiguous ownership
+    -> multiple valid scenario observations + delivery/reordering fault pattern
+
+stale high-authority Evidence
+    -> scenario Evidence validity/freshness + delayed delivery
+
+total physical State loss
+    -> REPLICA_LOSS across all physical replicas
+
+tool-wait eviction
+    -> REPLICA_EVICTION during waiting interval
+```
+
+C2.5 will prove W1–W10/FTR1–FTR12 end-to-end representability. C2.4.2 only establishes the reusable fault primitives and linkage needed by that later campaign.
+
+---
+
+# 11. Fault-to-Outcome Linkage
+
+`FaultOutcomeLinker` correlates one committed `FaultRecord` with observed C2/C1 consequences without authorizing recovery.
+
+`FaultOutcomeRecord` contains:
+
+```text
+FaultID
+FaultClass
+observation time
+outcome class
+related event IDs
+matching SemanticActionRecord entries
+invariant violations, if any
+semantic error text, if any
+physical status summary
+optional RequestID
+optional AuthoritativeOutcome projection
+optional policy label
+optional recovery action
+optional recovery latency
+```
+
+The current descriptive `FaultOutcomeClass` values are:
+
+```text
+PENDING
+INVARIANT_VIOLATION
+DELIVERY_SUPPRESSED
+PHYSICAL_EFFECT
+SEMANTIC_APPLIED
+SEMANTIC_IDEMPOTENT
+SEMANTIC_IGNORED
+SEMANTIC_REJECTED
+```
+
+These are experiment-observation classes, not semantic commit outcomes.
+
+Classification precedence is intentionally fail-closed:
+
+```text
+INVARIANT_VIOLATION
+    > REJECTED semantic action
+    > IGNORED
+    > APPLIED
+    > IDEMPOTENT
+```
+
+so an event that records non-authoritative observations but whose correctness-sensitive finalization is rejected is classified `SEMANTIC_REJECTED`.
+
+When an adapter and RequestID are available and the independent invariant oracle is clean, the linker also records the C2.3 `AuthoritativeOutcome` projection. If the oracle reports any violation, the outcome is classified `INVARIANT_VIOLATION` and authoritative projection is suppressed. This lets experiments associate FaultID with the semantic winner without reimplementing or masking C1 authority.
+
+---
+
+# 12. Policy and Recovery Fields
+
+C2.4.2 carries optional:
+
+```text
+policy
+recovery_action
+recovery_latency
+```
+
+but does not populate them automatically.
+
+They are external annotations for later policy experiments. The fault linker must not decide them.
+
+`recovery_latency`, when supplied, must be finite and non-negative.
+
+---
+
+# 13. C2.4.2 Validation Obligations
+
+The second slice must validate:
+
+```text
+Attempt timeout fault schedules through C2.3 adapter
+non-current timeout injection rejected without consuming FaultID
+late result requires SUPERSEDED Attempt
+late physical success preserves SUPERSEDED authority
+stale terminal observation requires SUCCEEDED + SUPERSEDED
+stale terminal observation is explicitly rejected for authoritative finalization
+replica eviction remains physical-only
+worker failure and replica faults link to physical status
+FaultID links to adapter action records
+FaultID links to final authoritative Request projection when available
+invariant violations remain empty for safe traces
+invariant violation has highest classification precedence and suppresses authoritative projection
+pending vs delivered outcome classification
+external policy/recovery annotations are pass-through only
+non-finite recovery metadata rejected
+same-simulator boundaries enforced
+all pre-existing C1/C2/C2.4.1 tests remain green
 Python 3.11–3.13 CI
 ```
 
 ---
 
-# 9. Explicit Non-Scope
+# 14. Explicit Non-Scope After C2.4.2
 
-C2.4.1 does not yet claim complete support for:
+Still deferred:
 
 ```text
-all mandatory Failure Model classes
-Binding migration conflicts
-State compatibility faults as semantic injections
-semantic outcome classification per FaultID
 persisted probabilistic campaign manifests
-fault schedule replay across policies
-W1–W10 / FTR1–FTR12 representability closure
-baseline policies
+fault-schedule serialization/replay
+paired-policy schedule reuse contract
+full FaultRecord decoded-schema validation
+adversarial trust-oracle campaign for malformed fault metadata
+end-to-end W1–W10/FTR1–FTR12 simulator representability proof
+baseline policy comparison
 performance/cost modeling
 ```
 
-Those remain #19–#21 and C2.5.
+These remain #20, #21, and C2.5.
 
 ---
 
-# 10. Closure Criterion for C2.4.1
+# 15. C2.4.2 Closure Criterion
 
-C2.4.1 may close only when:
+C2.4.2 may close when:
 
 ```text
-fault records are immutable and explicit
-fault transformations are deterministic under equal inputs
-probabilistic generation is same-seed reproducible
-fault application is fail-closed / side-effect-safe on rejection
-resource faults remain physical-only
-injector ground truth validates against simulator/resource state
+cross-layer fault helpers use existing public C2.3/C2.2 transition surfaces only
+FaultID can be correlated with semantic/resource observations
+fail-closed semantic rejection is classified explicitly
+invariant-oracle failure is classified explicitly and cannot expose an authoritative projection
+late superseded execution cannot regain authority
+physical State eviction/loss remains distinct from logical State identity
+linkage never chooses recovery policy
+fault/outcome metadata is finite and deterministic
 full repository tests pass on Python 3.11–3.13
-bounded fault-boundary review has no unresolved blocker
+bounded linkage/classification review has no unresolved blocker
 ```
 
-C2.4 umbrella remains open after this first slice.
+C2.4 umbrella remains open after this slice.

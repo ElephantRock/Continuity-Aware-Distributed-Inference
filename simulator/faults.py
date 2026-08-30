@@ -18,6 +18,10 @@ class FaultClass(str, Enum):
     DELIVERY_REORDER = "DELIVERY_REORDER"
     WORKER_FAILURE = "WORKER_FAILURE"
     REPLICA_LOSS = "REPLICA_LOSS"
+    REPLICA_EVICTION = "REPLICA_EVICTION"
+    ATTEMPT_TIMEOUT = "ATTEMPT_TIMEOUT"
+    LATE_ATTEMPT_RESULT = "LATE_ATTEMPT_RESULT"
+    STALE_ATTEMPT_OBSERVATION = "STALE_ATTEMPT_OBSERVATION"
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +58,10 @@ _PRESSURE: dict[FaultClass, tuple[str, ...]] = {
     FaultClass.DELIVERY_REORDER: ("causal ordering", "late/stale event fencing"),
     FaultClass.WORKER_FAILURE: ("physical availability", "retry/recovery path"),
     FaultClass.REPLICA_LOSS: ("physical StateReplica availability", "State reuse safety"),
+    FaultClass.REPLICA_EVICTION: ("physical StateReplica availability", "cold-resume/reuse path"),
+    FaultClass.ATTEMPT_TIMEOUT: ("Attempt authority supersession", "late-result fencing"),
+    FaultClass.LATE_ATTEMPT_RESULT: ("superseded-event fencing", "finalization authority"),
+    FaultClass.STALE_ATTEMPT_OBSERVATION: ("Evidence scope/authority", "terminal-request fencing"),
 }
 
 _SAFE: dict[FaultClass, tuple[str, ...]] = {
@@ -63,6 +71,10 @@ _SAFE: dict[FaultClass, tuple[str, ...]] = {
     FaultClass.DELIVERY_REORDER: ("IGNORE_STALE", "WAIT", "RETRY", "MATCHED"),
     FaultClass.WORKER_FAILURE: ("FAIL_PHYSICAL_WORK", "RETRY", "RECOMPUTE", "MIGRATE"),
     FaultClass.REPLICA_LOSS: ("RECOMPUTE", "MIGRATE", "REJECT_REUSE"),
+    FaultClass.REPLICA_EVICTION: ("RECOMPUTE", "RESTORE", "COLD_RESUME"),
+    FaultClass.ATTEMPT_TIMEOUT: ("RETRY", "IGNORE_STALE", "WAIT"),
+    FaultClass.LATE_ATTEMPT_RESULT: ("RECORD_NON_AUTHORITATIVE", "IGNORE_STALE"),
+    FaultClass.STALE_ATTEMPT_OBSERVATION: ("REJECT", "IGNORE_STALE", "FAIL_CLOSED"),
 }
 
 
@@ -425,6 +437,10 @@ class FaultInjector:
                 event_id = record.produced_event_ids[0]
                 if event_id in trace and self.resources.replicas[record.target].status is not ReplicaRuntimeStatus.LOST:
                     raise AssertionError("replica-loss ground truth did not produce LOST replica")
+            elif record.fault_class is FaultClass.REPLICA_EVICTION and self.resources is not None:
+                event_id = record.produced_event_ids[0]
+                if event_id in trace and self.resources.replicas[record.target].status is not ReplicaRuntimeStatus.EVICTED:
+                    raise AssertionError("replica-eviction ground truth did not produce EVICTED replica")
 
     def _append(self, record: FaultRecord) -> FaultRecord:
         if record.id in self._record_ids:
