@@ -4,7 +4,7 @@
 **Project:** Continuity-Aware Distributed Inference  
 **Milestone:** C2 — Discrete-Event Simulator  
 **Prerequisite:** C1 CLOSED on `main`  
-**Status:** IN PROGRESS — C2.1 CLOSED; C2.2 resource model next
+**Status:** IN PROGRESS — C2.1, C2.2, and C2.3 CLOSED; C2.4 fault injection next
 
 ---
 
@@ -70,7 +70,7 @@ randomized but seeded schedules
 performance/cost quantities introduced in later milestones
 ```
 
-A simulator event may eventually call a public C1 semantic transition, but C2 must not mutate C1 semantic maps directly.
+A simulator event may call a public C1 semantic transition, but C2 must not mutate C1 semantic maps directly.
 
 ---
 
@@ -125,6 +125,7 @@ STATE_MATERIALIZATION_STARTED
 STATE_MATERIALIZED
 STATE_TRANSFER_STARTED
 STATE_TRANSFER_COMPLETED
+STATE_TRANSFER_FAILED
 STATE_MOVED
 STATE_EVICTED
 STATE_LOST
@@ -143,6 +144,9 @@ MIGRATION_FAILED
 ```text
 WORKER_FAILED
 WORKER_RECOVERED
+WORKER_TASK_ENQUEUED
+WORKER_TASK_COMPLETED
+WORKER_TASK_FAILED
 ```
 
 ## Observation
@@ -180,7 +184,7 @@ EVICTION   -> STATE_EVICTED
 
 # 5. C2.1 Deterministic Event Kernel
 
-C2.1 implements only the event substrate.
+C2.1 implements the event substrate.
 
 Each scheduled event has:
 
@@ -211,17 +215,11 @@ advances to each delivered event
 may advance explicitly to a run horizon
 ```
 
-Scheduling an event in the simulated past is invalid.
-
-Non-finite time values are invalid.
+Scheduling an event in the simulated past is invalid. Non-finite time values are invalid.
 
 ## Stable identity
 
-EventID is unique for the lifetime of one simulator instance.
-
-Automatic EventIDs are deterministically derived from insertion sequence.
-
-Explicit reuse of an EventID is rejected even after the original event executed or was cancelled.
+EventID is unique for the lifetime of one simulator instance. Automatic EventIDs are deterministically derived from insertion sequence. Explicit reuse of an EventID is rejected even after the original event executed or was cancelled.
 
 ## Cancellation
 
@@ -242,6 +240,22 @@ Later C2 fault metadata may separately record why cancellation occurred.
 Handlers are invoked in registration order.
 
 A handler may schedule another event at the current logical time. Such an event receives a later insertion sequence and therefore executes after the currently delivering event and after any already-scheduled same-time events with lower sequence.
+
+## C2.1 closure result
+
+C2.1 closed on 2026-08-30 when PR #14 was squash-merged to `main` as `f4e854fa930b09c27d2ea2bea9ecbca04b7ff00d`. The final PR head `d2a3ebba8e119331f21958b828a2d08605a4c6a4` passed the full repository suite on Python 3.11, 3.12, and 3.13 with:
+
+```text
+169 passed
+```
+
+A bounded exact-delta review found and fixed three event-kernel defects before merge:
+
+1. rejected scheduling consumed sequence numbers and shifted later automatic EventIDs;
+2. `max_events` could fail to remain the actual stop condition when queue exhaustion coincided with an `until` horizon;
+3. top-level payload validation did not enforce the documented string-keyed mapping boundary.
+
+Rejected scheduling is now side-effect-free, `max_events` is a strict stop condition, and top-level payloads must be mappings. All three are regression-tested.
 
 ---
 
@@ -270,7 +284,7 @@ executed event trace
 authoritative C1 semantic result
 ```
 
-where the last condition becomes executable in C2.3.
+The final condition is now executable for the C2.3 retry/finalization surface.
 
 Headline paired-policy evaluation in C3/C4 will therefore be able to reuse the same seed and workload/fault schedule.
 
@@ -294,113 +308,154 @@ Unsupported mutable/opaque values are rejected at scheduling time.
 
 This keeps the executed event trace deterministic and suitable for later canonical serialization.
 
-C2.1 does not yet define the final persisted trace schema; that is deferred until the resource/fault metadata surfaces stabilize.
+C2.1 does not yet define the final persisted trace schema; that remains deferred until the resource/fault metadata surfaces stabilize.
 
 ---
 
-# 8. C2.1 Validation Obligations
+# 8. C2.2 Resource Model
 
-The first slice must test:
+C2.2 adds deterministic physical-resource state without changing C1 semantics.
 
-```text
-explicit required EventKind surface
-same-time insertion ordering
-same-time scheduling from handlers
-monotonic logical time
-run-until horizon behavior
-max-event stopping behavior
-cancellation
-EventID uniqueness
-seed reproducibility
-finite time validation
-immutable/canonical payload conversion
-```
-
-All existing C1 tests must continue passing unchanged.
-
-## C2.1 closure result
-
-C2.1 closed on 2026-08-30 when PR #14 was squash-merged to `main` as `f4e854fa930b09c27d2ea2bea9ecbca04b7ff00d`. The final PR head `d2a3ebba8e119331f21958b828a2d08605a4c6a4` passed the full repository suite on Python 3.11, 3.12, and 3.13 with:
+Merged resource surfaces include:
 
 ```text
-169 passed
-```
-
-A bounded exact-delta review found and fixed three event-kernel defects before merge:
-
-1. rejected scheduling consumed sequence numbers and shifted later automatic EventIDs;
-2. `max_events` could fail to remain the actual stop condition when queue exhaustion coincided with an `until` horizon;
-3. top-level payload validation did not enforce the documented string-keyed mapping boundary.
-
-Rejected scheduling is now side-effect-free, `max_events` is a strict stop condition, and top-level payloads must be mappings. All three are regression-tested.
-
----
-
-# 9. C2.2 Resource Model
-
-Planned next slice:
-
-```text
-Worker
-Worker queue
-NetworkLink
-physical StateReplica timing/location
+Worker and WorkerStatus
+worker queue and capacity
+ResourceTask lifecycle
+NetworkLink latency/bandwidth timing
+ReplicaRuntime physical shadow
 State materialization
 State transfer
 State eviction/loss
 worker failure/recovery
+transfer failure
 ```
 
-The resource model must preserve the distinction:
+The model preserves the distinction:
 
 ```text
 logical State identity
         !=
-physical StateReplica placement
+physical StateReplica runtime placement
 ```
 
-No resource event may implicitly rewrite C1 provenance.
+`ReplicaRuntime` records reference C1 State/Replica identities but are explicitly non-authoritative physical facts. Resource events do not rewrite C1 provenance, Attempt authority, Binding authority, or Evidence authority.
+
+## C2.2 closure result
+
+C2.2 closed on 2026-08-30 when PR #15 was squash-merged to `main` as `9c2c3f0801bca9abf165bf626970c2e9d8fa7d5e`.
+
+The exact final head `d3059c883a859517d7ecadb71504e7ae7b44f3ea` passed the full repository suite on Python 3.11, 3.12, and 3.13 with:
+
+```text
+183 passed
+```
+
+The merged C2.2 contract provides deterministic worker queues, synthetic network timing, non-authoritative replica runtime state, materialization/transfer/failure handling, and bounded lifecycle hardening.
 
 ---
 
-# 10. C2.3 Semantic Adapter
+# 9. C2.3 Semantic Adapter and Replay Equivalence
 
-C2.3 will attach the simulator to one C1 `ContinuityCore` instance.
+C2.3 attaches timed simulator delivery to exactly one closed C1 `ContinuityCore`.
 
-Requirements:
+The adapter contract is:
 
 ```text
 use public C1 transitions only
 run the independent invariant oracle
 never mutate semantic stores directly
-record semantic success / explicit non-success / rejection
+record applied / idempotent / rejected / ignored interactions
+record post-operation canonical C1 fingerprints
+require rejected semantic operations to be fingerprint-stable
 ```
 
-Cross-layer validation will replay correctness-equivalent traces through:
+Cross-layer validation compares:
 
 ```text
-C1 deterministic operation sequence
+C1 deterministic semantic reference
         vs
 C2 timed event schedule
 ```
 
-Authoritative semantic outcomes must agree even though physical timing differs.
+using an explicit authoritative projection rather than event-history equality.
 
-Canonical first example:
+The projection includes:
 
 ```text
-A1 active
-A1 timeout
-A2 becomes authoritative
-A2 succeeds
-A1 result arrives late
+Request status
+CurrentAttempt
+CommittedAttempt
+authoritative Output/Evidence IDs
+per-Request Attempt generation
+Attempt execution status
+Attempt authority status
 ```
 
-Both layers must reject A1 as authoritative.
+## Canonical retry race
+
+```text
+A1 CURRENT
+A1 timeout
+A2 starts -> A1 SUPERSEDED, A2 CURRENT
+A1 may later succeed physically
+A2 succeeds
+exact A2 terminal observation arrives
+A2 COMMITTED
+later A1 terminal observation cannot regain authority
+```
+
+The allowed late physical outcome remains:
+
+```text
+A1 execution = SUCCEEDED
+A1 authority = SUPERSEDED
+```
+
+## C2.3 bounded-review corrections
+
+Three correctness defects were found and fixed before closure:
+
+1. duplicate/reordered observations initially matched Evidence identity only partially; the adapter now carries the original `observed_at` and requires exact immutable C1 Evidence equality;
+2. a terminal exact observation could claim an observation time earlier than the adapter-delivered Attempt success; C2 now fences that causal inversion;
+3. an intermediate retry-dedup approach allowed host/Python scheduling-call order to influence earlier simulated time; timeout-generated retry EventIDs are now parent-derived and semantic convergence depends on delivered C2 history/current-Attempt fencing rather than setup order.
+
+Regression coverage includes:
+
+```text
+late success before/after retry success
+late success after finalization
+duplicate late completion
+duplicate timeout
+stale timeout after finalization
+duplicate authoritative observation
+reordered duplicate-before-original observation
+conflicting Evidence identity
+observation timestamp before delivered success
+simultaneous timeout/completion in both insertion orders
+preplanned retry vs earlier timeout under both setup orders
+late superseded observation rejection
+malformed adapter events
+fingerprint-stable rejected semantic operations
+```
+
+## C2.3 closure result
+
+C2.3 closed on 2026-08-30 when PR #16 was squash-merged to `main` as `e1ff3e7c3f63a12755d519b6061ad7fc2feecfb6`.
+
+The exact user-authored closure head `c0125d84b20f5d58553ce241fd254169534783e4` passed the full repository suite on Python 3.11, 3.12, and 3.13 with:
+
+```text
+203 passed
+```
+
+Issue #9 is closed as completed.
 
 ---
 
-# 11. C2.4 Fault Injection
+# 10. C2.4 Fault Injection
+
+C2.4 is the next implementation slice and is tracked by issue #10.
 
 C2 will support both deterministic and probabilistic fault injection.
 
@@ -432,11 +487,23 @@ semantic_error
 
 Probabilistic fault generation must record its seed.
 
+C2.4 specifically requires:
+
+```text
+explicit fault metadata
+deterministic injectors for mandatory failure classes
+seeded probabilistic injectors
+delay/drop/duplicate/reorder delivery support
+validated injector ground truth before campaign use
+```
+
 Fault injectors themselves require validation before use in experiments.
+
+C2.4 has not started as of the C2.3 bookkeeping checkpoint.
 
 ---
 
-# 12. C2.5 Representability and Closure
+# 11. C2.5 Representability and Closure
 
 C2 closes only when the simulator can deterministically represent:
 
@@ -461,7 +528,7 @@ same-seed reproducibility
 
 ---
 
-# 13. C2 Exit Criterion
+# 12. C2 Exit Criterion
 
 The roadmap exit criterion is interpreted operationally as:
 
@@ -481,15 +548,15 @@ Those remain C3–C7.
 
 ---
 
-# 14. Current Status
+# 13. Current Status
 
 ```text
 C1   CLOSED
 C2   IN PROGRESS
-C2.1 event kernel       CLOSED — PR #14 / f4e854fa930b09c27d2ea2bea9ecbca04b7ff00d
-C2.2 resource model     next / not yet implemented
-C2.3 semantic adapter   not started
-C2.4 fault injection    not started
+C2.1 event kernel       CLOSED — PR #14 / f4e854fa930b09c27d2ea2bea9ecbca04b7ff00d / 169 tests
+C2.2 resource model     CLOSED — PR #15 / 9c2c3f0801bca9abf165bf626970c2e9d8fa7d5e / 183 tests
+C2.3 semantic adapter   CLOSED — PR #16 / e1ff3e7c3f63a12755d519b6061ad7fc2feecfb6 / 203 tests
+C2.4 fault injection    NEXT — issue #10; not started
 C2.5 representability   not started
 C3 baseline policies    not started
 ```
@@ -500,7 +567,7 @@ Tracking:
 #6  C2 umbrella
 #7  C2.1 event kernel
 #8  C2.2 resource model
-#9  C2.3 semantic adapter
-#10 C2.4 fault injection
+#9  C2.3 semantic adapter — closed
+#10 C2.4 fault injection — open / next
 #11 C2.5 representability / closure
 ```
