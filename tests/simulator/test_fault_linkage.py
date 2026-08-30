@@ -7,6 +7,7 @@ import pytest
 from continuity import ContinuityCore
 from continuity.entities import AttemptAuthority, ExecutionStatus
 from simulator import ContinuityAdapter, DiscreteEventSimulator, EventKind, ResourceModel
+import simulator.fault_linkage as fault_linkage_module
 from simulator.fault_linkage import (
     CrossLayerFaultInjector,
     FaultOutcomeClass,
@@ -250,8 +251,30 @@ def test_recovery_latency_must_not_be_nonfinite():
     faults = CrossLayerFaultInjector(sim)
     faults.drop_delivery("e", fault_id="f")
     linker = FaultOutcomeLinker(faults)
-    # This test intentionally states the trust-boundary requirement; implementation
-    # review must ensure non-finite metadata is rejected before C2.4.2 closes.
     for value in (math.inf, -math.inf, math.nan):
         with pytest.raises(ValueError):
             linker.observe("f", recovery_latency=value)
+
+
+def test_invariant_violation_dominates_classification_and_suppresses_projection(monkeypatch):
+    sim, _, adapter = _running_a1()
+    faults = CrossLayerFaultInjector(sim)
+    faults.inject_attempt_timeout(adapter, "r", "a1", "a2", at=2, fault_id="timeout")
+    sim.run()
+
+    class BrokenOracle:
+        def __init__(self, core):
+            self.core = core
+
+        def assert_all(self):
+            raise AssertionError("forced invariant failure")
+
+    monkeypatch.setattr(fault_linkage_module, "InvariantOracle", BrokenOracle)
+    outcome = FaultOutcomeLinker(faults, adapter=adapter).observe("timeout")
+
+    assert outcome.semantic_actions
+    assert any(action.outcome.name == "APPLIED" for action in outcome.semantic_actions)
+    assert outcome.outcome_class is FaultOutcomeClass.INVARIANT_VIOLATION
+    assert outcome.invariant_violations == ("AssertionError: forced invariant failure",)
+    assert outcome.request_id == "r"
+    assert outcome.authoritative_outcome is None
