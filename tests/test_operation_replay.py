@@ -156,3 +156,52 @@ def test_explicit_replay_time_makes_expiring_evidence_deterministic():
     assert snapshot_core(first) == snapshot_core(second)
     InvariantOracle(first).assert_all()
     InvariantOracle(second).assert_all()
+
+
+def test_operation_jsonl_rejects_forged_evidence_authority_type():
+    evidence = Evidence(
+        'forged', 'terminal output observed', 'external',
+        EvidenceAuthority.EXACT_OBSERVATION, EvidenceStatus.VALID, 1.0,
+        frozenset({('attempt', 'a')}),
+    )
+    operation = SemanticOperation.build('op', 'record_evidence', e=evidence)
+    record = json.loads(operations_to_jsonl([operation]).strip())
+    encoded_evidence = next(
+        value for key, value in record['arguments']['$dict'] if key == 'e'
+    )
+    encoded_evidence['fields']['authority'] = 999
+
+    with pytest.raises(ValueError, match="argument 'e' has invalid type"):
+        operations_from_jsonl(json.dumps(record) + '\n')
+
+
+def test_operation_build_rejects_invalid_nested_dataclass_member_types():
+    forged = Evidence(
+        'forged', 'claim', 'external',
+        999, EvidenceStatus.VALID, 1.0, frozenset({('attempt', 'a')}),
+    )
+    with pytest.raises(ValueError, match="argument 'e' has invalid type"):
+        SemanticOperation.build('op', 'record_evidence', e=forged)
+
+
+@pytest.mark.parametrize(
+    ('action', 'arguments'),
+    [
+        ('create_program', {'id_': 123}),
+        ('set_attempt_execution', {'attempt_id': 'a', 'status': 'RUNNING'}),
+        ('create_phase', {'id_': 'f', 'attempt_id': 'a', 'phase_type': 7}),
+    ],
+)
+def test_operation_build_rejects_wrong_action_argument_types(action, arguments):
+    with pytest.raises(ValueError, match='has invalid type'):
+        SemanticOperation.build('op', action, **arguments)
+
+
+def test_replay_revalidates_direct_semantic_operation_arguments_before_dispatch():
+    malformed = SemanticOperation(
+        id='op', action='create_program', arguments=(('id_', 123),)
+    )
+    core = ContinuityCore()
+    with pytest.raises(ValueError, match="argument 'id_' has invalid type"):
+        replay_operations(core, [malformed])
+    assert core.programs == {}
