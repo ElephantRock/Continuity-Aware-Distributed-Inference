@@ -4,7 +4,7 @@
 **Project:** Continuity-Aware Distributed Inference  
 **Milestone:** C2.4 — Deterministic and Probabilistic Fault Injection  
 **Prerequisite:** C2.3 CLOSED on `main` via PR #16 / `e1ff3e7c3f63a12755d519b6061ad7fc2feecfb6`  
-**Status:** IN PROGRESS — C2.4.1/C2.4.2/C2.4.3 CLOSED; C2.4.4 implementation candidate
+**Status:** C2.4 IMPLEMENTATION COMPLETE — C2.4.1–C2.4.4 merged; post-merge synchronization tracked by #22
 
 ---
 
@@ -35,12 +35,12 @@ mutate ContinuityCore stores directly
 Tracking:
 
 ```text
-#10  C2.4 umbrella
+#10  C2.4 umbrella — closure bookkeeping via #22
 #18  C2.4.1 fault metadata + delivery/resource transformation substrate — CLOSED
 #19  C2.4.2 mandatory failure-class injectors + semantic outcome linkage — CLOSED
 #20  C2.4.3 probabilistic campaign manifests + replay/reuse contract — CLOSED
-#21  C2.4.4 injector trust oracle + closure review — ACTIVE
-#22  C2.4.5 post-merge documentation synchronization
+#21  C2.4.4 injector trust oracle + closure review — CLOSED
+#22  C2.4.5 post-merge documentation synchronization — ACTIVE
 ```
 
 C2.5 representability remains separate.
@@ -822,3 +822,97 @@ bounded trust/closure review has no unresolved blocker
 ```
 
 C2.4 remains open after this implementation PR. #22 is a bookkeeping-only post-merge synchronization checkpoint; only after #22 may umbrella #10 close and C2.5 become authorized.
+
+
+---
+
+# 31. C2.4.4 Closure
+
+C2.4.4 closed through PR #28.
+
+Final validated PR head:
+
+```text
+95b31642e205c389bc19acc59bf9bf90d955e5b0
+```
+
+Exact-head validation:
+
+```text
+Python 3.11  PASS
+Python 3.12  PASS
+Python 3.13  PASS
+268 passed
+```
+
+Squash merge on `main`:
+
+```text
+f33b82d0802cfc97835049e274b288e06f87d369
+```
+
+The final trust review fixed three concrete failure modes before merge:
+
+1. malformed numeric duration could be diagnosed and then still coerced by later class-specific logic;
+2. class-specific parameter keys were frozen while some scalar types and temporal relations remained underconstrained;
+3. malformed produced/cancelled EventID tuples containing unhashable values could be diagnosed and then still reach hashing/set operations.
+
+The merged trust oracle now treats malformed metadata as untrusted data that produces explicit trust violations rather than an escaping oracle exception across the covered adversarial corpus.
+
+---
+
+# 32. C2.4 Closure Summary
+
+C2.4 now provides a policy-neutral fault-evaluation substrate with four closed implementation slices:
+
+```text
+C2.4.1
+    deterministic delivery/resource transformations
+    explicit immutable FaultRecord ground truth
+    injector-local seeded probabilistic generation
+
+C2.4.2
+    cross-layer Attempt/State fault primitives
+    FaultID -> semantic/resource outcome linkage
+    fail-closed invariant-violation classification
+
+C2.4.3
+    machine-readable policy-neutral fault campaigns
+    configuration/schedule/manifest fingerprints
+    exact fault-schedule replay
+    paired-policy schedule reuse contract
+
+C2.4.4
+    independent FaultRecord trust schema/oracle
+    adversarial malformed/tampered metadata campaign
+    transformation/runtime/resource/C1/campaign consistency validation
+```
+
+The governing authority boundary remains:
+
+> **The fault injector decides what physical/observational disturbance occurs; policies decide how to respond; C1 decides what semantic result is valid.**
+
+No C2.4 component chooses routing, retry, recovery, migration, State compatibility, Attempt authority, or semantic commit.
+
+---
+
+# 33. C2.4 Exit Gate
+
+C2.4 implementation is complete because:
+
+```text
+deterministic fault primitives are explicit and reproducible
+seeded probabilistic decisions are isolated from simulator RNG
+FaultID ground truth is immutable and linkable to observed outcomes
+cross-layer faults use existing public C2.3/C2.2 transition surfaces
+fault campaigns are canonical, fingerprinted, and replayable
+paired policies can reference the same realized fault schedule
+replay fails closed instead of silently retargeting divergent scenarios
+an independent trust oracle validates fault metadata and observed effects
+malformed/tampered metadata is adversarially tested
+C1 remains the only semantic authority
+all repository tests pass on Python 3.11-3.13
+bounded C2.4 closure review has no unresolved implementation blocker
+```
+
+Post-merge synchronization issue #22 is bookkeeping only and changes no simulator or semantic code. Once #22 and umbrella #10 are closed, C2.5 representability is authorized.
