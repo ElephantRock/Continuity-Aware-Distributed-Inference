@@ -6,9 +6,10 @@
 
 - **C0.1 Research Specification:** complete
 - **Gate G0:** PASS
-- **C1 Deterministic Continuity Core:** completion candidate; implementation exit criteria satisfied, pending final review/merge
-- **C1 validation:** 152 deterministic/invariant/adversarial tests passing; permanent CI covers Python 3.11, 3.12, and 3.13
-- **C1 closure review:** fifteen substantive Codex correctness/consistency findings fixed, regression-tested, and review threads resolved
+- **C1 Deterministic Continuity Core:** completion candidate; implementation exit criteria and bounded independent exact-head semantic audit satisfied, pending final exact-head CI/merge
+- **C1 validation:** 157 deterministic/invariant/adversarial tests passing; permanent CI covers Python 3.11, 3.12, and 3.13
+- **C1 closure review:** fifteen substantive Codex correctness/consistency findings plus two independent closure-audit findings fixed and regression-tested; all review threads resolved
+- **Final Codex rerun:** requested on the prior exact head but unavailable because the GitHub Codex integration reached its code-review usage limit; this is recorded as a tooling/quota limitation, not a successful review
 - **C2 simulator / performance modeling:** intentionally not started
 
 The repository is the canonical system of record for the project.
@@ -39,6 +40,7 @@ The deterministic core now includes:
 - `CurrentAttempt` / `CommittedAttempt` fencing;
 - monotonic Attempt execution and Phase status transitions;
 - supersession fencing that prevents superseded Attempts from authoritatively completing Phases or producing new Attempt-/Phase-origin State;
+- terminal-request fencing that prevents restored `FAILED`/`CANCELLED` requests from being finalized and rejects inconsistent terminal-request authority during restore;
 - producer-aware and Phase-aware reusable-State compatibility;
 - request-origin State constrained to completed requests with producer exactly equal to `CommittedAttempt(request)`;
 - State lifecycle and validity;
@@ -57,7 +59,7 @@ The deterministic core now includes:
 - an independent invariant oracle including declared State-origin re-resolution, cached-provenance consistency, Phase-dependency temporal-order validation, and global identity uniqueness;
 - all 12 mandatory Failure Model traces;
 - a deterministic adversarial sequence matrix plus seeded sequence fuzzing;
-- an executable 37-invariant-to-test coverage registry.
+- an executable **38-invariant** coverage registry whose expected IDs are derived directly from the canonical invariant catalogue.
 
 ## Repository layout
 
