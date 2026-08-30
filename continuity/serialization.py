@@ -4,7 +4,9 @@ from dataclasses import fields, is_dataclass
 from enum import Enum
 import hashlib
 import json
-from typing import Any, Callable, Iterable, Optional
+import math
+import types
+from typing import Any, Callable, Iterable, Optional, Union, get_args, get_origin, get_type_hints
 
 from .core import ContinuityCore
 from .entities import (
@@ -54,6 +56,21 @@ _CORE_FIELDS = (
     "last_allocated_epoch_by_subject",
 )
 
+_ENTITY_COLLECTION_TYPES = {
+    "programs": Program,
+    "sessions": Session,
+    "continuations": Continuation,
+    "requests": LogicalRequest,
+    "attempts": Attempt,
+    "phases": Phase,
+    "states": ReusableState,
+    "replicas": StateReplica,
+    "bindings": Binding,
+    "evidence": Evidence,
+    "outputs": Output,
+    "events": SemanticEvent,
+}
+
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(
@@ -65,8 +82,19 @@ def _reject_non_finite_constant(value: str) -> Any:
     raise ValueError(f"non-finite JSON numeric constant is not allowed: {value}")
 
 
+def _parse_finite_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite JSON numeric value is not allowed: {value}")
+    return parsed
+
+
 def _strict_json_loads(text: str) -> Any:
-    return json.loads(text, parse_constant=_reject_non_finite_constant)
+    return json.loads(
+        text,
+        parse_constant=_reject_non_finite_constant,
+        parse_float=_parse_finite_float,
+    )
 
 
 def _encode(value: Any) -> Any:
@@ -115,6 +143,102 @@ def _decode(value: Any) -> Any:
     return {k: _decode(v) for k, v in value.items()}
 
 
+def _matches_annotation(value: Any, annotation: Any) -> bool:
+    if annotation is Any:
+        return True
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin in (Union, types.UnionType):
+        return any(_matches_annotation(value, arg) for arg in args)
+    if origin is frozenset:
+        return (
+            isinstance(value, frozenset)
+            and len(args) == 1
+            and all(_matches_annotation(item, args[0]) for item in value)
+        )
+    if origin is tuple:
+        if not isinstance(value, tuple):
+            return False
+        if len(args) == 2 and args[1] is Ellipsis:
+            return all(_matches_annotation(item, args[0]) for item in value)
+        return len(value) == len(args) and all(
+            _matches_annotation(item, arg) for item, arg in zip(value, args)
+        )
+    if annotation is bool:
+        return type(value) is bool
+    if annotation is int:
+        return type(value) is int
+    if annotation is float:
+        if type(value) not in (int, float) or isinstance(value, bool):
+            return False
+        try:
+            return math.isfinite(float(value))
+        except (OverflowError, ValueError):
+            return False
+    if annotation is str:
+        return type(value) is str
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        return isinstance(value, annotation)
+    if isinstance(annotation, type):
+        return isinstance(value, annotation)
+    return False
+
+
+def _validate_entity(entity: Any, expected_type: type, field_name: str) -> None:
+    if not isinstance(entity, expected_type):
+        raise ValueError(
+            f"snapshot {field_name} contains {type(entity).__name__}, "
+            f"expected {expected_type.__name__}"
+        )
+    hints = get_type_hints(expected_type)
+    for field in fields(expected_type):
+        value = getattr(entity, field.name)
+        if not _matches_annotation(value, hints[field.name]):
+            raise ValueError(
+                f"snapshot {field_name}.{entity.id}.{field.name} has invalid type"
+            )
+
+
+def _validate_decoded_state(state: dict[str, Any]) -> None:
+    seen_ids: set[str] = set()
+    for name, expected_type in _ENTITY_COLLECTION_TYPES.items():
+        collection = state[name]
+        if not isinstance(collection, dict):
+            raise ValueError(f"snapshot {name} must decode to a dict")
+        for key, entity in collection.items():
+            if type(key) is not str:
+                raise ValueError(f"snapshot {name} keys must be strings")
+            _validate_entity(entity, expected_type, name)
+            if entity.id != key:
+                raise ValueError(f"snapshot {name} key does not match entity ID")
+            if key in seen_ids:
+                raise ValueError("snapshot reuses a logical ID across entity collections")
+            seen_ids.add(key)
+
+    event_order = state["event_order"]
+    if not isinstance(event_order, list) or any(
+        type(item) is not str for item in event_order
+    ):
+        raise ValueError("snapshot event_order must decode to list[str]")
+
+    current_bindings = state["current_binding_by_subject"]
+    if not isinstance(current_bindings, dict) or any(
+        type(key) is not str or type(value) is not str
+        for key, value in current_bindings.items()
+    ):
+        raise ValueError(
+            "snapshot current_binding_by_subject must decode to dict[str, str]"
+        )
+
+    for name in ("current_epoch_by_subject", "last_allocated_epoch_by_subject"):
+        mapping = state[name]
+        if not isinstance(mapping, dict) or any(
+            type(key) is not str or type(value) is not int
+            for key, value in mapping.items()
+        ):
+            raise ValueError(f"snapshot {name} must decode to dict[str, int]")
+
+
 def snapshot_core(core: ContinuityCore) -> str:
     payload = {
         "schema": SNAPSHOT_SCHEMA,
@@ -128,19 +252,33 @@ def restore_core(
     semantic_validity: Optional[Callable[[ReusableState, Any], bool]] = None,
 ) -> ContinuityCore:
     payload = _strict_json_loads(snapshot)
-    if payload.get("schema") != SNAPSHOT_SCHEMA:
+    if not isinstance(payload, dict) or payload.get("schema") != SNAPSHOT_SCHEMA:
         raise ValueError("unsupported Continuity snapshot schema")
-    core = ContinuityCore(semantic_validity=semantic_validity)
-    state = payload["state"]
-    missing = set(_CORE_FIELDS) - set(state)
+    raw_state = payload.get("state")
+    if not isinstance(raw_state, dict):
+        raise ValueError("snapshot state must be an object")
+    missing = set(_CORE_FIELDS) - set(raw_state)
+    extra = set(raw_state) - set(_CORE_FIELDS)
     if missing:
         raise ValueError(f"snapshot missing core fields: {sorted(missing)}")
+    if extra:
+        raise ValueError(f"snapshot has unknown core fields: {sorted(extra)}")
+
+    try:
+        state = {name: _decode(raw_state[name]) for name in _CORE_FIELDS}
+        _validate_decoded_state(state)
+    except (KeyError, TypeError, AttributeError, ValueError) as exc:
+        raise ValueError("snapshot violates Continuity schema") from exc
+
+    core = ContinuityCore(semantic_validity=semantic_validity)
     for name in _CORE_FIELDS:
-        setattr(core, name, _decode(state[name]))
+        setattr(core, name, state[name])
+
     from .invariants import InvariantOracle
+
     try:
         InvariantOracle(core).assert_all()
-    except (AssertionError, KeyError, TypeError, AttributeError) as exc:
+    except (AssertionError, KeyError, TypeError, AttributeError, ValueError) as exc:
         raise ValueError("snapshot violates Continuity invariants") from exc
     return core
 
@@ -150,15 +288,15 @@ def snapshot_fingerprint(core: ContinuityCore) -> str:
 
 
 def event_to_record(event: SemanticEvent) -> dict[str, Any]:
+    _validate_entity(event, SemanticEvent, "event")
     return {"schema": EVENT_TRACE_SCHEMA, "event": _encode(event)}
 
 
 def event_from_record(record: dict[str, Any]) -> SemanticEvent:
-    if record.get("schema") != EVENT_TRACE_SCHEMA:
+    if not isinstance(record, dict) or record.get("schema") != EVENT_TRACE_SCHEMA:
         raise ValueError("unsupported semantic-event schema")
     event = _decode(record["event"])
-    if not isinstance(event, SemanticEvent):
-        raise ValueError("trace record does not contain a SemanticEvent")
+    _validate_entity(event, SemanticEvent, "event")
     return event
 
 
