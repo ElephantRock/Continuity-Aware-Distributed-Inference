@@ -8,6 +8,7 @@
 - **Gate G0:** PASS
 - **C1 Deterministic Continuity Core:** completion candidate; implementation exit criteria satisfied, pending final review/merge
 - **C1 validation:** 128 deterministic/invariant/adversarial tests passing; permanent CI covers Python 3.11, 3.12, and 3.13
+- **C1 closure review:** seven substantive Codex correctness/consistency findings fixed, regression-tested, and review threads resolved
 - **C2 simulator / performance modeling:** intentionally not started
 
 The repository is the canonical system of record for the project.
