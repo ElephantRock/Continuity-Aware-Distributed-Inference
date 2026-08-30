@@ -7,8 +7,8 @@
 - **C0.1 Research Specification:** complete
 - **Gate G0:** PASS
 - **C1 Deterministic Continuity Core:** completion candidate; implementation exit criteria satisfied, pending final review/merge
-- **C1 validation:** 134 deterministic/invariant/adversarial tests passing; permanent CI covers Python 3.11, 3.12, and 3.13
-- **C1 closure review:** nine substantive Codex correctness/consistency findings fixed, regression-tested, and review threads resolved
+- **C1 validation:** 142 deterministic/invariant/adversarial tests passing; permanent CI covers Python 3.11, 3.12, and 3.13
+- **C1 closure review:** thirteen substantive Codex correctness/consistency findings fixed, regression-tested, and review threads resolved
 - **C2 simulator / performance modeling:** intentionally not started
 
 The repository is the canonical system of record for the project.
@@ -48,10 +48,11 @@ The deterministic core now includes:
 - fail-closed reconciliation;
 - semantic Event identity/idempotence;
 - canonical snapshots and fingerprints;
-- schema-versioned Event and Operation JSONL traces with strict finite-number JSON serialization and parsing;
-- snapshot restoration that runs the independent invariant oracle before returning a live core;
+- schema-versioned Event and Operation JSONL traces with strict finite-number JSON serialization and parsing, including exponent-overflow rejection;
+- snapshot restoration with decoded-state type/schema validation, global logical-ID uniqueness, and non-strippable invariant validation before returning a live core;
+- completed-request restoration checks that revalidate committed Attempt authority/success and terminal authoritative Output consistency;
 - deterministic semantic-operation replay with explicit replay time for time-sensitive actions;
-- an independent invariant oracle including declared State-origin re-resolution, cached-provenance consistency, and Phase-dependency temporal-order validation;
+- an independent invariant oracle including declared State-origin re-resolution, cached-provenance consistency, Phase-dependency temporal-order validation, and global identity uniqueness;
 - all 12 mandatory Failure Model traces;
 - a deterministic adversarial sequence matrix plus seeded sequence fuzzing;
 - an executable 37-invariant-to-test coverage registry.
