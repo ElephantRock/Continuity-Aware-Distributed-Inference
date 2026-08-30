@@ -379,3 +379,23 @@ def test_cross_layer_identity_parameters_must_be_nonempty():
         "parameter request_id must be a non-empty string" in item
         for item in report.violations
     )
+
+
+
+def test_malformed_unhashable_produced_or_cancelled_event_ids_are_reported_not_raised():
+    sim, injector, record = _delay_case()
+    malformed_produced = replace(record, produced_event_ids=([],))
+    malformed_cancelled = replace(record, cancelled_event_ids=([],))
+    report = FaultTrustOracle(
+        sim,
+        (malformed_produced, malformed_cancelled),
+        injector_seed=injector.seed,
+    ).inspect()
+    assert any(
+        "produced_event_ids must be tuple[str, ...]" in item
+        for item in report.violations
+    )
+    assert any(
+        "cancelled_event_ids must be tuple[str, ...]" in item
+        for item in report.violations
+    )

@@ -277,17 +277,15 @@ def _record_shape_violations(
             f"{prefix}: expected_safe_outcomes disagree with fault class contract"
         )
 
-    if not _string_tuple(record.produced_event_ids):
+    produced_valid = _string_tuple(record.produced_event_ids)
+    cancelled_valid = _string_tuple(record.cancelled_event_ids)
+    if not produced_valid:
         errors.append(f"{prefix}: produced_event_ids must be tuple[str, ...]")
-    if not _string_tuple(record.cancelled_event_ids):
+    if not cancelled_valid:
         errors.append(f"{prefix}: cancelled_event_ids must be tuple[str, ...]")
 
-    produced = record.produced_event_ids if isinstance(record.produced_event_ids, tuple) else ()
-    cancelled = (
-        record.cancelled_event_ids
-        if isinstance(record.cancelled_event_ids, tuple)
-        else ()
-    )
+    produced = record.produced_event_ids if produced_valid else ()
+    cancelled = record.cancelled_event_ids if cancelled_valid else ()
     if len(set(produced)) != len(produced):
         errors.append(f"{prefix}: produced_event_ids contain duplicates")
     if len(set(cancelled)) != len(cancelled):
