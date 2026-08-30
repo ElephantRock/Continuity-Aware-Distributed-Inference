@@ -338,46 +338,68 @@ class FaultInjector:
         if total > 1.0 + 1e-12:
             raise ValueError("probabilities must sum to at most 1")
         max_delay_value = self._finite_nonnegative(max_delay, "max_delay")
-        draw = self._rng.random()
-        selected: FaultClass | None = None
-        cursor = 0.0
-        for fault_class in ordered:
-            cursor += normalized[fault_class]
-            if draw < cursor:
-                selected = fault_class
-                break
+        rng_state = self._rng.getstate()
+        try:
+            draw = self._rng.random()
+            selected: FaultClass | None = None
+            cursor = 0.0
+            for fault_class in ordered:
+                cursor += normalized[fault_class]
+                if draw < cursor:
+                    selected = fault_class
+                    break
 
-        ordinal = len(self._decisions)
-        if selected is None:
+            ordinal = len(self._decisions)
+            if selected is None:
+                self._decisions.append(
+                    ProbabilisticFaultDecision(self.seed, ordinal, event.event_id, draw, None, None)
+                )
+                return None
+
+            fault_id = self._next_fault_id()
+            if selected is FaultClass.DELIVERY_DROP:
+                record = self.drop_delivery(event.event_id, fault_id=fault_id, draw=draw)
+            elif selected is FaultClass.DELIVERY_DUPLICATE:
+                delay = self._rng.uniform(0.0, max_delay_value) if max_delay_value else 0.0
+                record = self.duplicate_delivery(
+                    event.event_id, delay=delay, fault_id=fault_id, draw=draw
+                )
+            else:
+                delay = self._rng.uniform(0.0, max_delay_value) if max_delay_value else 0.0
+                record = self.delay_delivery(
+                    event.event_id, delay, fault_id=fault_id, draw=draw
+                )
             self._decisions.append(
-                ProbabilisticFaultDecision(self.seed, ordinal, event.event_id, draw, None, None)
+                ProbabilisticFaultDecision(
+                    self.seed, ordinal, event.event_id, draw, selected, record.id
+                )
             )
-            return None
-
-        fault_id = self._next_fault_id()
-        if selected is FaultClass.DELIVERY_DROP:
-            record = self.drop_delivery(event.event_id, fault_id=fault_id, draw=draw)
-        elif selected is FaultClass.DELIVERY_DUPLICATE:
-            delay = self._rng.uniform(0.0, max_delay_value) if max_delay_value else 0.0
-            record = self.duplicate_delivery(event.event_id, delay=delay, fault_id=fault_id, draw=draw)
-        else:
-            delay = self._rng.uniform(0.0, max_delay_value) if max_delay_value else 0.0
-            record = self.delay_delivery(event.event_id, delay, fault_id=fault_id, draw=draw)
-        self._decisions.append(
-            ProbabilisticFaultDecision(self.seed, ordinal, event.event_id, draw, selected, record.id)
-        )
-        return record
+            return record
+        except Exception:
+            self._rng.setstate(rng_state)
+            raise
 
     def assert_ground_truth(self) -> None:
         trace = {event.event_id: event for event in self.simulator.trace}
         pending = {event.event_id: event for event in self.simulator.pending_events}
+        cancelled_by_fault = {
+            event_id
+            for record in self._records
+            for event_id in record.cancelled_event_ids
+        }
         for record in self._records:
             for event_id in record.cancelled_event_ids:
                 if event_id in trace or event_id in pending:
                     raise AssertionError(f"cancelled fault target remained live or executed: {event_id}")
             for event_id in record.produced_event_ids:
-                if event_id not in trace and event_id not in pending:
-                    raise AssertionError(f"fault-produced event missing from simulator history/state: {event_id}")
+                if (
+                    event_id not in trace
+                    and event_id not in pending
+                    and event_id not in cancelled_by_fault
+                ):
+                    raise AssertionError(
+                        f"fault-produced event missing from simulator history/state: {event_id}"
+                    )
             if record.fault_class is FaultClass.DELIVERY_REORDER:
                 params = dict(record.parameters)
                 anchor_id = params["anchor_event_id"]
@@ -389,14 +411,28 @@ class FaultInjector:
             elif record.fault_class is FaultClass.WORKER_FAILURE and self.resources is not None:
                 event_id = record.produced_event_ids[0]
                 if event_id in trace and self.resources.workers[record.target].status is not WorkerStatus.DOWN:
-                    raise AssertionError("worker-failure ground truth did not produce DOWN worker")
+                    order = {event.event_id: index for index, event in enumerate(self.simulator.trace)}
+                    failure_index = order[event_id]
+                    recovered_after = any(
+                        index > failure_index
+                        and event.kind is EventKind.WORKER_RECOVERED
+                        and dict(event.payload).get("worker_id") == record.target
+                        for index, event in enumerate(self.simulator.trace)
+                    )
+                    if not recovered_after:
+                        raise AssertionError("worker-failure ground truth did not produce DOWN worker")
             elif record.fault_class is FaultClass.REPLICA_LOSS and self.resources is not None:
                 event_id = record.produced_event_ids[0]
                 if event_id in trace and self.resources.replicas[record.target].status is not ReplicaRuntimeStatus.LOST:
                     raise AssertionError("replica-loss ground truth did not produce LOST replica")
 
     def _append(self, record: FaultRecord) -> FaultRecord:
+        if record.id in self._record_ids:
+            raise RuntimeError(f"fault_id became committed before record append: {record.id}")
+        self._record_ids.add(record.id)
         self._records.append(record)
+        while f"fault-{self._next_fault:08d}" in self._record_ids:
+            self._next_fault += 1
         return record
 
     def _reserve_fault_id(self, fault_id: str | None) -> str:
@@ -405,15 +441,15 @@ class FaultInjector:
             raise ValueError("fault_id must be a non-empty string")
         if actual in self._record_ids:
             raise ValueError(f"duplicate fault_id: {actual}")
-        self._record_ids.add(actual)
         return actual
 
     def _next_fault_id(self) -> str:
+        index = self._next_fault
         while True:
-            candidate = f"fault-{self._next_fault:08d}"
-            self._next_fault += 1
+            candidate = f"fault-{index:08d}"
             if candidate not in self._record_ids:
                 return candidate
+            index += 1
 
     def _pending(self, event_id: str) -> SimEvent:
         if not isinstance(event_id, str) or not event_id:

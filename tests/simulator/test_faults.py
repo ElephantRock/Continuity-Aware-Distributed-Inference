@@ -165,7 +165,7 @@ def test_probabilistic_configuration_rejects_invalid_probabilities():
         )
     with pytest.raises(ValueError, match="unsupported"):
         faults.probabilistic_delivery_fault("e", {FaultClass.WORKER_FAILURE: 0.5})
-    with pytest.raises(ValueError, match="within \[0, 1\]"):
+    with pytest.raises(ValueError, match=r"within \[0, 1\]"):
         faults.probabilistic_delivery_fault("e", {FaultClass.DELIVERY_DROP: -0.1})
 
 
@@ -220,3 +220,80 @@ def test_ground_truth_can_be_checked_before_fault_events_execute():
 
     faults.assert_ground_truth()
     assert [event.event_id for event in sim.pending_events] == ["fault:f:delayed:e"]
+
+
+def test_rejected_transform_does_not_reserve_explicit_or_automatic_fault_id():
+    sim = DiscreteEventSimulator()
+    sim.schedule(EventKind.ATTEMPT_COMPLETED, at=1, event_id="e")
+    sim.schedule(EventKind.ATTEMPT_FAILED, at=2, event_id="fault:f:duplicate:e")
+    faults = FaultInjector(sim)
+    with pytest.raises(ValueError, match="duplicate simulator event_id"):
+        faults.duplicate_delivery("e", fault_id="f")
+    assert faults.drop_delivery("e", fault_id="f").id == "f"
+
+    sim2 = DiscreteEventSimulator()
+    sim2.schedule(EventKind.ATTEMPT_COMPLETED, at=1, event_id="e")
+    sim2.schedule(
+        EventKind.ATTEMPT_FAILED, at=2, event_id="fault:fault-00000000:duplicate:e"
+    )
+    faults2 = FaultInjector(sim2)
+    with pytest.raises(ValueError, match="duplicate simulator event_id"):
+        faults2.duplicate_delivery("e")
+    assert faults2.drop_delivery("e").id == "fault-00000000"
+
+
+def test_rejected_probabilistic_transform_restores_rng_state_and_fault_identity():
+    def setup(with_collision):
+        sim = DiscreteEventSimulator()
+        sim.schedule(EventKind.ATTEMPT_COMPLETED, at=1, event_id="e")
+        sim.schedule(EventKind.ATTEMPT_COMPLETED, at=3, event_id="e2")
+        if with_collision:
+            sim.schedule(
+                EventKind.ATTEMPT_FAILED,
+                at=2,
+                event_id="fault:fault-00000000:duplicate:e",
+            )
+        return sim, FaultInjector(sim, seed=91)
+
+    _, failed = setup(True)
+    with pytest.raises(ValueError, match="duplicate simulator event_id"):
+        failed.probabilistic_delivery_fault(
+            "e", {FaultClass.DELIVERY_DUPLICATE: 1.0}, max_delay=3
+        )
+    assert failed.decisions == ()
+    assert failed.records == ()
+
+    _, clean = setup(False)
+    clean_record = clean.probabilistic_delivery_fault(
+        "e2", {FaultClass.DELIVERY_DUPLICATE: 1.0}, max_delay=3
+    )
+    failed_record = failed.probabilistic_delivery_fault(
+        "e2", {FaultClass.DELIVERY_DUPLICATE: 1.0}, max_delay=3
+    )
+    assert failed_record is not None and clean_record is not None
+    assert failed.decisions == clean.decisions
+    assert failed_record.id == clean_record.id == "fault-00000000"
+    assert failed_record.duration == clean_record.duration
+
+
+def test_composed_delay_then_drop_preserves_ground_truth_chain():
+    sim = DiscreteEventSimulator()
+    sim.schedule(EventKind.ATTEMPT_COMPLETED, at=1, event_id="e")
+    faults = FaultInjector(sim)
+    delayed = faults.delay_delivery("e", 2, fault_id="delay")
+    faults.drop_delivery(delayed.produced_event_ids[0], fault_id="drop")
+    sim.run()
+    assert sim.trace == ()
+    faults.assert_ground_truth()
+
+
+def test_worker_failure_ground_truth_allows_later_recovery():
+    sim = DiscreteEventSimulator()
+    resources = ResourceModel(sim)
+    resources.add_worker("w1")
+    faults = FaultInjector(sim, resources)
+    faults.fail_worker("w1", fault_id="down")
+    resources.recover_worker("w1")
+    sim.run()
+    assert resources.workers["w1"].status is WorkerStatus.UP
+    faults.assert_ground_truth()
