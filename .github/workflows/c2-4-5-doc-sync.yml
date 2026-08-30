@@ -1,0 +1,29 @@
+name: c2-4-5-doc-sync
+
+on:
+  push:
+    branches: [c2/c2-4-doc-sync]
+    paths:
+      - .github/workflows/c2-4-5-doc-sync.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c2/c2-4-doc-sync
+          fetch-depth: 0
+      - name: Apply C2.4 documentation synchronization
+        run: python tools/c2_4_5_doc_sync.py
+      - name: Commit docs and remove helpers
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/c2-4-5-doc-sync.yml tools/c2_4_5_doc_sync.py
+          git add README.md spec/10-c2-fault-injection-record.md
+          git commit -m "Synchronize C2.4 closure documentation"
+          git push origin HEAD:c2/c2-4-doc-sync
