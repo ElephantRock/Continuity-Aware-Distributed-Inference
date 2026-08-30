@@ -143,7 +143,9 @@ CREATED → RUNNING
 
 and cannot regress from `RUNNING` to `CREATED`; terminal Phase outcomes are immutable.
 
-Phase-origin State requires a `COMPLETED` producer Phase.
+A Phase belonging to a superseded Attempt cannot transition to `COMPLETED`. This fences delayed Phase completion from mutating authoritative semantic state after supersession.
+
+Phase-origin State requires a `COMPLETED` producer Phase, and neither Attempt-origin nor Phase-origin State may be newly produced by a superseded Attempt.
 
 Within the same Attempt, consuming State produced by a Phase requires a strictly later consumer Phase.
 
@@ -359,7 +361,7 @@ event first-delivery order
 Binding epoch directories
 ```
 
-Serialization is deterministic and canonical.
+Serialization is deterministic and canonical. Canonical JSON serialization rejects non-finite floating-point values (`NaN`, `+Infinity`, `-Infinity`) rather than emitting non-standard JSON tokens.
 
 A SHA-256 snapshot fingerprint is available for semantic-state equivalence checks.
 
@@ -407,7 +409,7 @@ Duplicate operation identities within a trace are rejected rather than treated a
 
 Time-sensitive replay actions are deterministic by construction: replayed `finalize_request` and `commit_migration` operations must carry an explicit `now` argument. Replay rejects those actions when replay time is omitted rather than falling back to wall-clock time.
 
-Two fresh cores replaying the same valid operation trace must therefore produce identical canonical snapshots and identical snapshot fingerprints independently of when replay occurs.
+Two fresh cores replaying the same valid operation trace must therefore produce identical canonical snapshots and identical snapshot fingerprints independently of when replay occurs. Event and Operation JSONL use the same strict finite-number canonical JSON rule.
 
 This distinction keeps:
 
@@ -572,7 +574,7 @@ Python 3.13
 Latest completion-candidate result after all review fixes:
 
 ```text
-120 passed
+128 passed
 ```
 
 The final review-regression set verifies that:
@@ -585,7 +587,9 @@ The final review-regression set verifies that:
 - the independent oracle rejects corrupted same-Attempt Phase-provenance temporal inversion;
 - Output creation rejects unresolved Evidence references instead of storing oracle-invalid state;
 - the independent oracle rejects a Phase-origin State whose declared `origin_id` disagrees with its cached producer Phase;
-- request-origin State is rejected before request completion, and the oracle rejects a request-origin State whose cached producer differs from `CommittedAttempt(request)`.
+- request-origin State is rejected before request completion, and the oracle rejects a request-origin State whose cached producer differs from `CommittedAttempt(request)`;
+- a superseded Attempt cannot authoritatively complete a Phase or produce new Attempt-/Phase-origin State;
+- canonical snapshots and Operation JSONL reject `NaN`, `+Infinity`, and `-Infinity`.
 
 The full suite includes:
 
@@ -625,15 +629,17 @@ The eight planned C1 exit artifacts are now implemented:
 
 Implementation exit criteria are therefore satisfied.
 
-Codex review identified five correctness inconsistencies during closure:
+Codex review identified seven correctness inconsistencies during closure:
 
 1. wall-clock-dependent time-sensitive operation replay;
 2. missing independent Phase-dependency ordering validation in restored/corrupted State provenance;
 3. public Output creation accepting unresolved Evidence references while the oracle rejected them;
 4. restored/corrupted State could declare one Phase origin while carrying cached producer provenance from another Phase;
-5. request-origin State producer identity was ambiguous unless request completion was made a precondition.
+5. request-origin State producer identity was ambiguous unless request completion was made a precondition;
+6. delayed Phase completion after Attempt supersession could still mutate semantic state and enable new State production;
+7. canonical JSON/JSONL serialization could emit non-standard `NaN`/`Infinity` tokens.
 
-All five are fixed and covered by regression tests.
+All seven are fixed and covered by regression tests.
 
 Formal milestone closure still requires:
 
