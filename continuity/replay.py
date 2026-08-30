@@ -64,10 +64,9 @@ def _matches_operation_annotation(value: Any, annotation: Any) -> bool:
         return any(_matches_operation_annotation(value, arg) for arg in args)
 
     if origin is IterableABC:
-        # Semantic traces must contain stable, replayable values. One-shot
-        # iterators/generators are rejected because validating them would consume
-        # them and change subsequent serialization or dispatch semantics.
-        if not isinstance(value, (list, tuple, set, frozenset)):
+        # Semantic traces must contain stable values supported by the canonical
+        # encoder. Reject one-shot iterators/generators and mutable sets.
+        if not isinstance(value, (list, tuple, frozenset)):
             return False
         return len(args) == 1 and all(
             _matches_operation_annotation(item, args[0]) for item in value
