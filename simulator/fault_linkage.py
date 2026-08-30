@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import math
 from typing import Optional
 
 from continuity.entities import AttemptAuthority, ExecutionStatus
@@ -279,8 +280,8 @@ class FaultOutcomeLinker:
             if not isinstance(recovery_latency, (int, float)) or isinstance(recovery_latency, bool):
                 raise TypeError("recovery_latency must be numeric or None")
             recovery_latency = float(recovery_latency)
-            if recovery_latency < 0:
-                raise ValueError("recovery_latency must be non-negative")
+            if not math.isfinite(recovery_latency) or recovery_latency < 0:
+                raise ValueError("recovery_latency must be finite and non-negative")
 
         produced_ids = set(record.produced_event_ids)
         semantic_actions: tuple[SemanticActionRecord, ...] = ()
