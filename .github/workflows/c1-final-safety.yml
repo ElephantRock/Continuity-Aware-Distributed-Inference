@@ -1,0 +1,71 @@
+name: c1-final-safety
+
+on:
+  push:
+    branches: [c1/deterministic-core]
+    paths:
+      - '.github/workflows/c1-final-safety.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c1/deterministic-core
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Apply final C1 safety fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(f'expected one match in {path}; got {text.count(old)}')
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'continuity/core.py',
+              '''    def set_phase_status(self, phase_id: str, status: PhaseStatus) -> Phase:\n        p = self.phases[phase_id]\n        terminal = {PhaseStatus.COMPLETED, PhaseStatus.FAILED, PhaseStatus.CANCELLED}\n        if p.status in terminal and status != p.status:\n            raise InvalidTransition("terminal Phase is immutable")\n        nonterminal_rank = {PhaseStatus.CREATED: 0, PhaseStatus.RUNNING: 1}\n        if p.status in nonterminal_rank and status in nonterminal_rank:\n            if nonterminal_rank[status] < nonterminal_rank[p.status]:\n                raise InvalidTransition("Phase status cannot move backward")\n        p = replace(p, status=status)\n        self.phases[phase_id] = p\n        return p\n''',
+              '''    def set_phase_status(self, phase_id: str, status: PhaseStatus) -> Phase:\n        p = self.phases[phase_id]\n        terminal = {PhaseStatus.COMPLETED, PhaseStatus.FAILED, PhaseStatus.CANCELLED}\n        if p.status in terminal and status != p.status:\n            raise InvalidTransition("terminal Phase is immutable")\n        if status == PhaseStatus.COMPLETED:\n            attempt = self.attempts[p.attempt_id]\n            if attempt.authority_status == AttemptAuthority.SUPERSEDED:\n                raise SemanticViolation("superseded Attempt cannot authoritatively complete a Phase")\n        nonterminal_rank = {PhaseStatus.CREATED: 0, PhaseStatus.RUNNING: 1}\n        if p.status in nonterminal_rank and status in nonterminal_rank:\n            if nonterminal_rank[status] < nonterminal_rank[p.status]:\n                raise InvalidTransition("Phase status cannot move backward")\n        p = replace(p, status=status)\n        self.phases[phase_id] = p\n        return p\n'''
+          )
+
+          replace_once(
+              'continuity/core.py',
+              '''        if origin_type == "attempt":\n            a = self.attempts[origin_id]; r = self.requests[a.request_id]; return r.continuation_id, r.id, a.id, None\n        if origin_type == "phase":\n            p = self.phases[origin_id]\n            if p.status != PhaseStatus.COMPLETED:\n                raise SemanticViolation("Phase-origin State requires a COMPLETED producer Phase")\n            a = self.attempts[p.attempt_id]; r = self.requests[a.request_id]\n            return r.continuation_id, r.id, a.id, p.id\n''',
+              '''        if origin_type == "attempt":\n            a = self.attempts[origin_id]\n            if a.authority_status == AttemptAuthority.SUPERSEDED:\n                raise SemanticViolation("superseded Attempt cannot produce authoritative State")\n            r = self.requests[a.request_id]\n            return r.continuation_id, r.id, a.id, None\n        if origin_type == "phase":\n            p = self.phases[origin_id]\n            if p.status != PhaseStatus.COMPLETED:\n                raise SemanticViolation("Phase-origin State requires a COMPLETED producer Phase")\n            a = self.attempts[p.attempt_id]\n            if a.authority_status == AttemptAuthority.SUPERSEDED:\n                raise SemanticViolation("superseded Attempt Phase cannot produce authoritative State")\n            r = self.requests[a.request_id]\n            return r.continuation_id, r.id, a.id, p.id\n'''
+          )
+
+          replace_once(
+              'continuity/serialization.py',
+              '''def _canonical_json(value: Any) -> str:\n    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)\n''',
+              '''def _canonical_json(value: Any) -> str:\n    return json.dumps(\n        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False\n    )\n'''
+          )
+
+          phases = Path('tests/invariants/test_phases.py')
+          phases.write_text(phases.read_text() + '''\n\ndef test_superseded_attempt_cannot_complete_running_phase(core):\n    setup_attempt(core)\n    core.create_phase('p1', 'a', PhaseType.PREFILL)\n    core.set_phase_status('p1', PhaseStatus.RUNNING)\n    core.start_attempt('a2', 'r')\n    with pytest.raises(SemanticViolation):\n        core.complete_phase('p1')\n    assert core.phases['p1'].status is PhaseStatus.RUNNING\n\n\ndef test_state_production_is_fenced_after_attempt_supersession(core):\n    setup_attempt(core)\n    core.create_phase('p1', 'a', PhaseType.PREFILL)\n    core.set_phase_status('p1', PhaseStatus.RUNNING)\n    core.complete_phase('p1')\n    core.start_attempt('a2', 'r')\n    with pytest.raises(SemanticViolation):\n        core.create_state('phase-state', origin_type='phase', origin_id='p1')\n    with pytest.raises(SemanticViolation):\n        core.create_state('attempt-state', origin_type='attempt', origin_id='a')\n''')
+
+          strict = Path('tests/test_strict_json.py')
+          strict.write_text('''import math\nimport pytest\n\nfrom continuity import ContinuityCore\nfrom continuity.entities import Evidence, EvidenceAuthority, EvidenceStatus\nfrom continuity.replay import SemanticOperation, operations_to_jsonl\nfrom continuity.serialization import snapshot_core\n\n\n@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])\ndef test_snapshot_rejects_non_finite_numbers(value):\n    core = ContinuityCore()\n    core.record_evidence(Evidence(\n        'e', 'x', 'test', EvidenceAuthority.EXACT_OBSERVATION,\n        EvidenceStatus.VALID, value, frozenset({('attempt', 'a')})\n    ))\n    with pytest.raises(ValueError):\n        snapshot_core(core)\n\n\n@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])\ndef test_operation_jsonl_rejects_non_finite_numbers(value):\n    op = SemanticOperation.build('op', 'finalize_request', request_id='r', output_id='o', now=value)\n    with pytest.raises(ValueError):\n        operations_to_jsonl([op])\n''')
+          PY
+      - name: Run deterministic C1 tests
+        run: |
+          python -m pip install --upgrade pip pytest
+          python -m pytest -q
+      - name: Commit safety fixes and remove workflow
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add continuity/core.py continuity/serialization.py tests/invariants/test_phases.py tests/test_strict_json.py
+          git rm .github/workflows/c1-final-safety.yml
+          git commit -m 'Fence superseded Phase completion and enforce strict JSON'
+          git push origin HEAD:c1/deterministic-core
