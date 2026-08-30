@@ -2,6 +2,7 @@
 
 from .engine import DiscreteEventSimulator
 from .events import EventKind, SimEvent
+from .faults import FaultClass, FaultInjector, FaultRecord, ProbabilisticFaultDecision
 from .resources import (
     NetworkLink,
     ReplicaRuntime,
@@ -28,6 +29,10 @@ __all__ = [
     "DiscreteEventSimulator",
     "EventKind",
     "SimEvent",
+    "FaultClass",
+    "FaultInjector",
+    "FaultRecord",
+    "ProbabilisticFaultDecision",
     "NetworkLink",
     "ReplicaRuntime",
     "ReplicaRuntimeStatus",
