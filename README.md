@@ -10,8 +10,9 @@
 - **C1 validation:** 157 deterministic/invariant/adversarial tests passing; permanent CI covers Python 3.11, 3.12, and 3.13
 - **C1 closure review:** fifteen substantive Codex correctness/consistency findings plus two independent closure-audit findings fixed and regression-tested; all review threads resolved
 - **Final Codex rerun:** requested on the prior exact head but unavailable because the GitHub Codex integration reached its code-review usage limit; this is recorded as a tooling/quota limitation, not a successful review
-- **C2 Discrete-Event Simulator:** **IN PROGRESS** — C2.1 event kernel CLOSED via PR #14 / `f4e854fa930b09c27d2ea2bea9ecbca04b7ff00d`; C2.2 resource model CLOSED via PR #15 / `9c2c3f0801bca9abf165bf626970c2e9d8fa7d5e`; C2.3 semantic adapter CLOSED via PR #16 / `e1ff3e7c3f63a12755d519b6061ad7fc2feecfb6`; **C2.4 deterministic/probabilistic fault injection CLOSED** via PR #28 / `f33b82d0802cfc97835049e274b288e06f87d369`; C2.5 representability is next
-- **Current repository validation:** 268 tests passing on Python 3.11, 3.12, and 3.13 at the C2.4.4 closure head
+- **C2 Discrete-Event Simulator:** **CLOSED** — C2.1 event kernel via PR #14 / `f4e854fa930b09c27d2ea2bea9ecbca04b7ff00d`; C2.2 resource model via PR #15 / `9c2c3f0801bca9abf165bf626970c2e9d8fa7d5e`; C2.3 semantic adapter via PR #16 / `e1ff3e7c3f63a12755d519b6061ad7fc2feecfb6`; C2.4 deterministic/probabilistic fault injection via PR #28 / `f33b82d0802cfc97835049e274b288e06f87d369`; C2.5 workload/failure representability via PR #30 / `462e63685500e022a97386618ba606f1384d1c56`
+- **Current repository validation:** 278 tests passing on Python 3.11, 3.12, and 3.13 at the reviewed C2.5 head `a03ab77afd481005521e1cecacc5f25228ff1e29`
+- **Next implementation milestone:** C3 — baseline policies B0–B4 against identical C2 workload/fault interfaces
 
 The repository is the canonical system of record for the project.
 
@@ -64,7 +65,7 @@ The deterministic core now includes:
 
 ## C2 simulator reference
 
-The merged C2 substrate now includes:
+The closed C2 substrate now includes:
 
 - deterministic logical time and `(time, insertion-sequence)` event ordering;
 - stable simulator EventIDs, cancellation, immutable canonical payloads, and seeded reproducibility;
@@ -80,10 +81,14 @@ The merged C2 substrate now includes:
 - retry scheduling whose semantic result depends on simulated delivery order rather than host/Python setup order;
 - policy-neutral deterministic delivery/resource fault transformations and explicit cross-layer Attempt/State fault injectors;
 - FaultID → semantic/resource outcome linkage with fail-closed `INVARIANT_VIOLATION` precedence;
-- policy-neutral seeded fault campaign manifests, canonical fingerprints, exact schedule replay, and paired-policy schedule reuse; and
-- an independent `FaultTrustOracle` with strict FaultRecord JSON/JSONL validation, adversarial malformed/tampered metadata coverage, transformation-graph checks, runtime/resource observation checks, C1 invariant integration, and campaign-consistency validation.
+- policy-neutral seeded fault campaign manifests, canonical fingerprints, exact schedule replay, and paired-policy schedule reuse;
+- an independent `FaultTrustOracle` with strict FaultRecord JSON/JSONL validation, adversarial malformed/tampered metadata coverage, transformation-graph checks, runtime/resource observation checks, C1 invariant integration, and campaign-consistency validation;
+- an exact 24-entry representability registry for W1–W10 plus normalized FTR1–FTR14 under stable semantic scenario names;
+- canonical schedule and executed-trace fingerprints with exact same-seed replay checks;
+- explicit normalized FTR→C1 semantic provenance, including the pre-normalization C1 test-number mapping; and
+- C1↔C2 authoritative-equivalence assertions for the adapter-supported FTR1–FTR3 execution traces, without adding a second State/Binding semantic implementation.
 
-C2.4 is closed. C2.5 is the next simulator milestone and will close representability against the required workload and failure families before policy comparison begins.
+C2 is closed. Baseline policy implementation and comparison begin at C3.
 
 ## Repository layout
 

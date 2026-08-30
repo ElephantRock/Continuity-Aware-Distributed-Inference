@@ -5,7 +5,7 @@
 **Milestone:** C2.5 — Workload/Failure Representability and C2 Closure  
 **Prerequisite:** C2.4 CLOSED on `main` through `5092e92cd455d8188f0dc46043c2cc6c970ce9eb`  
 **Tracking:** #11  
-**Status:** IMPLEMENTATION CANDIDATE — pending exact-head review and Python 3.11–3.13 CI
+**Status:** **CLOSED** — PR #30 squash-merged as `462e63685500e022a97386618ba606f1384d1c56`
 
 ---
 
@@ -59,6 +59,8 @@ FTR14  abandoned-branch residual State
 ```
 
 Their current C1 semantic locations are explicit in the registry. In particular, FTR13/FTR14 map to the older counterexample names `test_ftr11_*` and `test_ftr12_*`; FTR5 and FTR10 map to invariant tests outside that file.
+
+The C2.5 test suite additionally resolves every configured `path::test_function` reference against the repository so stale provenance cannot silently pass as an opaque string.
 
 ---
 
@@ -123,9 +125,9 @@ EventKind
 payload
 ```
 
-Same scenario + same seed must reproduce both fingerprints exactly.
+Same scenario + same seed reproduces both fingerprints exactly.
 
-Different seeds must produce different schedule fingerprints.
+Different seeds produce different schedule fingerprints.
 
 ---
 
@@ -218,38 +220,77 @@ stable 64-hex schedule fingerprints
 same-seed exact schedule replay
 same-seed exact executed-trace replay
 explicit normalized C1 reference mapping
+all C1 references resolve to declared test functions
 C1↔C2 authoritative equivalence for FTR1–FTR3
+FTR2 duplicate delivery is accepted idempotently rather than rejected as conflicting Evidence
 no semantic-equivalence claims beyond the adapter-supported boundary
 ```
 
-The full repository suite remains the closure test because C2.5 must not regress C1 invariants, C2 resources, semantic adapter behavior, or C2.4 fault instrumentation.
+The full repository suite is the closure test because C2.5 must not regress C1 invariants, C2 resources, semantic adapter behavior, or C2.4 fault instrumentation.
 
 ---
 
-# 10. C2.5 Exit Gate
+# 10. Bounded Closure Review
 
-C2.5 may close only when all of the following hold:
+The initial PR head passed CI but was not accepted solely because the outcome-level equivalence test could mask a malformed duplicate delivery.
+
+The review found one substantive defect:
 
 ```text
-W1–W10 represented deterministically
-FTR1–FTR14 represented deterministically
-same-seed replay exact
-schedule/trace fingerprints stable
-C1 reference map complete
-adapter-supported C1↔C2 equivalence exact
-full repository tests pass on Python 3.11
-full repository tests pass on Python 3.12
-full repository tests pass on Python 3.13
-review findings resolved
+FTR2 first observation:
+    EvidenceID = e1
+    observed_at = generated delivery time
+
+FTR2 duplicate observation:
+    EvidenceID = e1
+    observed_at = 3.0
 ```
 
-C2 itself may then be declared CLOSED.
+Because Evidence identity is immutable, the second delivery could be rejected as a conflicting object with the same EvidenceID while the final request outcome still matched the direct C1 reference.
 
-Until that exact-head gate passes, this document records an implementation candidate only.
+The fix made both deliveries carry the exact same observation identity and added a regression assertion that the duplicate adapter record is not `REJECTED`.
+
+The review also strengthened provenance validation so all fourteen normalized C1 references must resolve to real test functions.
+
+No State/Binding semantic handlers were added as part of the fix.
 
 ---
 
-# 11. Scope Boundary After C2
+# 11. Exact-Head Closure Evidence
+
+Final reviewed PR head:
+
+```text
+a03ab77afd481005521e1cecacc5f25228ff1e29
+```
+
+Full repository validation on that exact head:
+
+```text
+Python 3.11  PASS
+Python 3.12  PASS
+Python 3.13  PASS
+278 tests
+```
+
+PR #30 was SHA-fenced to that head and squash-merged to `main` as:
+
+```text
+462e63685500e022a97386618ba606f1384d1c56
+```
+
+Issue #11 closes through the merged PR.
+
+Therefore:
+
+```text
+C2.5  CLOSED
+C2    CLOSED
+```
+
+---
+
+# 12. Scope Boundary After C2
 
 C2.5 does not implement or compare:
 
