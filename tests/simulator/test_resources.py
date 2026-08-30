@@ -1,3 +1,5 @@
+import pytest
+
 from continuity import ContinuityCore
 from simulator import (
     DiscreteEventSimulator,
@@ -203,3 +205,48 @@ def test_same_seed_and_resource_scenario_produce_same_trace_and_state():
         return sim.trace, resources.tasks, resources.replicas, resources.transfers
 
     assert run(17) == run(17)
+
+
+def test_same_runtime_replica_cannot_have_overlapping_moves():
+    sim, resources = _resources()
+    resources.add_link("l12", "w1", "w2", latency=1, bandwidth_bytes_per_time=100)
+    resources.materialize_replica("rp", "state", "w1", size_bytes=100, duration=0)
+    sim.run()
+    resources.start_transfer("tx1", "rp", "l12")
+
+    with pytest.raises(ValueError, match="active transfer"):
+        resources.start_transfer("tx2", "rp", "l12")
+
+
+def test_eviction_aborts_inflight_transfer_and_cancels_completion():
+    sim, resources = _resources()
+    resources.add_link("l12", "w1", "w2", latency=1, bandwidth_bytes_per_time=100)
+    resources.materialize_replica("rp", "state", "w1", size_bytes=200, duration=0)
+    sim.run()
+    resources.start_transfer("tx", "rp", "l12")
+    sim.run_next()
+    assert resources.transfers["tx"].status is TransferStatus.RUNNING
+
+    resources.evict_replica("rp")
+    sim.run()
+
+    assert resources.replicas["rp"].status is ReplicaRuntimeStatus.EVICTED
+    assert resources.transfers["tx"].status is TransferStatus.FAILED
+    assert resources.transfers["tx"].completion_event_id is None
+    assert all(event.event_id != "transfer-complete:tx" for event in sim.trace)
+    assert any(event.kind is EventKind.STATE_TRANSFER_FAILED for event in sim.trace)
+
+
+def test_terminal_task_records_clear_completion_event_identity():
+    sim, resources = _resources()
+    resources.enqueue_task("w1", "ok", duration=0)
+    sim.run()
+    assert resources.tasks["ok"].status is TaskStatus.COMPLETED
+    assert resources.tasks["ok"].completion_event_id is None
+
+    resources.enqueue_task("w1", "fail", duration=5)
+    sim.run_next()
+    resources.fail_worker("w1")
+    sim.run_next()
+    assert resources.tasks["fail"].status is TaskStatus.FAILED
+    assert resources.tasks["fail"].completion_event_id is None

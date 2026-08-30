@@ -241,6 +241,12 @@ class ResourceModel:
         link = self._require_link(link_id)
         if replica.location_id != link.source_id:
             raise ValueError("replica location must match link source")
+        if any(
+            transfer.replica_id == replica_id
+            and transfer.status in {TransferStatus.SCHEDULED, TransferStatus.RUNNING}
+            for transfer in self.transfers.values()
+        ):
+            raise ValueError("replica already has an active transfer")
         transfer = StateTransfer(
             transfer_id,
             replica_id,
@@ -314,7 +320,12 @@ class ResourceModel:
         active = self.worker_active[worker_id]
         if task_id in active:
             active.remove(task_id)
-        self.tasks[task_id] = replace(task, status=TaskStatus.COMPLETED, completed_at=self.simulator.now)
+        self.tasks[task_id] = replace(
+            task,
+            status=TaskStatus.COMPLETED,
+            completed_at=self.simulator.now,
+            completion_event_id=None,
+        )
         self._dispatch(worker_id)
 
     def _on_worker_failed(self, _sim: DiscreteEventSimulator, event: SimEvent) -> None:
@@ -330,7 +341,12 @@ class ResourceModel:
             task = self.tasks[task_id]
             if task.completion_event_id:
                 self.simulator.cancel(task.completion_event_id)
-            self.tasks[task_id] = replace(task, status=TaskStatus.FAILED, completed_at=self.simulator.now)
+            self.tasks[task_id] = replace(
+                task,
+                status=TaskStatus.FAILED,
+                completed_at=self.simulator.now,
+                completion_event_id=None,
+            )
             self.simulator.schedule(
                 EventKind.WORKER_TASK_FAILED,
                 delay=0,
@@ -350,7 +366,7 @@ class ResourceModel:
             )
 
         for transfer_id, transfer in list(self.transfers.items()):
-            if transfer.status is not TransferStatus.RUNNING:
+            if transfer.status not in {TransferStatus.SCHEDULED, TransferStatus.RUNNING}:
                 continue
             if worker_id not in {transfer.source_id, transfer.destination_id}:
                 continue
@@ -360,6 +376,7 @@ class ResourceModel:
                 transfer,
                 status=TransferStatus.FAILED,
                 completed_at=self.simulator.now,
+                completion_event_id=None,
             )
             self.simulator.schedule(
                 EventKind.STATE_TRANSFER_FAILED,
@@ -485,6 +502,7 @@ class ResourceModel:
         replica = self.replicas.get(replica_id)
         if replica is None or replica.status is ReplicaRuntimeStatus.LOST:
             return
+        self._fail_active_transfers_for_replica(replica_id)
         if replica.completion_event_id:
             self.simulator.cancel(replica.completion_event_id)
         self.replicas[replica_id] = replace(
@@ -498,6 +516,7 @@ class ResourceModel:
         replica = self.replicas.get(replica_id)
         if replica is None or replica.status is ReplicaRuntimeStatus.LOST:
             return
+        self._fail_active_transfers_for_replica(replica_id)
         if replica.completion_event_id:
             self.simulator.cancel(replica.completion_event_id)
         self.replicas[replica_id] = replace(
@@ -505,6 +524,26 @@ class ResourceModel:
             status=ReplicaRuntimeStatus.LOST,
             completion_event_id=None,
         )
+
+    def _fail_active_transfers_for_replica(self, replica_id: str) -> None:
+        for transfer_id, transfer in list(self.transfers.items()):
+            if transfer.replica_id != replica_id:
+                continue
+            if transfer.status not in {TransferStatus.SCHEDULED, TransferStatus.RUNNING}:
+                continue
+            if transfer.completion_event_id:
+                self.simulator.cancel(transfer.completion_event_id)
+            self.transfers[transfer_id] = replace(
+                transfer,
+                status=TransferStatus.FAILED,
+                completed_at=self.simulator.now,
+                completion_event_id=None,
+            )
+            self.simulator.schedule(
+                EventKind.STATE_TRANSFER_FAILED,
+                delay=0,
+                payload={"transfer_id": transfer_id},
+            )
 
     def _require_worker(self, worker_id: str) -> Worker:
         worker = self.workers.get(worker_id)
