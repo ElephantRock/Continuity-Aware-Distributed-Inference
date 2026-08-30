@@ -293,8 +293,8 @@ SCENARIOS: tuple[ScenarioDefinition, ...] = (
         _step(0, EventKind.REQUEST_CREATED, "request", request_id="r", continuation_id="c"),
         _step(1, EventKind.ATTEMPT_STARTED, "a1-start", request_id="r", attempt_id="a1"),
         _step(2, EventKind.ATTEMPT_COMPLETED, "a1-complete", attempt_id="a1"),
-        _step(3, EventKind.OBSERVATION_CREATED, "first-observe", request_id="r", attempt_id="a1", evidence_id="e1", output_id="o1", observed_at=_TIME_SENTINEL),
-        _step(4, EventKind.OBSERVATION_DUPLICATED, "duplicate-observe", request_id="r", attempt_id="a1", evidence_id="e1", output_id="o1", observed_at=3.0),
+        _step(3, EventKind.OBSERVATION_CREATED, "first-observe", request_id="r", attempt_id="a1", evidence_id="e1", output_id="o1", observed_at=2.5),
+        _step(4, EventKind.OBSERVATION_DUPLICATED, "duplicate-observe", request_id="r", attempt_id="a1", evidence_id="e1", output_id="o1", observed_at=2.5),
     ), C1_FAILURE_REFERENCES["FTR2"], True),
     ScenarioDefinition("reordered-retry-events", "FTR3", ScenarioFamily.FAILURE, "Older retry completion is delivered after a newer Attempt has committed.", (
         _step(0, EventKind.REQUEST_CREATED, "request", request_id="r", continuation_id="c"),
