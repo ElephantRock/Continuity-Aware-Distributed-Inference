@@ -172,6 +172,10 @@ class ContinuityCore:
         terminal = {PhaseStatus.COMPLETED, PhaseStatus.FAILED, PhaseStatus.CANCELLED}
         if p.status in terminal and status != p.status:
             raise InvalidTransition("terminal Phase is immutable")
+        if status == PhaseStatus.COMPLETED:
+            attempt = self.attempts[p.attempt_id]
+            if attempt.authority_status == AttemptAuthority.SUPERSEDED:
+                raise SemanticViolation("superseded Attempt cannot authoritatively complete a Phase")
         nonterminal_rank = {PhaseStatus.CREATED: 0, PhaseStatus.RUNNING: 1}
         if p.status in nonterminal_rank and status in nonterminal_rank:
             if nonterminal_rank[status] < nonterminal_rank[p.status]:
@@ -243,12 +247,19 @@ class ContinuityCore:
                 raise SemanticViolation("request-origin State requires a COMPLETED request with a committed Attempt")
             return r.continuation_id, r.id, r.committed_attempt_id, None
         if origin_type == "attempt":
-            a = self.attempts[origin_id]; r = self.requests[a.request_id]; return r.continuation_id, r.id, a.id, None
+            a = self.attempts[origin_id]
+            if a.authority_status == AttemptAuthority.SUPERSEDED:
+                raise SemanticViolation("superseded Attempt cannot produce authoritative State")
+            r = self.requests[a.request_id]
+            return r.continuation_id, r.id, a.id, None
         if origin_type == "phase":
             p = self.phases[origin_id]
             if p.status != PhaseStatus.COMPLETED:
                 raise SemanticViolation("Phase-origin State requires a COMPLETED producer Phase")
-            a = self.attempts[p.attempt_id]; r = self.requests[a.request_id]
+            a = self.attempts[p.attempt_id]
+            if a.authority_status == AttemptAuthority.SUPERSEDED:
+                raise SemanticViolation("superseded Attempt Phase cannot produce authoritative State")
+            r = self.requests[a.request_id]
             return r.continuation_id, r.id, a.id, p.id
         raise SemanticViolation(f"unsupported origin_type: {origin_type}")
 

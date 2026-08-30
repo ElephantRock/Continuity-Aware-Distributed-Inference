@@ -79,3 +79,25 @@ def test_oracle_detects_corrupted_phase_dependency_temporal_inversion(core):
     core.states['early'] = replace(core.states['early'], derived_from=frozenset({'late'}))
     with pytest.raises(AssertionError):
         InvariantOracle(core).assert_all()
+
+
+def test_superseded_attempt_cannot_complete_running_phase(core):
+    setup_attempt(core)
+    core.create_phase('p1', 'a', PhaseType.PREFILL)
+    core.set_phase_status('p1', PhaseStatus.RUNNING)
+    core.start_attempt('a2', 'r')
+    with pytest.raises(SemanticViolation):
+        core.complete_phase('p1')
+    assert core.phases['p1'].status is PhaseStatus.RUNNING
+
+
+def test_state_production_is_fenced_after_attempt_supersession(core):
+    setup_attempt(core)
+    core.create_phase('p1', 'a', PhaseType.PREFILL)
+    core.set_phase_status('p1', PhaseStatus.RUNNING)
+    core.complete_phase('p1')
+    core.start_attempt('a2', 'r')
+    with pytest.raises(SemanticViolation):
+        core.create_state('phase-state', origin_type='phase', origin_id='p1')
+    with pytest.raises(SemanticViolation):
+        core.create_state('attempt-state', origin_type='attempt', origin_id='a')
