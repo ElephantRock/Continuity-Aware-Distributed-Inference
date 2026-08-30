@@ -319,6 +319,7 @@ The current descriptive `FaultOutcomeClass` values are:
 
 ```text
 PENDING
+INVARIANT_VIOLATION
 DELIVERY_SUPPRESSED
 PHYSICAL_EFFECT
 SEMANTIC_APPLIED
@@ -332,7 +333,8 @@ These are experiment-observation classes, not semantic commit outcomes.
 Classification precedence is intentionally fail-closed:
 
 ```text
-REJECTED semantic action
+INVARIANT_VIOLATION
+    > REJECTED semantic action
     > IGNORED
     > APPLIED
     > IDEMPOTENT
@@ -340,7 +342,7 @@ REJECTED semantic action
 
 so an event that records non-authoritative observations but whose correctness-sensitive finalization is rejected is classified `SEMANTIC_REJECTED`.
 
-When an adapter and RequestID are available, the linker also records the C2.3 `AuthoritativeOutcome` projection. This lets experiments associate FaultID with the semantic winner without reimplementing C1 authority.
+When an adapter and RequestID are available and the independent invariant oracle is clean, the linker also records the C2.3 `AuthoritativeOutcome` projection. If the oracle reports any violation, the outcome is classified `INVARIANT_VIOLATION` and authoritative projection is suppressed. This lets experiments associate FaultID with the semantic winner without reimplementing or masking C1 authority.
 
 ---
 
@@ -378,6 +380,7 @@ worker failure and replica faults link to physical status
 FaultID links to adapter action records
 FaultID links to final authoritative Request projection when available
 invariant violations remain empty for safe traces
+invariant violation has highest classification precedence and suppresses authoritative projection
 pending vs delivered outcome classification
 external policy/recovery annotations are pass-through only
 non-finite recovery metadata rejected
@@ -415,6 +418,7 @@ C2.4.2 may close when:
 cross-layer fault helpers use existing public C2.3/C2.2 transition surfaces only
 FaultID can be correlated with semantic/resource observations
 fail-closed semantic rejection is classified explicitly
+invariant-oracle failure is classified explicitly and cannot expose an authoritative projection
 late superseded execution cannot regain authority
 physical State eviction/loss remains distinct from logical State identity
 linkage never chooses recovery policy
