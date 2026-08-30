@@ -22,6 +22,7 @@ from .events import freeze_payload
 
 class FaultOutcomeClass(str, Enum):
     PENDING = "PENDING"
+    INVARIANT_VIOLATION = "INVARIANT_VIOLATION"
     DELIVERY_SUPPRESSED = "DELIVERY_SUPPRESSED"
     PHYSICAL_EFFECT = "PHYSICAL_EFFECT"
     SEMANTIC_APPLIED = "SEMANTIC_APPLIED"
@@ -300,14 +301,15 @@ class FaultOutcomeLinker:
         resolved_request_id = request_id or self._request_id(record)
         authoritative: AuthoritativeOutcome | None = None
         if (
-            self.adapter is not None
+            not invariant_violations
+            and self.adapter is not None
             and resolved_request_id is not None
             and resolved_request_id in self.adapter.core.requests
         ):
             authoritative = authoritative_outcome(self.adapter.core, resolved_request_id)
 
         physical_summary = self._physical_summary(record)
-        outcome_class = self._classify(record, semantic_actions)
+        outcome_class = self._classify(record, semantic_actions, invariant_violations)
         errors = tuple(
             f"{action.error_type}: {action.error_message}"
             for action in semantic_actions
@@ -342,7 +344,10 @@ class FaultOutcomeLinker:
         self,
         record: FaultRecord,
         semantic_actions: tuple[SemanticActionRecord, ...],
+        invariant_violations: tuple[str, ...],
     ) -> FaultOutcomeClass:
+        if invariant_violations:
+            return FaultOutcomeClass.INVARIANT_VIOLATION
         pending_ids = {event.event_id for event in self.injector.simulator.pending_events}
         trace_ids = {event.event_id for event in self.injector.simulator.trace}
         if any(event_id in pending_ids for event_id in record.produced_event_ids):
