@@ -3,6 +3,12 @@
 from .engine import DiscreteEventSimulator
 from .events import EventKind, SimEvent
 from .faults import FaultClass, FaultInjector, FaultRecord, ProbabilisticFaultDecision
+from .fault_linkage import (
+    CrossLayerFaultInjector,
+    FaultOutcomeClass,
+    FaultOutcomeLinker,
+    FaultOutcomeRecord,
+)
 from .resources import (
     NetworkLink,
     ReplicaRuntime,
@@ -33,6 +39,10 @@ __all__ = [
     "FaultInjector",
     "FaultRecord",
     "ProbabilisticFaultDecision",
+    "CrossLayerFaultInjector",
+    "FaultOutcomeClass",
+    "FaultOutcomeLinker",
+    "FaultOutcomeRecord",
     "NetworkLink",
     "ReplicaRuntime",
     "ReplicaRuntimeStatus",
