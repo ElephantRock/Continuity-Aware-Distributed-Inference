@@ -226,6 +226,7 @@ class ContinuityAdapter:
         output_id: str,
         *,
         at: float,
+        observed_at: Optional[float] = None,
         duplicated: bool = False,
         event_id: Optional[str] = None,
     ) -> SimEvent:
@@ -236,17 +237,26 @@ class ContinuityAdapter:
             (output_id, "output_id"),
         ):
             self._require_id(value, name)
+        delivery_time = self._finite_nonnegative(at, "at")
+        observation_time = (
+            delivery_time
+            if observed_at is None
+            else self._finite_nonnegative(observed_at, "observed_at")
+        )
+        if observation_time > delivery_time:
+            raise ValueError("observed_at cannot be later than observation delivery")
         kind = EventKind.OBSERVATION_DUPLICATED if duplicated else EventKind.OBSERVATION_CREATED
         prefix = "observation-duplicate" if duplicated else "observation"
         return self.simulator.schedule(
             kind,
-            at=at,
+            at=delivery_time,
             event_id=event_id or f"{prefix}:{evidence_id}:{output_id}",
             payload={
                 "request_id": request_id,
                 "attempt_id": attempt_id,
                 "evidence_id": evidence_id,
                 "output_id": output_id,
+                "observed_at": observation_time,
             },
         )
 
@@ -374,6 +384,15 @@ class ContinuityAdapter:
         payload = self._payload(
             event, "request_id", "attempt_id", "evidence_id", "output_id"
         )
+        observed_at = self._event_nonnegative_float(event, "observed_at")
+        if observed_at > self.simulator.now:
+            self._note(
+                event,
+                "observation_timestamp",
+                AdapterOutcome.REJECTED,
+                error=_AdapterInputError("observation timestamp is later than delivery"),
+            )
+            return
         attempt = self.core.attempts.get(payload["attempt_id"])
         if attempt is None:
             self._note(
@@ -401,7 +420,9 @@ class ContinuityAdapter:
             return
 
         try:
-            self._ensure_terminal_evidence(event, payload["attempt_id"], payload["evidence_id"])
+            self._ensure_terminal_evidence(
+                event, payload["attempt_id"], payload["evidence_id"], observed_at
+            )
             self._ensure_terminal_output(
                 event,
                 payload["attempt_id"],
@@ -420,30 +441,25 @@ class ContinuityAdapter:
             ),
         )
 
-    def _ensure_terminal_evidence(self, event: SimEvent, attempt_id: str, evidence_id: str) -> None:
-        existing = self.core.evidence.get(evidence_id)
-        expected_scope = frozenset({("attempt", attempt_id)})
-        if existing is not None:
-            if (
-                existing.claim != "terminal_attempt_success"
-                or existing.source != "c2.semantic_adapter"
-                or existing.authority is not EvidenceAuthority.EXACT_OBSERVATION
-                or existing.status is not EvidenceStatus.VALID
-                or existing.scope != expected_scope
-            ):
-                raise SemanticViolation("conflicting terminal Evidence identity in semantic adapter")
-            self._note(event, "record_evidence", AdapterOutcome.IDEMPOTENT, result_id=evidence_id)
-            return
-        evidence = Evidence(
+    def _ensure_terminal_evidence(
+        self, event: SimEvent, attempt_id: str, evidence_id: str, observed_at: float
+    ) -> None:
+        expected = Evidence(
             id=evidence_id,
             claim="terminal_attempt_success",
             source="c2.semantic_adapter",
             authority=EvidenceAuthority.EXACT_OBSERVATION,
             status=EvidenceStatus.VALID,
-            observed_at=self.simulator.now,
-            scope=expected_scope,
+            observed_at=observed_at,
+            scope=frozenset({("attempt", attempt_id)}),
         )
-        self._apply(event, "record_evidence", lambda: self.core.record_evidence(evidence))
+        existing = self.core.evidence.get(evidence_id)
+        if existing is not None:
+            if existing != expected:
+                raise SemanticViolation("conflicting terminal Evidence identity in semantic adapter")
+            self._note(event, "record_evidence", AdapterOutcome.IDEMPOTENT, result_id=evidence_id)
+            return
+        self._apply(event, "record_evidence", lambda: self.core.record_evidence(expected))
 
     def _ensure_terminal_output(
         self,
@@ -547,6 +563,25 @@ class ContinuityAdapter:
                 fingerprint=fingerprint,
             )
         )
+
+    @staticmethod
+    def _finite_nonnegative(value: float, name: str) -> float:
+        import math
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise ValueError(f"{name} must be numeric")
+        numeric = float(value)
+        if not math.isfinite(numeric) or numeric < 0:
+            raise ValueError(f"{name} must be finite and non-negative")
+        return numeric
+
+    def _event_nonnegative_float(self, event: SimEvent, name: str) -> float:
+        payload = dict(event.payload)
+        if name not in payload:
+            raise _AdapterInputError(f"event payload missing field: {name}")
+        try:
+            return self._finite_nonnegative(payload[name], name)
+        except (TypeError, ValueError) as exc:
+            raise _AdapterInputError(str(exc)) from exc
 
     @staticmethod
     def _require_id(value: str, name: str) -> None:

@@ -138,7 +138,9 @@ duplicate late A1 completion
 delayed timeout after A1 physically succeeded but before authoritative observation
 duplicate timeout delivery
 stale timeout after finalization
-duplicate authoritative observation
+duplicate authoritative observation with exact original Evidence timestamp
+reordered duplicate-before-original observation delivery
+conflicting Evidence identity rejection
 late superseded-A1 terminal observation
 malformed adapter event input
 ```

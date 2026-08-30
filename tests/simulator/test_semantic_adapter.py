@@ -163,7 +163,7 @@ def test_duplicate_authoritative_observation_is_idempotent():
     adapter.schedule_attempt_completion("a1", at=2)
     adapter.schedule_observation("r", "a1", "e1", "o1", at=3)
     adapter.schedule_observation(
-        "r", "a1", "e1", "o1", at=4, duplicated=True, event_id="duplicate-observation"
+        "r", "a1", "e1", "o1", at=4, observed_at=3, duplicated=True, event_id="duplicate-observation"
     )
     sim.run()
 
@@ -257,3 +257,48 @@ def test_rejected_c1_finalization_is_fingerprint_stable_at_rejection_boundary():
     assert rejected.outcome is AdapterOutcome.REJECTED
     assert rejected.fingerprint == snapshot_fingerprint(core)
     InvariantOracle(core).assert_all()
+
+
+def test_duplicate_delivery_before_original_preserves_exact_evidence_identity():
+    sim = DiscreteEventSimulator()
+    core = _scaffold_core()
+    adapter = ContinuityAdapter(sim, core)
+    adapter.schedule_request("r", "c", at=0)
+    adapter.schedule_attempt_start("r", "a1", at=1)
+    adapter.schedule_attempt_completion("a1", at=2)
+    adapter.schedule_observation(
+        "r", "a1", "e1", "o1", at=3, observed_at=2.5, duplicated=True, event_id="duplicate-first"
+    )
+    adapter.schedule_observation(
+        "r", "a1", "e1", "o1", at=4, observed_at=2.5, event_id="original-late"
+    )
+    sim.run()
+
+    assert core.evidence["e1"].observed_at == 2.5
+    assert core.requests["r"].committed_attempt_id == "a1"
+    later = [record for record in adapter.records if record.event_id == "original-late"]
+    assert [record.outcome for record in later] == [
+        AdapterOutcome.IDEMPOTENT, AdapterOutcome.IDEMPOTENT, AdapterOutcome.IDEMPOTENT
+    ]
+
+
+def test_conflicting_preexisting_evidence_identity_is_rejected():
+    sim = DiscreteEventSimulator()
+    core = _scaffold_core()
+    core.create_request("r", "c")
+    core.start_attempt("a1", "r")
+    core.set_attempt_execution("a1", ExecutionStatus.RUNNING)
+    core.complete_attempt("a1", succeeded=True)
+    core.record_evidence(Evidence(
+        id="e1", claim="terminal_attempt_success", source="c2.semantic_adapter",
+        authority=EvidenceAuthority.EXACT_OBSERVATION, status=EvidenceStatus.VALID,
+        observed_at=1.0, scope=frozenset({("attempt", "a1")}),
+    ))
+    adapter = ContinuityAdapter(sim, core)
+    adapter.schedule_observation("r", "a1", "e1", "o1", at=3, observed_at=2.0)
+    sim.run()
+
+    assert "o1" not in core.outputs
+    assert core.requests["r"].committed_attempt_id is None
+    assert adapter.records[-1].operation == "observation_identity"
+    assert adapter.records[-1].outcome is AdapterOutcome.REJECTED
