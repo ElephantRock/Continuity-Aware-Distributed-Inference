@@ -81,6 +81,7 @@ class InvariantOracle:
         assert not self.c._state_cycle()
         for x in self.c.states.values():
             assert x.origin_continuation_id in self.c.continuations
+            self._declared_state_origin(x)
             for dependency_id in x.derived_from:
                 dependency = self.c.states[dependency_id]
                 assert self.c.is_ancestor(dependency.origin_continuation_id, x.origin_continuation_id)
@@ -100,6 +101,39 @@ class InvariantOracle:
                 phase = self.c.phases[x.producer_phase_id]
                 assert phase.attempt_id == x.producer_attempt_id
                 assert phase.status.name == "COMPLETED"
+
+    def _declared_state_origin(self, x):
+        if x.origin_type == "continuation":
+            continuation = self.c.continuations[x.origin_id]
+            assert x.origin_continuation_id == continuation.id
+            assert x.origin_request_id is None
+            assert x.producer_attempt_id is None
+            assert x.producer_phase_id is None
+            return
+        if x.origin_type == "request":
+            request = self.c.requests[x.origin_id]
+            assert x.origin_request_id == request.id
+            assert x.origin_continuation_id == request.continuation_id
+            assert x.producer_phase_id is None
+            return
+        if x.origin_type == "attempt":
+            attempt = self.c.attempts[x.origin_id]
+            request = self.c.requests[attempt.request_id]
+            assert x.producer_attempt_id == attempt.id
+            assert x.origin_request_id == request.id
+            assert x.origin_continuation_id == request.continuation_id
+            assert x.producer_phase_id is None
+            return
+        if x.origin_type == "phase":
+            phase = self.c.phases[x.origin_id]
+            attempt = self.c.attempts[phase.attempt_id]
+            request = self.c.requests[attempt.request_id]
+            assert x.producer_phase_id == phase.id
+            assert x.producer_attempt_id == attempt.id
+            assert x.origin_request_id == request.id
+            assert x.origin_continuation_id == request.continuation_id
+            return
+        raise AssertionError(f"unsupported State origin_type: {x.origin_type}")
 
     def _replica_integrity(self):
         for replica in self.c.replicas.values():
