@@ -575,7 +575,7 @@ Python 3.13
 Latest completion-candidate result after all review fixes:
 
 ```text
-142 passed
+151 passed
 ```
 
 The final review-regression set verifies that:
@@ -597,7 +597,10 @@ The final review-regression set verifies that:
 - completed requests are rechecked against committed-Attempt success/authority and terminal authoritative Output;
 - global logical-ID uniqueness is revalidated across all entity collections;
 - restore validation remains active under `python -O`;
-- strict JSON parsing rejects numeric exponent overflow that would become ±infinity.
+- strict JSON parsing rejects numeric exponent overflow that would become ±infinity;
+- Operation JSONL arguments are validated against whitelisted `ContinuityCore` signatures before construction, serialization, and dispatch;
+- nested semantic-operation dataclass, enum, scalar, finite-float, and typed-container values are recursively validated;
+- malformed directly constructed `SemanticOperation` objects, duplicate argument names, and one-shot iterator arguments are rejected before canonical emission or mutation.
 
 The full suite includes:
 
@@ -637,7 +640,7 @@ The eight planned C1 exit artifacts are now implemented:
 
 Implementation exit criteria are therefore satisfied.
 
-Codex review identified thirteen correctness inconsistencies during closure:
+Codex review identified fourteen correctness inconsistencies during closure:
 
 1. wall-clock-dependent time-sensitive operation replay;
 2. missing independent Phase-dependency ordering validation in restored/corrupted State provenance;
@@ -651,9 +654,10 @@ Codex review identified thirteen correctness inconsistencies during closure:
 10. restored completed requests were not rechecked against finalization execution/output postconditions;
 11. decoded snapshot collection members and internal enum/scalar types were not schema-validated;
 12. restore validation depended on Python `assert` and could disappear under `python -O`;
-13. snapshot restore did not enforce the core global logical-ID namespace across entity collections.
+13. snapshot restore did not enforce the core global logical-ID namespace across entity collections;
+14. external semantic-operation traces could inject wrongly typed decoded arguments, including forged Evidence authority, because replay did not validate action argument/entity types.
 
-All thirteen are fixed and covered by regression tests.
+All fourteen are fixed and covered by regression tests.
 
 Formal milestone closure still requires:
 
