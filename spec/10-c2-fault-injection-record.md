@@ -4,7 +4,7 @@
 **Project:** Continuity-Aware Distributed Inference  
 **Milestone:** C2.4 — Deterministic and Probabilistic Fault Injection  
 **Prerequisite:** C2.3 CLOSED on `main` via PR #16 / `e1ff3e7c3f63a12755d519b6061ad7fc2feecfb6`  
-**Status:** IN PROGRESS — C2.4.1 CLOSED; C2.4.2 implementation candidate
+**Status:** IN PROGRESS — C2.4.1/C2.4.2 CLOSED; C2.4.3 implementation candidate
 
 ---
 
@@ -37,8 +37,8 @@ Tracking:
 ```text
 #10  C2.4 umbrella
 #18  C2.4.1 fault metadata + delivery/resource transformation substrate — CLOSED
-#19  C2.4.2 mandatory failure-class injectors + semantic outcome linkage — ACTIVE
-#20  C2.4.3 probabilistic campaign manifests + replay/reuse contract
+#19  C2.4.2 mandatory failure-class injectors + semantic outcome linkage — CLOSED
+#20  C2.4.3 probabilistic campaign manifests + replay/reuse contract — ACTIVE
 #21  C2.4.4 injector trust oracle + closure review
 #22  C2.4.5 post-merge documentation synchronization
 ```
@@ -428,3 +428,220 @@ bounded linkage/classification review has no unresolved blocker
 ```
 
 C2.4 umbrella remains open after this slice.
+
+---
+
+# 16. C2.4.2 Closure
+
+C2.4.2 closed through PR #26.
+
+Final validated PR head:
+
+```text
+626e431bc4605a308c564085ae0c527af35e370c
+```
+
+Exact-head validation:
+
+```text
+Python 3.11  PASS
+Python 3.12  PASS
+Python 3.13  PASS
+238 passed
+```
+
+Squash merge on `main`:
+
+```text
+467e634e1e7017f84cf3f3282a05ba1fbb13adef
+```
+
+The bounded linkage review fixed three issues before merge:
+
+1. non-finite recovery latency metadata was accepted;
+2. invariant violations could be recorded while the headline outcome still said `SEMANTIC_APPLIED`;
+3. an authoritative projection could be exposed even when the independent invariant oracle failed.
+
+The closed behavior makes `INVARIANT_VIOLATION` highest-precedence and suppresses authoritative projection whenever the oracle is not clean.
+
+---
+
+# 17. C2.4.3 Fault Campaign Artifact
+
+C2.4.3 freezes a machine-readable, policy-neutral fault campaign artifact. It is referenced by the broader experiment manifest required by `05-experimental-plan.md`; it does not replace that experiment manifest.
+
+`FaultCampaignManifest` records:
+
+```text
+campaign_id
+git_commit
+scenario_fingerprint
+seed
+generator
+fault_configuration
+probabilistic decisions
+realized replay schedule
+configuration_fingerprint
+schedule_fingerprint
+manifest_fingerprint
+```
+
+The campaign contains no routing or recovery policy choice.
+
+---
+
+# 18. Decisions and Realized Schedule Are Separate
+
+Probabilistic generation records every decision, including `NO_FAULT` decisions. Only realized faults appear in the replay schedule.
+
+This distinction is required because:
+
+```text
+random opportunity evaluated
+    !=
+fault injected
+```
+
+Every selected probabilistic decision must name a FaultID that exists in the realized schedule with the same target and FaultClass. A no-fault decision must not name a FaultID.
+
+Replay does not draw randomness again. The seed and probabilistic decisions are provenance/audit evidence for how the schedule was generated; paired runs consume the already-realized immutable schedule.
+
+---
+
+# 19. Fingerprint Contract
+
+C2.4.3 computes independent SHA-256 fingerprints for:
+
+```text
+configuration_fingerprint
+    = seed + generator + fault_configuration
+
+schedule_fingerprint
+    = ordered FaultReplayEntry sequence
+
+manifest_fingerprint
+    = complete campaign payload except the manifest fingerprint field itself
+```
+
+The manifest fingerprint therefore covers:
+
+```text
+git revision
+scenario fingerprint
+seed/configuration
+all probabilistic decisions
+realized fault schedule
+```
+
+Canonical JSON is used and non-finite JSON values are rejected.
+
+Generated replacement/duplicate EventIDs are intentionally excluded from the policy-neutral replay entry. Stable target identities, injection times, fault class, duration, and class-specific stable parameters remain in the schedule fingerprint.
+
+---
+
+# 20. Replay Contract
+
+`FaultScheduleReplayer` replays a prepared scenario against the recorded schedule.
+
+Before any replay mutation it requires exact equality of:
+
+```text
+actual git_commit == manifest.git_commit
+actual scenario_fingerprint == manifest.scenario_fingerprint
+```
+
+At each recorded injection boundary it then requires the stable target/resource/semantic precondition needed by that FaultClass.
+
+For pending-delivery faults this includes the exact EventID and expected pending event time. Replay never silently retargets a missing or changed event.
+
+If any condition fails:
+
+```text
+FaultReplayError
+```
+
+is explicit and the run is invalid for paired comparison.
+
+A failure discovered after an earlier valid replay prefix does not roll back simulator history; the experiment harness must discard that failed run rather than treat the partial prefix as a valid paired sample.
+
+---
+
+# 21. Paired-Policy Reuse Contract
+
+A `PolicyFaultBinding` associates a policy identifier with an existing campaign without changing the campaign.
+
+Paired-policy comparison requires equality of:
+
+```text
+campaign_fingerprint
+schedule_fingerprint
+scenario_fingerprint
+```
+
+Policy IDs may differ.
+
+This implements Experimental Plan principle X1: fault ground truth is independent of the policy being evaluated.
+
+If a policy cannot expose the stable target required by the recorded schedule, replay fails explicitly. C2.4.3 does not adapt or regenerate a more favorable schedule for that policy.
+
+---
+
+# 22. C2.4.3 Validation Obligations
+
+C2.4.3 must validate:
+
+```text
+strict manifest JSON round-trip
+configuration/schedule/manifest fingerprint stability
+fingerprint tamper detection
+non-finite JSON rejection
+probabilistic no-fault decisions preserved
+selected probabilistic decisions agree with realized FaultID/class/target
+exact deterministic delivery schedule replay
+same retry-timeout/late-result semantics under replay
+missing or time-shifted stable target fails closed
+revision mismatch fails before replay mutation
+scenario fingerprint mismatch fails before replay mutation
+paired policies reference the same campaign/schedule/scenario
+configuration fingerprint changes with seed or fault configuration
+all pre-existing C1/C2/C2.4 tests remain green
+Python 3.11–3.13 CI
+```
+
+---
+
+# 23. Explicit Non-Scope After C2.4.3
+
+Still deferred:
+
+```text
+full decoded FaultRecord trust-schema oracle
+malformed/tampered fault-record adversarial campaign
+C2.4 final trust closure
+end-to-end W1–W10/FTR1–FTR12 representability proof
+full experiment-run manifest implementation
+baseline policy comparison
+performance/cost modeling
+```
+
+These remain #21/#22 and C2.5+.
+
+---
+
+# 24. C2.4.3 Closure Criterion
+
+C2.4.3 may close only when:
+
+```text
+fault campaign generation remains policy-neutral
+manifest serialization is strict and fingerprinted
+probabilistic decision provenance is internally consistent with realized schedule
+replay requires matching software revision and scenario fingerprint
+replay never silently retargets a missing/different fault target
+same prepared scenario reproduces the recorded fault schedule
+paired policy bindings require exact campaign/schedule/scenario identity
+full repository tests pass on Python 3.11–3.13
+bounded reproducibility review has no unresolved blocker
+```
+
+C2.4 umbrella remains open after this slice; #21 performs the final injector trust-oracle closure review before C2.5 may start.
