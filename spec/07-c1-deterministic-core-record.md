@@ -536,7 +536,7 @@ spec/invariant-coverage.json
 schema = cadi.invariant-coverage.v1
 ```
 
-The registry covers all 37 canonical invariant IDs:
+The registry covers all 38 canonical invariant IDs:
 
 ```text
 A1–A4
@@ -544,14 +544,14 @@ B1–B7
 C1–C7
 D1–D5
 E1–E7
-F1–F7
+F1–F8
 ```
 
 Every invariant maps to at least one named pytest function.
 
 A meta-test verifies that:
 
-- the registry contains exactly the 37 canonical IDs;
+- the registry IDs are derived from and must exactly match the canonical invariant headings in `spec/03-invariants.md`;
 - every entry has a non-empty title;
 - every entry maps to one or more test node IDs;
 - every referenced test file exists;
@@ -575,7 +575,7 @@ Python 3.13
 Latest completion-candidate result after all review fixes:
 
 ```text
-152 passed
+157 passed
 ```
 
 The final review-regression set verifies that:
@@ -601,6 +601,8 @@ The final review-regression set verifies that:
 - Operation JSONL arguments are validated against whitelisted `ContinuityCore` signatures before construction, serialization, and dispatch;
 - nested semantic-operation dataclass, enum, scalar, finite-float, and typed-container values are recursively validated;
 - malformed directly constructed `SemanticOperation` objects, duplicate argument names, one-shot iterator arguments, and mutable sets are rejected before canonical emission or mutation.
+- `FAILED` and `CANCELLED` requests are fenced from finalization, and restore rejects such terminal requests when stale current/committed/output authority remains;
+- the invariant-coverage registry includes canonical F8 and derives its expected ID set directly from the invariant catalogue rather than a hard-coded range.
 
 The full suite includes:
 
@@ -635,7 +637,7 @@ The eight planned C1 exit artifacts are now implemented:
 [complete] expanded independent invariant oracle
 [complete] deterministic snapshots and semantic-operation replay
 [complete] machine-readable Event and Operation trace formats
-[complete] all 37 canonical invariants mapped to named executable tests
+[complete] all 38 canonical invariants mapped to named executable tests
 ```
 
 Implementation exit criteria are therefore satisfied.
@@ -660,11 +662,20 @@ Codex review identified fifteen correctness inconsistencies during closure:
 
 All fifteen are fixed and covered by regression tests.
 
+An independent exact-head semantic audit was performed after the GitHub Codex integration reached its code-review usage limit and could not execute the requested final exact-head pass. That audit identified two additional closure inconsistencies:
+
+1. `finalize_request()` fenced `COMPLETED` requests but did not explicitly reject restored `FAILED` or `CANCELLED` requests, contrary to the Safe Finalization predicate requiring a nonterminal request at commit;
+2. the machine-readable coverage registry and its meta-test stopped at F7 even though the canonical invariant catalogue contains F8, allowing the registry and test to agree while drifting from the specification.
+
+Both independent findings are fixed and covered by regression tests. The registry now derives its canonical ID set from `spec/03-invariants.md`, and the bounded independent review found no further blocking contradiction between the C1 kernel and the canonical A–F safety catalogue.
+
+The unavailable Codex exact-head rerun is recorded as a tooling/quota limitation, not as a successful Codex review. C1 closure therefore relies on the completed independent exact-head semantic audit plus permanent exact-head CI.
+
 Formal milestone closure still requires:
 
 ```text
-fresh review of the final PR head
-clean permanent CI on that head
+independent exact-head semantic review with no unresolved blocking finding
+clean permanent CI on that exact head
 resolution of all review threads
 merge of the C1 completion PR to main
 ```
