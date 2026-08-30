@@ -1,0 +1,55 @@
+name: c1-record-142
+
+on:
+  push:
+    branches: [c1/deterministic-core]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c1/deterministic-core
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Synchronize C1 record
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('spec/07-c1-deterministic-core-record.md')
+          text = p.read_text()
+          replacements = [
+              ('```text\n134 passed\n```', '```text\n142 passed\n```'),
+              ('completed-request consistency\nContinuation DAG acyclicity', 'completed-request finalization postcondition consistency\nglobal logical-ID uniqueness\nContinuation DAG acyclicity'),
+              ('This prevents the oracle from being merely a mirror of public transition guards.', 'The oracle uses non-strippable runtime checks rather than Python `assert`, so validation remains active under `python -O`. This prevents the oracle from being merely a mirror of public transition guards.'),
+              ('- `restore_core` rejects snapshots that violate the independent invariant oracle before exposing a live core.', '- `restore_core` rejects snapshots that violate the independent invariant oracle before exposing a live core;\n- snapshot restoration rejects wrong collection/member/enum/scalar types before installing state;\n- completed requests are rechecked against committed-Attempt success/authority and terminal authoritative Output;\n- global logical-ID uniqueness is revalidated across all entity collections;\n- restore validation remains active under `python -O`;\n- strict JSON parsing rejects numeric exponent overflow that would become ±infinity.'),
+              ('Codex review identified nine correctness inconsistencies during closure:', 'Codex review identified thirteen correctness inconsistencies during closure:'),
+              ('9. snapshot restoration could expose invariant-invalid persisted state without running the independent oracle.\n\nAll nine are fixed and covered by regression tests.', '9. snapshot restoration could expose invariant-invalid persisted state without running the independent oracle;\n10. restored completed requests were not rechecked against finalization execution/output postconditions;\n11. decoded snapshot collection members and internal enum/scalar types were not schema-validated;\n12. restore validation depended on Python `assert` and could disappear under `python -O`;\n13. snapshot restore did not enforce the core global logical-ID namespace across entity collections.\n\nAll thirteen are fixed and covered by regression tests.'),
+          ]
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one match, got {count}: {old[:100]!r}')
+              text = text.replace(old, new, 1)
+          p.write_text(text)
+          PY
+      - name: Validate deterministic C1 suite
+        run: |
+          python -m pip install --upgrade pip pytest
+          python -m pytest -q
+      - name: Commit record and remove workflow
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add spec/07-c1-deterministic-core-record.md
+          git rm .github/workflows/c1-record-142.yml
+          git commit -m 'Synchronize C1 record at 142 tests'
+          git push origin HEAD:c1/deterministic-core
