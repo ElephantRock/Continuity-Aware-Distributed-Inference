@@ -14,6 +14,15 @@ from .resources import (
     Worker,
     WorkerStatus,
 )
+from .semantic_adapter import (
+    AdapterOutcome,
+    AttemptProjection,
+    AuthoritativeOutcome,
+    ContinuityAdapter,
+    SemanticActionRecord,
+    assert_authoritative_equivalent,
+    authoritative_outcome,
+)
 
 __all__ = [
     "DiscreteEventSimulator",
@@ -29,4 +38,11 @@ __all__ = [
     "TransferStatus",
     "Worker",
     "WorkerStatus",
+    "AdapterOutcome",
+    "AttemptProjection",
+    "AuthoritativeOutcome",
+    "ContinuityAdapter",
+    "SemanticActionRecord",
+    "assert_authoritative_equivalent",
+    "authoritative_outcome",
 ]
