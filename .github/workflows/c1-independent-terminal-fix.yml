@@ -1,0 +1,60 @@
+name: c1-independent-terminal-fix
+
+on:
+  push:
+    branches: [c1/deterministic-core]
+    paths:
+      - .github/workflows/c1-independent-terminal-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c1/deterministic-core
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Apply terminal-request safety fix
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          core_path = Path('continuity/core.py')
+          core = core_path.read_text()
+          old = '''        if r.status == RequestStatus.COMPLETED:\n            if r.authoritative_output_id == output_id: return r\n            raise InvalidTransition("completed request output is immutable")\n        if o.attempt_id != r.current_attempt_id or a.authority_status != AttemptAuthority.CURRENT:\n'''
+          new = '''        if r.status == RequestStatus.COMPLETED:\n            if r.authoritative_output_id == output_id: return r\n            raise InvalidTransition("completed request output is immutable")\n        if r.status in {RequestStatus.FAILED, RequestStatus.CANCELLED}:\n            raise InvalidTransition("FAILED/CANCELLED request cannot be finalized")\n        if o.attempt_id != r.current_attempt_id or a.authority_status != AttemptAuthority.CURRENT:\n'''
+          if old not in core:
+              raise SystemExit('core finalize_request target not found')
+          core_path.write_text(core.replace(old, new, 1))
+
+          inv_path = Path('continuity/invariants.py')
+          inv = inv_path.read_text()
+          old = '''                _require(output.attempt_id == request.committed_attempt_id)\n                _require(output.terminal)\n\n    def _continuation_dags(self):\n'''
+          new = '''                _require(output.attempt_id == request.committed_attempt_id)\n                _require(output.terminal)\n            elif request.status in {RequestStatus.FAILED, RequestStatus.CANCELLED}:\n                _require(request.current_attempt_id is None)\n                _require(request.committed_attempt_id is None)\n                _require(request.authoritative_output_id is None)\n\n    def _continuation_dags(self):\n'''
+          if old not in inv:
+              raise SystemExit('invariant request-consistency target not found')
+          inv_path.write_text(inv.replace(old, new, 1))
+
+          test_path = Path('tests/test_terminal_request_safety.py')
+          test_path.write_text('''from dataclasses import replace\n\nimport pytest\n\nfrom continuity import ContinuityCore\nfrom continuity.entities import (\n    Evidence, EvidenceAuthority, EvidenceStatus, RequestStatus,\n)\nfrom continuity.errors import InvalidTransition\nfrom continuity.serialization import restore_core, snapshot_core\n\n\ndef _candidate_core():\n    core = ContinuityCore()\n    core.create_program("p")\n    core.create_session("s", "p")\n    core.create_continuation("c", "s")\n    core.create_request("r", "c")\n    core.start_attempt("a", "r")\n    core.complete_attempt("a", True)\n    core.record_evidence(Evidence(\n        "e", "terminal output observed", "test",\n        EvidenceAuthority.EXACT_OBSERVATION, EvidenceStatus.VALID, 1.0,\n        frozenset({("attempt", "a")}), valid_until=100.0,\n    ))\n    core.create_output("o", "a", True, ["e"])\n    return core\n\n\n@pytest.mark.parametrize("status", [RequestStatus.FAILED, RequestStatus.CANCELLED])\ndef test_finalize_rejects_failed_or_cancelled_request(status):\n    core = _candidate_core()\n    core.requests["r"] = replace(core.requests["r"], status=status)\n    with pytest.raises(InvalidTransition, match="cannot be finalized"):\n        core.finalize_request("r", "o", now=10.0)\n\n\n@pytest.mark.parametrize("status", [RequestStatus.FAILED, RequestStatus.CANCELLED])\ndef test_restore_rejects_terminal_request_with_current_attempt(status):\n    core = ContinuityCore()\n    core.create_program("p")\n    core.create_session("s", "p")\n    core.create_continuation("c", "s")\n    core.create_request("r", "c")\n    core.start_attempt("a", "r")\n    core.requests["r"] = replace(core.requests["r"], status=status)\n    with pytest.raises(ValueError, match="snapshot violates Continuity invariants"):\n        restore_core(snapshot_core(core))\n''')
+          PY
+      - name: Validate full C1 suite
+        run: |
+          python -m pip install --upgrade pip pytest
+          python -m pytest
+      - name: Commit validated fix and remove workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/c1-independent-terminal-fix.yml
+          git add continuity/core.py continuity/invariants.py tests/test_terminal_request_safety.py
+          git commit -m "Fence terminal requests during finalization and restore"
+          git push origin HEAD:c1/deterministic-core
