@@ -201,6 +201,8 @@ class ContinuityCore:
         if r.status == RequestStatus.COMPLETED:
             if r.authoritative_output_id == output_id: return r
             raise InvalidTransition("completed request output is immutable")
+        if r.status in {RequestStatus.FAILED, RequestStatus.CANCELLED}:
+            raise InvalidTransition("FAILED/CANCELLED request cannot be finalized")
         if o.attempt_id != r.current_attempt_id or a.authority_status != AttemptAuthority.CURRENT:
             raise SemanticViolation("only CURRENT Attempt may finalize")
         if a.execution_status != ExecutionStatus.SUCCEEDED or not o.terminal:

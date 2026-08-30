@@ -122,6 +122,10 @@ class InvariantOracle:
                 _require(attempt.execution_status == ExecutionStatus.SUCCEEDED)
                 _require(output.attempt_id == request.committed_attempt_id)
                 _require(output.terminal)
+            elif request.status in {RequestStatus.FAILED, RequestStatus.CANCELLED}:
+                _require(request.current_attempt_id is None)
+                _require(request.committed_attempt_id is None)
+                _require(request.authoritative_output_id is None)
 
     def _continuation_dags(self):
         for session_id in self.c.sessions:
