@@ -348,7 +348,7 @@ def test_simultaneous_timeout_and_completion_orderings_preserve_a2_authority(tim
     assert core.attempts["a1"].authority_status is AttemptAuthority.SUPERSEDED
 
 
-def test_explicit_retry_reservation_deduplicates_later_timeout_delivery():
+def test_preplanned_future_retry_does_not_suppress_earlier_timeout_retry():
     sim = DiscreteEventSimulator()
     core = _scaffold_core()
     adapter = ContinuityAdapter(sim, core)
@@ -361,8 +361,32 @@ def test_explicit_retry_reservation_deduplicates_later_timeout_delivery():
     assert [(a.id, a.generation) for a in sorted(core.attempts.values(), key=lambda a: a.generation)] == [
         ("a1", 1), ("a2", 2)
     ]
+    assert core.attempts["a2"].authority_status is AttemptAuthority.CURRENT
     timeout = [record for record in adapter.records if record.event_id == "timeout"]
-    assert timeout[-1].outcome is AdapterOutcome.IGNORED
+    assert timeout[-1].operation == "schedule_retry"
+    assert timeout[-1].outcome is AdapterOutcome.APPLIED
+    preplanned = [record for record in adapter.records if record.event_id == "preplanned-retry"]
+    assert preplanned[-1].operation == "retry_eligibility"
+    assert preplanned[-1].outcome is AdapterOutcome.IGNORED
+
+
+def test_retry_setup_call_order_does_not_change_different_time_delivery_outcome():
+    def run(preplanned_first):
+        sim = DiscreteEventSimulator()
+        core = _scaffold_core()
+        adapter = ContinuityAdapter(sim, core)
+        adapter.schedule_request("r", "c", at=0)
+        adapter.schedule_attempt_start("r", "a1", at=1)
+        if preplanned_first:
+            adapter.schedule_retry_start("r", "a1", "a2", at=5, event_id="preplanned-retry")
+            adapter.schedule_timeout("r", "a1", "a2", at=4, event_id="timeout")
+        else:
+            adapter.schedule_timeout("r", "a1", "a2", at=4, event_id="timeout")
+            adapter.schedule_retry_start("r", "a1", "a2", at=5, event_id="preplanned-retry")
+        sim.run()
+        return authoritative_outcome(core, "r")
+
+    assert run(True) == run(False)
 
 
 def test_retry_attempt_identity_must_differ_from_superseded_attempt():

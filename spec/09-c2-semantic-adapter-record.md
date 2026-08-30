@@ -143,7 +143,7 @@ reordered duplicate-before-original observation delivery
 conflicting Evidence identity rejection
 terminal observation timestamp fenced after adapter-delivered Attempt success
 simultaneous timeout/completion in both insertion orders
-preplanned retry vs timeout deduplication
+preplanned retry vs earlier timeout convergence without host-time reservation
 late superseded-A1 terminal observation
 malformed adapter event input
 ```

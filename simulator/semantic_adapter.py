@@ -179,23 +179,16 @@ class ContinuityAdapter:
             self._require_id(value, name)
         if retry_attempt_id == superseded_attempt_id:
             raise ValueError("retry_attempt_id must differ from superseded_attempt_id")
-        if retry_attempt_id in self._scheduled_retry_attempts:
-            raise ValueError("retry Attempt is already scheduled")
-        self._scheduled_retry_attempts.add(retry_attempt_id)
-        try:
-            return self.simulator.schedule(
-                EventKind.RETRY_STARTED,
-                at=at,
-                event_id=event_id or f"retry-start:{retry_attempt_id}",
-                payload={
-                    "request_id": request_id,
-                    "superseded_attempt_id": superseded_attempt_id,
-                    "retry_attempt_id": retry_attempt_id,
-                },
-            )
-        except Exception:
-            self._scheduled_retry_attempts.remove(retry_attempt_id)
-            raise
+        return self.simulator.schedule(
+            EventKind.RETRY_STARTED,
+            at=at,
+            event_id=event_id or f"retry-start:{retry_attempt_id}",
+            payload={
+                "request_id": request_id,
+                "superseded_attempt_id": superseded_attempt_id,
+                "retry_attempt_id": retry_attempt_id,
+            },
+        )
 
     def schedule_attempt_completion(
         self,
@@ -331,7 +324,7 @@ class ContinuityAdapter:
             self.simulator.schedule(
                 EventKind.RETRY_STARTED,
                 delay=0,
-                event_id=f"retry-start:{retry_attempt_id}",
+                event_id=f"retry-start:{retry_attempt_id}:from:{event.event_id}",
                 payload={
                     "request_id": payload["request_id"],
                     "superseded_attempt_id": payload["timed_out_attempt_id"],
