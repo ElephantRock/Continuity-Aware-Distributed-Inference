@@ -438,7 +438,8 @@ functional parent-scope consistency
 single CurrentAttempt authority
 single CommittedAttempt
 Attempt generation monotonicity
-completed-request consistency
+completed-request finalization postcondition consistency
+global logical-ID uniqueness
 Continuation DAG acyclicity
 Phase ownership and ordinal ordering
 State provenance graph acyclicity
@@ -464,7 +465,7 @@ The test suite also deliberately corrupts otherwise unreachable internal states 
 - Phase-provenance temporal inversion inside a State derivation;
 - mismatch between a declared State origin and its cached producer provenance.
 
-This prevents the oracle from being merely a mirror of public transition guards.
+The oracle uses non-strippable runtime checks rather than Python `assert`, so validation remains active under `python -O`. This prevents the oracle from being merely a mirror of public transition guards.
 
 ---
 
@@ -574,7 +575,7 @@ Python 3.13
 Latest completion-candidate result after all review fixes:
 
 ```text
-134 passed
+142 passed
 ```
 
 The final review-regression set verifies that:
@@ -591,7 +592,12 @@ The final review-regression set verifies that:
 - a superseded Attempt cannot authoritatively complete a Phase or produce new Attempt-/Phase-origin State;
 - canonical snapshots and Operation JSONL reject `NaN`, `+Infinity`, and `-Infinity`;
 - snapshot, Event JSONL, and Operation JSONL parsers reject externally supplied non-finite constants;
-- `restore_core` rejects snapshots that violate the independent invariant oracle before exposing a live core.
+- `restore_core` rejects snapshots that violate the independent invariant oracle before exposing a live core;
+- snapshot restoration rejects wrong collection/member/enum/scalar types before installing state;
+- completed requests are rechecked against committed-Attempt success/authority and terminal authoritative Output;
+- global logical-ID uniqueness is revalidated across all entity collections;
+- restore validation remains active under `python -O`;
+- strict JSON parsing rejects numeric exponent overflow that would become ±infinity.
 
 The full suite includes:
 
@@ -631,7 +637,7 @@ The eight planned C1 exit artifacts are now implemented:
 
 Implementation exit criteria are therefore satisfied.
 
-Codex review identified nine correctness inconsistencies during closure:
+Codex review identified thirteen correctness inconsistencies during closure:
 
 1. wall-clock-dependent time-sensitive operation replay;
 2. missing independent Phase-dependency ordering validation in restored/corrupted State provenance;
@@ -641,9 +647,13 @@ Codex review identified nine correctness inconsistencies during closure:
 6. delayed Phase completion after Attempt supersession could still mutate semantic state and enable new State production;
 7. canonical JSON/JSONL serialization could emit non-standard `NaN`/`Infinity` tokens;
 8. external JSON/JSONL parsing accepted non-finite constants that could bypass freshness semantics;
-9. snapshot restoration could expose invariant-invalid persisted state without running the independent oracle.
+9. snapshot restoration could expose invariant-invalid persisted state without running the independent oracle;
+10. restored completed requests were not rechecked against finalization execution/output postconditions;
+11. decoded snapshot collection members and internal enum/scalar types were not schema-validated;
+12. restore validation depended on Python `assert` and could disappear under `python -O`;
+13. snapshot restore did not enforce the core global logical-ID namespace across entity collections.
 
-All nine are fixed and covered by regression tests.
+All thirteen are fixed and covered by regression tests.
 
 Formal milestone closure still requires:
 
