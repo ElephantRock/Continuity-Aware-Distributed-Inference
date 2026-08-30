@@ -61,6 +61,14 @@ def _canonical_json(value: Any) -> str:
     )
 
 
+def _reject_non_finite_constant(value: str) -> Any:
+    raise ValueError(f"non-finite JSON numeric constant is not allowed: {value}")
+
+
+def _strict_json_loads(text: str) -> Any:
+    return json.loads(text, parse_constant=_reject_non_finite_constant)
+
+
 def _encode(value: Any) -> Any:
     if is_dataclass(value):
         return {
@@ -119,7 +127,7 @@ def restore_core(
     snapshot: str,
     semantic_validity: Optional[Callable[[ReusableState, Any], bool]] = None,
 ) -> ContinuityCore:
-    payload = json.loads(snapshot)
+    payload = _strict_json_loads(snapshot)
     if payload.get("schema") != SNAPSHOT_SCHEMA:
         raise ValueError("unsupported Continuity snapshot schema")
     core = ContinuityCore(semantic_validity=semantic_validity)
@@ -129,6 +137,11 @@ def restore_core(
         raise ValueError(f"snapshot missing core fields: {sorted(missing)}")
     for name in _CORE_FIELDS:
         setattr(core, name, _decode(state[name]))
+    from .invariants import InvariantOracle
+    try:
+        InvariantOracle(core).assert_all()
+    except (AssertionError, KeyError, TypeError, AttributeError) as exc:
+        raise ValueError("snapshot violates Continuity invariants") from exc
     return core
 
 
@@ -159,7 +172,7 @@ def events_from_jsonl(text: str) -> list[SemanticEvent]:
     for line in text.splitlines():
         if not line.strip():
             continue
-        result.append(event_from_record(json.loads(line)))
+        result.append(event_from_record(_strict_json_loads(line)))
     return result
 
 

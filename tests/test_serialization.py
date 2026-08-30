@@ -1,9 +1,10 @@
 import json
+from dataclasses import replace
 import pytest
 
 from continuity.core import ContinuityCore
 from continuity.entities import (
-    Evidence, EvidenceAuthority, EvidenceStatus, ExecutionStatus, PhaseStatus, PhaseType,
+    AttemptAuthority, Evidence, EvidenceAuthority, EvidenceStatus, ExecutionStatus, PhaseStatus, PhaseType,
     SemanticEvent,
 )
 from continuity.invariants import InvariantOracle
@@ -115,3 +116,15 @@ def test_unknown_event_schema_is_rejected():
     bad = '{"schema":"future","event":{}}\n'
     with pytest.raises(ValueError):
         events_from_jsonl(bad)
+
+
+def test_restore_rejects_snapshot_that_violates_invariant_oracle():
+    core = ContinuityCore()
+    core.create_program('p'); core.create_session('s', 'p'); core.create_continuation('c', 's')
+    core.create_request('r', 'c')
+    core.start_attempt('a1', 'r')
+    core.start_attempt('a2', 'r')
+    core.attempts['a1'] = replace(core.attempts['a1'], authority_status=AttemptAuthority.CURRENT)
+    snapshot = snapshot_core(core)
+    with pytest.raises(ValueError, match='snapshot violates Continuity invariants'):
+        restore_core(snapshot)

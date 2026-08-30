@@ -5,7 +5,7 @@ import json
 from typing import Any, Iterable
 
 from .core import ContinuityCore
-from .serialization import _canonical_json, _decode, _encode
+from .serialization import _canonical_json, _decode, _encode, _strict_json_loads
 
 OPERATION_TRACE_SCHEMA = "cadi.semantic-operation.v1"
 
@@ -101,7 +101,7 @@ def operations_from_jsonl(text: str) -> list[SemanticOperation]:
     for line in text.splitlines():
         if not line.strip():
             continue
-        operation = operation_from_record(json.loads(line))
+        operation = operation_from_record(_strict_json_loads(line))
         if operation.id in seen:
             raise ValueError(f"duplicate semantic operation identity: {operation.id}")
         seen.add(operation.id)
