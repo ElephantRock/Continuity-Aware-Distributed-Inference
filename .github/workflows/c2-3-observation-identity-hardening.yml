@@ -1,0 +1,143 @@
+name: c2-3-observation-identity-hardening
+
+on:
+  push:
+    branches: [c2/semantic-adapter]
+    paths:
+      - .github/workflows/c2-3-observation-identity-hardening.yml
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c2/semantic-adapter
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Harden adapter observation identity
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('simulator/semantic_adapter.py')
+          text = path.read_text()
+
+          old = '''class AdapterOutcome(str, Enum):\n    APPLIED = "APPLIED"\n    IDEMPOTENT = "IDEMPOTENT"\n    REJECTED = "REJECTED"\n    IGNORED = "IGNORED"\n\n\n@dataclass(frozen=True, slots=True)\nclass SemanticActionRecord:\n    sim_time: float\n    event_id: str\n    event_kind: EventKind\n    operation: str\n    outcome: AdapterOutcome\n'''
+          new = '''class AdapterOutcome(str, Enum):\n    APPLIED = "APPLIED"\n    IDEMPOTENT = "IDEMPOTENT"\n    REJECTED = "REJECTED"\n    IGNORED = "IGNORED"\n\n\nclass AdapterLayer(str, Enum):\n    C1 = "C1"\n    C2 = "C2"\n\n\n@dataclass(frozen=True, slots=True)\nclass SemanticActionRecord:\n    sim_time: float\n    event_id: str\n    event_kind: EventKind\n    operation: str\n    layer: AdapterLayer\n    outcome: AdapterOutcome\n'''
+          if old not in text: raise SystemExit('missing layer target')
+          text = text.replace(old, new, 1)
+
+          old = '''        *,\n        at: float,\n        duplicated: bool = False,\n        event_id: Optional[str] = None,\n    ) -> SimEvent:\n'''
+          new = '''        *,\n        at: float,\n        observed_at: Optional[float] = None,\n        duplicated: bool = False,\n        event_id: Optional[str] = None,\n    ) -> SimEvent:\n'''
+          if old not in text: raise SystemExit('missing schedule observation signature target')
+          text = text.replace(old, new, 1)
+
+          old = '''        kind = EventKind.OBSERVATION_DUPLICATED if duplicated else EventKind.OBSERVATION_CREATED\n        prefix = "observation-duplicate" if duplicated else "observation"\n        return self.simulator.schedule(\n            kind,\n            at=at,\n'''
+          new = '''        delivery_time = self._finite_nonnegative(at, "at")\n        observation_time = (\n            delivery_time\n            if observed_at is None\n            else self._finite_nonnegative(observed_at, "observed_at")\n        )\n        if observation_time > delivery_time:\n            raise ValueError("observed_at cannot be later than observation delivery")\n        kind = EventKind.OBSERVATION_DUPLICATED if duplicated else EventKind.OBSERVATION_CREATED\n        prefix = "observation-duplicate" if duplicated else "observation"\n        return self.simulator.schedule(\n            kind,\n            at=delivery_time,\n'''
+          if old not in text: raise SystemExit('missing observation time target')
+          text = text.replace(old, new, 1)
+
+          old = '''                "evidence_id": evidence_id,\n                "output_id": output_id,\n            },\n'''
+          new = '''                "evidence_id": evidence_id,\n                "output_id": output_id,\n                "observed_at": observation_time,\n            },\n'''
+          if old not in text: raise SystemExit('missing observation payload target')
+          text = text.replace(old, new, 1)
+
+          old = '''        payload = self._payload(\n            event, "request_id", "attempt_id", "evidence_id", "output_id"\n        )\n        attempt = self.core.attempts.get(payload["attempt_id"])\n'''
+          new = '''        payload = self._payload(\n            event, "request_id", "attempt_id", "evidence_id", "output_id"\n        )\n        observed_at = self._event_nonnegative_float(event, "observed_at")\n        if observed_at > self.simulator.now:\n            self._note(\n                event,\n                "observation_timestamp",\n                AdapterOutcome.REJECTED,\n                error=_AdapterInputError("observation timestamp is later than delivery"),\n            )\n            return\n        attempt = self.core.attempts.get(payload["attempt_id"])\n'''
+          if old not in text: raise SystemExit('missing observation handler target')
+          text = text.replace(old, new, 1)
+
+          old = '''            self._ensure_terminal_evidence(event, payload["attempt_id"], payload["evidence_id"])\n'''
+          new = '''            self._ensure_terminal_evidence(\n                event, payload["attempt_id"], payload["evidence_id"], observed_at\n            )\n'''
+          if old not in text: raise SystemExit('missing ensure evidence call target')
+          text = text.replace(old, new, 1)
+
+          start = text.index('    def _ensure_terminal_evidence(')
+          end = text.index('    def _ensure_terminal_output(', start)
+          replacement = '''    def _ensure_terminal_evidence(\n        self, event: SimEvent, attempt_id: str, evidence_id: str, observed_at: float\n    ) -> None:\n        expected = Evidence(\n            id=evidence_id,\n            claim="terminal_attempt_success",\n            source="c2.semantic_adapter",\n            authority=EvidenceAuthority.EXACT_OBSERVATION,\n            status=EvidenceStatus.VALID,\n            observed_at=observed_at,\n            scope=frozenset({("attempt", attempt_id)}),\n        )\n        existing = self.core.evidence.get(evidence_id)\n        if existing is not None:\n            if existing != expected:\n                raise SemanticViolation("conflicting terminal Evidence identity in semantic adapter")\n            self._note(\n                event,\n                "record_evidence",\n                AdapterOutcome.IDEMPOTENT,\n                result_id=evidence_id,\n                layer=AdapterLayer.C1,\n            )\n            return\n        self._apply(event, "record_evidence", lambda: self.core.record_evidence(expected))\n\n'''
+          text = text[:start] + replacement + text[end:]
+
+          old = '''            self._note(event, "create_output", AdapterOutcome.IDEMPOTENT, result_id=output_id)\n'''
+          new = '''            self._note(\n                event,\n                "create_output",\n                AdapterOutcome.IDEMPOTENT,\n                result_id=output_id,\n                layer=AdapterLayer.C1,\n            )\n'''
+          if old not in text: raise SystemExit('missing output idempotence layer target')
+          text = text.replace(old, new, 1)
+
+          old = '''            self._append_record(\n                event,\n                operation,\n                AdapterOutcome.REJECTED,\n                error=exc,\n                fingerprint=after,\n            )\n'''
+          new = '''            self._append_record(\n                event,\n                operation,\n                AdapterOutcome.REJECTED,\n                layer=AdapterLayer.C1,\n                error=exc,\n                fingerprint=after,\n            )\n'''
+          if old not in text: raise SystemExit('missing rejected layer target')
+          text = text.replace(old, new, 1)
+
+          old = '''        self._append_record(\n            event,\n            operation,\n            outcome,\n            result_id=result_id,\n            fingerprint=after,\n        )\n'''
+          new = '''        self._append_record(\n            event,\n            operation,\n            outcome,\n            layer=AdapterLayer.C1,\n            result_id=result_id,\n            fingerprint=after,\n        )\n'''
+          if old not in text: raise SystemExit('missing applied layer target')
+          text = text.replace(old, new, 1)
+
+          old = '''        error: Optional[BaseException] = None,\n    ) -> None:\n        InvariantOracle(self.core).assert_all()\n        self._append_record(\n            event,\n            operation,\n            outcome,\n            result_id=result_id,\n            error=error,\n            fingerprint=snapshot_fingerprint(self.core),\n        )\n'''
+          new = '''        error: Optional[BaseException] = None,\n        layer: AdapterLayer = AdapterLayer.C2,\n    ) -> None:\n        InvariantOracle(self.core).assert_all()\n        self._append_record(\n            event,\n            operation,\n            outcome,\n            layer=layer,\n            result_id=result_id,\n            error=error,\n            fingerprint=snapshot_fingerprint(self.core),\n        )\n'''
+          if old not in text: raise SystemExit('missing note layer target')
+          text = text.replace(old, new, 1)
+
+          old = '''        outcome: AdapterOutcome,\n        *,\n        result_id: Optional[str] = None,\n'''
+          new = '''        outcome: AdapterOutcome,\n        *,\n        layer: AdapterLayer,\n        result_id: Optional[str] = None,\n'''
+          if old not in text: raise SystemExit('missing append layer signature target')
+          text = text.replace(old, new, 1)
+
+          old = '''                operation=operation,\n                outcome=outcome,\n'''
+          new = '''                operation=operation,\n                layer=layer,\n                outcome=outcome,\n'''
+          if old not in text: raise SystemExit('missing record layer target')
+          text = text.replace(old, new, 1)
+
+          marker = '''    @staticmethod\n    def _require_id(value: str, name: str) -> None:\n'''
+          helper = '''    @staticmethod\n    def _finite_nonnegative(value: float, name: str) -> float:\n        if not isinstance(value, (int, float)) or isinstance(value, bool):\n            raise ValueError(f"{name} must be numeric")\n        numeric = float(value)\n        if not __import__("math").isfinite(numeric) or numeric < 0:\n            raise ValueError(f"{name} must be finite and non-negative")\n        return numeric\n\n    def _event_nonnegative_float(self, event: SimEvent, name: str) -> float:\n        payload = dict(event.payload)\n        if name not in payload:\n            raise _AdapterInputError(f"event payload missing field: {name}")\n        try:\n            return self._finite_nonnegative(payload[name], name)\n        except (TypeError, ValueError) as exc:\n            raise _AdapterInputError(str(exc)) from exc\n\n    @staticmethod\n    def _require_id(value: str, name: str) -> None:\n'''
+          if marker not in text: raise SystemExit('missing helper marker')
+          text = text.replace(marker, helper, 1)
+          path.write_text(text)
+
+          init_path = Path('simulator/__init__.py')
+          init = init_path.read_text()
+          init = init.replace('    AdapterOutcome,\n', '    AdapterLayer,\n    AdapterOutcome,\n', 1)
+          init = init.replace('    "AdapterOutcome",\n', '    "AdapterLayer",\n    "AdapterOutcome",\n', 1)
+          init_path.write_text(init)
+
+          tests_path = Path('tests/simulator/test_semantic_adapter.py')
+          tests = tests_path.read_text()
+          tests = tests.replace('    AdapterOutcome,\n', '    AdapterLayer,\n    AdapterOutcome,\n', 1)
+          old = '''        "r", "a1", "e1", "o1", at=4, duplicated=True, event_id="duplicate-observation"\n'''
+          new = '''        "r", "a1", "e1", "o1", at=4, observed_at=3, duplicated=True, event_id="duplicate-observation"\n'''
+          if old not in tests: raise SystemExit('missing duplicate test target')
+          tests = tests.replace(old, new, 1)
+          tests += '''\n\ndef test_duplicate_delivery_before_original_preserves_exact_evidence_identity():\n    sim = DiscreteEventSimulator()\n    core = _scaffold_core()\n    adapter = ContinuityAdapter(sim, core)\n    adapter.schedule_request("r", "c", at=0)\n    adapter.schedule_attempt_start("r", "a1", at=1)\n    adapter.schedule_attempt_completion("a1", at=2)\n    adapter.schedule_observation(\n        "r", "a1", "e1", "o1", at=3, observed_at=2.5, duplicated=True, event_id="duplicate-first"\n    )\n    adapter.schedule_observation(\n        "r", "a1", "e1", "o1", at=4, observed_at=2.5, event_id="original-late"\n    )\n    sim.run()\n\n    assert core.evidence["e1"].observed_at == 2.5\n    assert core.requests["r"].committed_attempt_id == "a1"\n    later = [record for record in adapter.records if record.event_id == "original-late"]\n    assert [record.outcome for record in later] == [\n        AdapterOutcome.IDEMPOTENT, AdapterOutcome.IDEMPOTENT, AdapterOutcome.IDEMPOTENT\n    ]\n\n\ndef test_conflicting_preexisting_evidence_identity_is_rejected():\n    sim = DiscreteEventSimulator()\n    core = _scaffold_core()\n    core.create_request("r", "c")\n    core.start_attempt("a1", "r")\n    core.set_attempt_execution("a1", ExecutionStatus.RUNNING)\n    core.complete_attempt("a1", succeeded=True)\n    core.record_evidence(Evidence(\n        id="e1", claim="terminal_attempt_success", source="c2.semantic_adapter",\n        authority=EvidenceAuthority.EXACT_OBSERVATION, status=EvidenceStatus.VALID,\n        observed_at=1.0, scope=frozenset({("attempt", "a1")}),\n    ))\n    adapter = ContinuityAdapter(sim, core)\n    adapter.schedule_observation("r", "a1", "e1", "o1", at=3, observed_at=2.0)\n    sim.run()\n\n    assert "o1" not in core.outputs\n    assert core.requests["r"].committed_attempt_id is None\n    assert adapter.records[-1].operation == "observation_identity"\n    assert adapter.records[-1].outcome is AdapterOutcome.REJECTED\n\n\ndef test_action_ledger_distinguishes_c1_semantics_from_c2_delivery_decisions():\n    _, _, adapter = _run_retry_race(late_at=6)\n    assert any(\n        record.operation == "schedule_retry" and record.layer is AdapterLayer.C2\n        for record in adapter.records\n    )\n    assert any(\n        record.operation == "start_attempt" and record.layer is AdapterLayer.C1\n        for record in adapter.records\n    )\n'''
+          tests_path.write_text(tests)
+
+          spec_path = Path('spec/09-c2-semantic-adapter-record.md')
+          spec = spec_path.read_text()
+          spec = spec.replace(
+              'C1 operation\noutcome = APPLIED | IDEMPOTENT | REJECTED | IGNORED',
+              'action layer = C1 | C2\noperation or adapter decision\noutcome = APPLIED | IDEMPOTENT | REJECTED | IGNORED',
+              1,
+          )
+          spec = spec.replace(
+              'duplicate authoritative observation\nlate superseded-A1 terminal observation',
+              'duplicate authoritative observation with exact original Evidence timestamp\nreordered duplicate-before-original observation delivery\nconflicting Evidence identity rejection\nlate superseded-A1 terminal observation',
+              1,
+          )
+          spec_path.write_text(spec)
+          PY
+      - name: Validate full repository suite
+        run: |
+          python -m pip install --upgrade pip pytest
+          python -m pytest
+      - name: Commit validated hardening and remove workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/c2-3-observation-identity-hardening.yml
+          git add simulator/semantic_adapter.py simulator/__init__.py tests/simulator/test_semantic_adapter.py spec/09-c2-semantic-adapter-record.md
+          git commit -m "Harden C2.3 exact observation identity and action ledger"
+          git push origin HEAD:c2/semantic-adapter
