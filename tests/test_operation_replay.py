@@ -136,13 +136,19 @@ def test_time_sensitive_replay_operations_require_explicit_now():
 
 
 def test_time_sensitive_record_without_now_is_rejected_during_parse():
-    operation = SemanticOperation(
-        id='finalize', action='finalize_request',
-        arguments=(('output_id', 'o'), ('request_id', 'r')),
-    )
-    text = operations_to_jsonl([operation])
+    record = {
+        'schema': OPERATION_TRACE_SCHEMA,
+        'operation_id': 'finalize',
+        'action': 'finalize_request',
+        'arguments': {
+            '$dict': [
+                ['output_id', 'o'],
+                ['request_id', 'r'],
+            ]
+        },
+    }
     with pytest.raises(ValueError):
-        operations_from_jsonl(text)
+        operations_from_jsonl(json.dumps(record) + '\n')
 
 
 def test_explicit_replay_time_makes_expiring_evidence_deterministic():
@@ -205,3 +211,29 @@ def test_replay_revalidates_direct_semantic_operation_arguments_before_dispatch(
     with pytest.raises(ValueError, match="argument 'id_' has invalid type"):
         replay_operations(core, [malformed])
     assert core.programs == {}
+
+
+def test_operation_emitter_rejects_direct_invalid_operation_types():
+    malformed = SemanticOperation(
+        id='op', action='create_program', arguments=(('id_', 123),)
+    )
+    with pytest.raises(ValueError, match="argument 'id_' has invalid type"):
+        operations_to_jsonl([malformed])
+
+
+def test_operation_emitter_rejects_duplicate_argument_names():
+    malformed = SemanticOperation(
+        id='op', action='create_program',
+        arguments=(('id_', 'p'), ('id_', 'q')),
+    )
+    with pytest.raises(ValueError, match='duplicate semantic operation argument name'):
+        operations_to_jsonl([malformed])
+
+
+def test_operation_build_rejects_one_shot_iterable_arguments():
+    parent_ids = (item for item in ['c0'])
+    with pytest.raises(ValueError, match="argument 'parent_ids' has invalid type"):
+        SemanticOperation.build(
+            'op', 'create_continuation',
+            id_='c1', session_id='s', parent_ids=parent_ids,
+        )
