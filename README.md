@@ -7,7 +7,7 @@
 - **C0.1 Research Specification:** complete
 - **Gate G0:** PASS
 - **C1 Deterministic Continuity Core:** completion candidate; implementation exit criteria satisfied, pending final review/merge
-- **C1 validation:** 120 deterministic/invariant/adversarial tests passing; permanent CI covers Python 3.11, 3.12, and 3.13
+- **C1 validation:** 128 deterministic/invariant/adversarial tests passing; permanent CI covers Python 3.11, 3.12, and 3.13
 - **C2 simulator / performance modeling:** intentionally not started
 
 The repository is the canonical system of record for the project.
@@ -37,6 +37,7 @@ The deterministic core now includes:
 - Program → Session → Continuation → LogicalRequest → Attempt → Phase identity;
 - `CurrentAttempt` / `CommittedAttempt` fencing;
 - monotonic Attempt execution and Phase status transitions;
+- supersession fencing that prevents superseded Attempts from authoritatively completing Phases or producing new Attempt-/Phase-origin State;
 - producer-aware and Phase-aware reusable-State compatibility;
 - request-origin State constrained to completed requests with producer exactly equal to `CommittedAttempt(request)`;
 - State lifecycle and validity;
@@ -46,7 +47,7 @@ The deterministic core now includes:
 - fail-closed reconciliation;
 - semantic Event identity/idempotence;
 - canonical snapshots and fingerprints;
-- schema-versioned Event and Operation JSONL traces;
+- schema-versioned Event and Operation JSONL traces with strict finite-number JSON serialization;
 - deterministic semantic-operation replay with explicit replay time for time-sensitive actions;
 - an independent invariant oracle including declared State-origin re-resolution, cached-provenance consistency, and Phase-dependency temporal-order validation;
 - all 12 mandatory Failure Model traces;
