@@ -302,3 +302,74 @@ def test_conflicting_preexisting_evidence_identity_is_rejected():
     assert core.requests["r"].committed_attempt_id is None
     assert adapter.records[-1].operation == "observation_identity"
     assert adapter.records[-1].outcome is AdapterOutcome.REJECTED
+
+
+def test_terminal_observation_cannot_predate_delivered_attempt_success():
+    sim = DiscreteEventSimulator()
+    core = _scaffold_core()
+    adapter = ContinuityAdapter(sim, core)
+    adapter.schedule_request("r", "c", at=0)
+    adapter.schedule_attempt_start("r", "a1", at=1)
+    adapter.schedule_attempt_completion("a1", at=5)
+    adapter.schedule_observation("r", "a1", "e1", "o1", at=6, observed_at=4)
+    sim.run()
+
+    assert "e1" not in core.evidence
+    assert "o1" not in core.outputs
+    assert core.requests["r"].committed_attempt_id is None
+    record = next(
+        record for record in adapter.records
+        if record.event_id == "observation:e1:o1"
+    )
+    assert record.operation == "observation_timestamp"
+    assert record.outcome is AdapterOutcome.REJECTED
+
+
+@pytest.mark.parametrize("timeout_first", [True, False])
+def test_simultaneous_timeout_and_completion_orderings_preserve_a2_authority(timeout_first):
+    reference = _reference_retry_race()
+    sim = DiscreteEventSimulator()
+    core = _scaffold_core()
+    adapter = ContinuityAdapter(sim, core)
+    adapter.schedule_request("r", "c", at=0)
+    adapter.schedule_attempt_start("r", "a1", at=1)
+    if timeout_first:
+        adapter.schedule_timeout("r", "a1", "a2", at=5)
+        adapter.schedule_attempt_completion("a1", at=5)
+    else:
+        adapter.schedule_attempt_completion("a1", at=5)
+        adapter.schedule_timeout("r", "a1", "a2", at=5)
+    adapter.schedule_attempt_completion("a2", at=7)
+    adapter.schedule_observation("r", "a2", "e2", "o2", at=8)
+    sim.run()
+
+    assert_authoritative_equivalent(reference, core, "r")
+    assert core.attempts["a1"].execution_status is ExecutionStatus.SUCCEEDED
+    assert core.attempts["a1"].authority_status is AttemptAuthority.SUPERSEDED
+
+
+def test_explicit_retry_reservation_deduplicates_later_timeout_delivery():
+    sim = DiscreteEventSimulator()
+    core = _scaffold_core()
+    adapter = ContinuityAdapter(sim, core)
+    adapter.schedule_request("r", "c", at=0)
+    adapter.schedule_attempt_start("r", "a1", at=1)
+    adapter.schedule_retry_start("r", "a1", "a2", at=5, event_id="preplanned-retry")
+    adapter.schedule_timeout("r", "a1", "a2", at=4, event_id="timeout")
+    sim.run()
+
+    assert [(a.id, a.generation) for a in sorted(core.attempts.values(), key=lambda a: a.generation)] == [
+        ("a1", 1), ("a2", 2)
+    ]
+    timeout = [record for record in adapter.records if record.event_id == "timeout"]
+    assert timeout[-1].outcome is AdapterOutcome.IGNORED
+
+
+def test_retry_attempt_identity_must_differ_from_superseded_attempt():
+    sim = DiscreteEventSimulator()
+    core = _scaffold_core()
+    adapter = ContinuityAdapter(sim, core)
+    with pytest.raises(ValueError, match="must differ"):
+        adapter.schedule_timeout("r", "a1", "a1", at=1)
+    with pytest.raises(ValueError, match="must differ"):
+        adapter.schedule_retry_start("r", "a1", "a1", at=1)

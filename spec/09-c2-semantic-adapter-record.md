@@ -141,6 +141,9 @@ stale timeout after finalization
 duplicate authoritative observation with exact original Evidence timestamp
 reordered duplicate-before-original observation delivery
 conflicting Evidence identity rejection
+terminal observation timestamp fenced after adapter-delivered Attempt success
+simultaneous timeout/completion in both insertion orders
+preplanned retry vs timeout deduplication
 late superseded-A1 terminal observation
 malformed adapter event input
 ```

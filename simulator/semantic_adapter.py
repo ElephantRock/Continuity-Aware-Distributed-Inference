@@ -82,6 +82,7 @@ class ContinuityAdapter:
         self.core = core
         self.records: list[SemanticActionRecord] = []
         self._scheduled_retry_attempts: set[str] = set()
+        self._attempt_success_times: dict[str, float] = {}
 
         self._register(EventKind.REQUEST_CREATED, self._on_request_created)
         self._register(EventKind.ATTEMPT_STARTED, self._on_attempt_started)
@@ -148,6 +149,8 @@ class ContinuityAdapter:
             (retry_attempt_id, "retry_attempt_id"),
         ):
             self._require_id(value, name)
+        if retry_attempt_id == timed_out_attempt_id:
+            raise ValueError("retry_attempt_id must differ from timed_out_attempt_id")
         return self.simulator.schedule(
             EventKind.ATTEMPT_TIMEOUT,
             at=at,
@@ -174,16 +177,25 @@ class ContinuityAdapter:
             (retry_attempt_id, "retry_attempt_id"),
         ):
             self._require_id(value, name)
-        return self.simulator.schedule(
-            EventKind.RETRY_STARTED,
-            at=at,
-            event_id=event_id or f"retry-start:{retry_attempt_id}",
-            payload={
-                "request_id": request_id,
-                "superseded_attempt_id": superseded_attempt_id,
-                "retry_attempt_id": retry_attempt_id,
-            },
-        )
+        if retry_attempt_id == superseded_attempt_id:
+            raise ValueError("retry_attempt_id must differ from superseded_attempt_id")
+        if retry_attempt_id in self._scheduled_retry_attempts:
+            raise ValueError("retry Attempt is already scheduled")
+        self._scheduled_retry_attempts.add(retry_attempt_id)
+        try:
+            return self.simulator.schedule(
+                EventKind.RETRY_STARTED,
+                at=at,
+                event_id=event_id or f"retry-start:{retry_attempt_id}",
+                payload={
+                    "request_id": request_id,
+                    "superseded_attempt_id": superseded_attempt_id,
+                    "retry_attempt_id": retry_attempt_id,
+                },
+            )
+        except Exception:
+            self._scheduled_retry_attempts.remove(retry_attempt_id)
+            raise
 
     def schedule_attempt_completion(
         self,
@@ -366,11 +378,17 @@ class ContinuityAdapter:
 
     def _on_attempt_completed(self, event: SimEvent) -> None:
         payload = self._payload(event, "attempt_id")
-        self._apply(
+        attempt = self.core.attempts.get(payload["attempt_id"])
+        already_succeeded = (
+            attempt is not None and attempt.execution_status is ExecutionStatus.SUCCEEDED
+        )
+        result = self._apply(
             event,
             "complete_attempt:SUCCEEDED",
             lambda: self.core.complete_attempt(payload["attempt_id"], succeeded=True),
         )
+        if result is not None and not already_succeeded:
+            self._attempt_success_times.setdefault(payload["attempt_id"], self.simulator.now)
 
     def _on_attempt_failed(self, event: SimEvent) -> None:
         payload = self._payload(event, "attempt_id")
@@ -416,6 +434,17 @@ class ContinuityAdapter:
                 "observe_terminal_attempt",
                 AdapterOutcome.REJECTED,
                 error=SemanticViolation("terminal success observation requires SUCCEEDED Attempt"),
+            )
+            return
+        success_time = self._attempt_success_times.get(payload["attempt_id"])
+        if success_time is not None and observed_at < success_time:
+            self._note(
+                event,
+                "observation_timestamp",
+                AdapterOutcome.REJECTED,
+                error=_AdapterInputError(
+                    "terminal observation cannot predate delivered Attempt success"
+                ),
             )
             return
 
