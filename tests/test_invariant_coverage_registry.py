@@ -3,14 +3,9 @@ from pathlib import Path
 import re
 
 
-EXPECTED_INVARIANTS = {
-    *(f'A{i}' for i in range(1, 5)),
-    *(f'B{i}' for i in range(1, 8)),
-    *(f'C{i}' for i in range(1, 8)),
-    *(f'D{i}' for i in range(1, 6)),
-    *(f'E{i}' for i in range(1, 8)),
-    *(f'F{i}' for i in range(1, 8)),
-}
+def canonical_invariant_ids():
+    catalogue = Path('spec/03-invariants.md').read_text()
+    return set(re.findall(r'^# \d+\. ([A-F]\d+) — ', catalogue, re.MULTILINE))
 
 
 def load_registry():
@@ -21,8 +16,10 @@ def test_registry_covers_every_canonical_invariant_exactly_once():
     registry = load_registry()
     assert registry['schema'] == 'cadi.invariant-coverage.v1'
     assert registry['catalogue'] == 'spec/03-invariants.md'
-    assert set(registry['invariants']) == EXPECTED_INVARIANTS
-    assert len(registry['invariants']) == 37
+    expected = canonical_invariant_ids()
+    assert expected
+    assert set(registry['invariants']) == expected
+    assert len(registry['invariants']) == len(expected)
 
 
 def test_every_invariant_maps_to_existing_named_pytest_function():

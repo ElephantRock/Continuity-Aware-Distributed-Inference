@@ -1,4 +1,4 @@
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 import pytest
 
 from continuity.entities import (
@@ -158,3 +158,21 @@ def test_oracle_rejects_request_origin_wrong_committed_producer(core, exact_evid
     core.states['x'] = replace(core.states['x'], producer_attempt_id='a1')
     with pytest.raises(AssertionError):
         InvariantOracle(core).assert_all()
+
+
+def test_f8_logical_parent_and_origin_fields_are_immutable_values(core):
+    core.create_program('p')
+    core.create_session('s', 'p')
+    core.create_continuation('c', 's')
+    core.create_request('r', 'c')
+    attempt = core.start_attempt('a', 'r')
+    state = core.create_state('x', origin_type='continuation', origin_id='c')
+
+    with pytest.raises(FrozenInstanceError):
+        attempt.request_id = 'rewritten-request'
+    with pytest.raises(FrozenInstanceError):
+        state.origin_id = 'rewritten-origin'
+
+    assert core.attempts['a'].request_id == 'r'
+    assert core.states['x'].origin_id == 'c'
+    InvariantOracle(core).assert_all()
