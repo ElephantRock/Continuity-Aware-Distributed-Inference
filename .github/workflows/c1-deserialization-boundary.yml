@@ -1,0 +1,102 @@
+name: c1-deserialization-boundary
+
+on:
+  push:
+    branches: [c1/deterministic-core]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c1/deterministic-core
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Apply strict deserialization and restore validation
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one match in {path}, got {count}: {old[:100]!r}')
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'continuity/serialization.py',
+              '''def _canonical_json(value: Any) -> str:\n    return json.dumps(\n        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False\n    )\n\n\ndef _encode(value: Any) -> Any:\n''',
+              '''def _canonical_json(value: Any) -> str:\n    return json.dumps(\n        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False\n    )\n\n\ndef _reject_non_finite_constant(value: str) -> Any:\n    raise ValueError(f"non-finite JSON numeric constant is not allowed: {value}")\n\n\ndef _strict_json_loads(text: str) -> Any:\n    return json.loads(text, parse_constant=_reject_non_finite_constant)\n\n\ndef _encode(value: Any) -> Any:\n'''
+          )
+
+          replace_once(
+              'continuity/serialization.py',
+              '    payload = json.loads(snapshot)\n',
+              '    payload = _strict_json_loads(snapshot)\n'
+          )
+
+          replace_once(
+              'continuity/serialization.py',
+              '''    for name in _CORE_FIELDS:\n        setattr(core, name, _decode(state[name]))\n    return core\n''',
+              '''    for name in _CORE_FIELDS:\n        setattr(core, name, _decode(state[name]))\n    from .invariants import InvariantOracle\n    try:\n        InvariantOracle(core).assert_all()\n    except (AssertionError, KeyError, TypeError, AttributeError) as exc:\n        raise ValueError("snapshot violates Continuity invariants") from exc\n    return core\n'''
+          )
+
+          replace_once(
+              'continuity/serialization.py',
+              '        result.append(event_from_record(json.loads(line)))\n',
+              '        result.append(event_from_record(_strict_json_loads(line)))\n'
+          )
+
+          replace_once(
+              'continuity/replay.py',
+              'from .serialization import _canonical_json, _decode, _encode\n',
+              'from .serialization import _canonical_json, _decode, _encode, _strict_json_loads\n'
+          )
+
+          replace_once(
+              'continuity/replay.py',
+              '        operation = operation_from_record(json.loads(line))\n',
+              '        operation = operation_from_record(_strict_json_loads(line))\n'
+          )
+
+          p = Path('tests/test_strict_json.py')
+          text = p.read_text()
+          text = text.replace(
+              'from continuity.replay import SemanticOperation, operations_to_jsonl\nfrom continuity.serialization import snapshot_core\n',
+              'from continuity.replay import SemanticOperation, operations_from_jsonl, operations_to_jsonl\nfrom continuity.serialization import events_from_jsonl, restore_core, snapshot_core\n'
+          )
+          text += '''\n\n@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])\ndef test_operation_jsonl_parser_rejects_non_finite_numbers(constant):\n    text = (\n        '{"schema":"cadi.semantic-operation.v1","operation_id":"op",'\n        '"action":"finalize_request","arguments":{"$dict":['\n        '["now",' + constant + '],["output_id","o"],["request_id","r"]]}}\\n'\n    )\n    with pytest.raises(ValueError):\n        operations_from_jsonl(text)\n\n\ndef test_snapshot_parser_rejects_non_finite_number():\n    with pytest.raises(ValueError):\n        restore_core('{"schema":"cadi.core.snapshot.v1","state":NaN}')\n\n\ndef test_event_jsonl_parser_rejects_non_finite_number():\n    with pytest.raises(ValueError):\n        events_from_jsonl('{"schema":"cadi.semantic-event.v1","event":Infinity}\\n')\n'''
+          p.write_text(text)
+
+          p = Path('tests/test_serialization.py')
+          text = p.read_text()
+          text = text.replace('import json\nimport pytest\n', 'import json\nfrom dataclasses import replace\nimport pytest\n')
+          text = text.replace(
+              '    Evidence, EvidenceAuthority, EvidenceStatus, ExecutionStatus, PhaseStatus, PhaseType,\n',
+              '    AttemptAuthority, Evidence, EvidenceAuthority, EvidenceStatus, ExecutionStatus, PhaseStatus, PhaseType,\n'
+          )
+          text += '''\n\ndef test_restore_rejects_snapshot_that_violates_invariant_oracle():\n    core = ContinuityCore()\n    core.create_program('p'); core.create_session('s', 'p'); core.create_continuation('c', 's')\n    core.create_request('r', 'c')\n    core.start_attempt('a1', 'r')\n    core.start_attempt('a2', 'r')\n    core.attempts['a1'] = replace(core.attempts['a1'], authority_status=AttemptAuthority.CURRENT)\n    snapshot = snapshot_core(core)\n    with pytest.raises(ValueError, match='snapshot violates Continuity invariants'):\n        restore_core(snapshot)\n'''
+          p.write_text(text)
+          PY
+      - name: Validate deterministic C1 suite
+        run: |
+          python -m pip install --upgrade pip pytest
+          python -m pytest -q
+      - name: Commit boundary fixes and remove workflow
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add continuity/serialization.py continuity/replay.py tests/test_strict_json.py tests/test_serialization.py
+          git rm .github/workflows/c1-deserialization-boundary.yml
+          git commit -m 'Harden C1 deserialization trust boundaries'
+          git push origin HEAD:c1/deterministic-core
