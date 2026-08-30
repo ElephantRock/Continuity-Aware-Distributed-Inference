@@ -180,7 +180,10 @@ The kernel rejects:
 - derived State that launders incompatible branch or producer provenance;
 - same-Attempt State consumed before or at its producer Phase;
 - State derivations that invert same-Attempt Phase order;
-- invalid logical State.
+- invalid logical State;
+- request-origin State before the LogicalRequest has completed and established a `CommittedAttempt`.
+
+For Paper 1 C1, request-origin State is explicitly post-commit: its producer is exactly `CommittedAttempt(request)`. This removes temporal ambiguity from request-origin provenance.
 
 Logical State identity remains distinct from physical replicas.
 
@@ -569,7 +572,7 @@ Python 3.13
 Latest completion-candidate result after all review fixes:
 
 ```text
-118 passed
+120 passed
 ```
 
 The final review-regression set verifies that:
@@ -581,7 +584,8 @@ The final review-regression set verifies that:
 - replayed migration commit remains deterministic across different wall-clock times;
 - the independent oracle rejects corrupted same-Attempt Phase-provenance temporal inversion;
 - Output creation rejects unresolved Evidence references instead of storing oracle-invalid state;
-- the independent oracle rejects a Phase-origin State whose declared `origin_id` disagrees with its cached producer Phase.
+- the independent oracle rejects a Phase-origin State whose declared `origin_id` disagrees with its cached producer Phase;
+- request-origin State is rejected before request completion, and the oracle rejects a request-origin State whose cached producer differs from `CommittedAttempt(request)`.
 
 The full suite includes:
 
@@ -621,14 +625,15 @@ The eight planned C1 exit artifacts are now implemented:
 
 Implementation exit criteria are therefore satisfied.
 
-Codex review identified four correctness inconsistencies during closure:
+Codex review identified five correctness inconsistencies during closure:
 
 1. wall-clock-dependent time-sensitive operation replay;
 2. missing independent Phase-dependency ordering validation in restored/corrupted State provenance;
 3. public Output creation accepting unresolved Evidence references while the oracle rejected them;
-4. restored/corrupted State could declare one Phase origin while carrying cached producer provenance from another Phase.
+4. restored/corrupted State could declare one Phase origin while carrying cached producer provenance from another Phase;
+5. request-origin State producer identity was ambiguous unless request completion was made a precondition.
 
-All four are fixed and covered by regression tests.
+All five are fixed and covered by regression tests.
 
 Formal milestone closure still requires:
 
