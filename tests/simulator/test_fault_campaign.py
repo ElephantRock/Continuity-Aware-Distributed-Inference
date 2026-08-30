@@ -112,7 +112,11 @@ def _delivery_campaign():
 def test_delivery_fault_schedule_replay_reproduces_exact_fault_entries_and_trace():
     original_sim, manifest = _delivery_campaign()
     replay_sim = _delivery_scenario()
-    replayed = FaultScheduleReplayer(replay_sim, manifest).replay()
+    replayed = FaultScheduleReplayer(
+        replay_sim, manifest,
+        git_commit=manifest.git_commit,
+        scenario_fingerprint=manifest.scenario_fingerprint,
+    ).replay()
 
     assert tuple(
         FaultReplayEntry.from_record(record, ordinal)
@@ -136,7 +140,11 @@ def test_replay_fails_closed_before_mutation_when_target_timing_differs():
     replay_sim.schedule(EventKind.ATTEMPT_FAILED, at=7, event_id="anchor")
 
     with pytest.raises(FaultReplayError, match="time mismatch"):
-        FaultScheduleReplayer(replay_sim, manifest).replay()
+        FaultScheduleReplayer(
+        replay_sim, manifest,
+        git_commit=manifest.git_commit,
+        scenario_fingerprint=manifest.scenario_fingerprint,
+    ).replay()
 
     assert {event.event_id for event in replay_sim.pending_events} == {
         "delay",
@@ -186,6 +194,8 @@ def test_cross_layer_schedule_replay_preserves_timeout_and_late_result_semantics
     replayed = FaultScheduleReplayer(
         replay_sim,
         manifest,
+        git_commit=manifest.git_commit,
+        scenario_fingerprint=manifest.scenario_fingerprint,
         adapter=replay_adapter,
     ).replay()
     replay_sim.run()
@@ -213,7 +223,11 @@ def test_cross_layer_replay_requires_adapter_and_fails_explicitly():
     adapter.schedule_attempt_start("r", "a1", at=1)
 
     with pytest.raises(FaultReplayError, match="ContinuityAdapter"):
-        FaultScheduleReplayer(sim, manifest).replay()
+        FaultScheduleReplayer(
+            sim, manifest,
+            git_commit=manifest.git_commit,
+            scenario_fingerprint=manifest.scenario_fingerprint,
+        ).replay()
 
 
 def test_policy_bindings_reuse_exact_campaign_schedule_and_scenario():
@@ -273,3 +287,73 @@ def test_configuration_fingerprint_changes_with_seed_or_fault_configuration():
 
     assert changed_seed.configuration_fingerprint != base.configuration_fingerprint
     assert changed_config.configuration_fingerprint != base.configuration_fingerprint
+
+
+def test_replay_rejects_revision_or_scenario_mismatch_before_mutation():
+    _, manifest = _delivery_campaign()
+
+    sim_revision = _delivery_scenario()
+    with pytest.raises(FaultReplayError, match="git commit"):
+        FaultScheduleReplayer(
+            sim_revision,
+            manifest,
+            git_commit="different-revision",
+            scenario_fingerprint=manifest.scenario_fingerprint,
+        )
+    assert not sim_revision.trace
+    assert not any(event.event_id.startswith("fault:") for event in sim_revision.pending_events)
+
+    sim_scenario = _delivery_scenario()
+    with pytest.raises(FaultReplayError, match="scenario fingerprint"):
+        FaultScheduleReplayer(
+            sim_scenario,
+            manifest,
+            git_commit=manifest.git_commit,
+            scenario_fingerprint="different-scenario",
+        )
+    assert not sim_scenario.trace
+    assert not any(event.event_id.startswith("fault:") for event in sim_scenario.pending_events)
+
+
+def test_probabilistic_decision_metadata_must_match_realized_schedule():
+    from simulator.faults import ProbabilisticFaultDecision
+
+    base = _probabilistic_manifest()
+    realized = base.schedule[0]
+
+    with pytest.raises(ValueError, match="no-fault.*FaultID"):
+        FaultCampaignManifest(
+            campaign_id=base.campaign_id,
+            git_commit=base.git_commit,
+            scenario_fingerprint=base.scenario_fingerprint,
+            seed=base.seed,
+            generator=base.generator,
+            fault_configuration=base.fault_configuration,
+            decisions=(
+                ProbabilisticFaultDecision(
+                    base.seed, 0, "e1", 0.1, None, realized.fault_id
+                ),
+            ),
+            schedule=base.schedule,
+        )
+
+    with pytest.raises(ValueError, match="class disagrees"):
+        FaultCampaignManifest(
+            campaign_id=base.campaign_id,
+            git_commit=base.git_commit,
+            scenario_fingerprint=base.scenario_fingerprint,
+            seed=base.seed,
+            generator=base.generator,
+            fault_configuration=base.fault_configuration,
+            decisions=(
+                ProbabilisticFaultDecision(
+                    base.seed,
+                    0,
+                    realized.target,
+                    0.1,
+                    FaultClass.DELIVERY_DROP,
+                    realized.fault_id,
+                ),
+            ),
+            schedule=base.schedule,
+        )

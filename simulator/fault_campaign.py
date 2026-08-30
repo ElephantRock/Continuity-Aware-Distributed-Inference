@@ -332,6 +332,22 @@ class FaultCampaignManifest:
                 raise ValueError("fault schedule reuses a FaultID")
             seen_fault_ids.add(item.fault_id)
 
+        schedule_by_id = {item.fault_id: item for item in self.schedule}
+        for decision in self.decisions:
+            if decision.selected_fault_class is None:
+                if decision.fault_id is not None:
+                    raise ValueError("no-fault probabilistic decision must not name a FaultID")
+                continue
+            if decision.fault_id is None:
+                raise ValueError("selected probabilistic fault decision must name a FaultID")
+            realized = schedule_by_id.get(decision.fault_id)
+            if realized is None:
+                raise ValueError("probabilistic decision FaultID is absent from realized schedule")
+            if realized.fault_class is not decision.selected_fault_class:
+                raise ValueError("probabilistic decision class disagrees with realized schedule")
+            if realized.target != decision.target:
+                raise ValueError("probabilistic decision target disagrees with realized schedule")
+
     @classmethod
     def from_injector(
         cls,
@@ -473,6 +489,8 @@ class FaultScheduleReplayer:
         simulator: DiscreteEventSimulator,
         manifest: FaultCampaignManifest,
         *,
+        git_commit: str,
+        scenario_fingerprint: str,
         resources: ResourceModel | None = None,
         adapter: ContinuityAdapter | None = None,
     ) -> None:
@@ -480,12 +498,20 @@ class FaultScheduleReplayer:
             raise TypeError("simulator must be DiscreteEventSimulator")
         if not isinstance(manifest, FaultCampaignManifest):
             raise TypeError("manifest must be FaultCampaignManifest")
+        _require_id(git_commit, "git_commit")
+        _require_id(scenario_fingerprint, "scenario_fingerprint")
+        if git_commit != manifest.git_commit:
+            raise FaultReplayError("replay git commit does not match campaign manifest")
+        if scenario_fingerprint != manifest.scenario_fingerprint:
+            raise FaultReplayError("replay scenario fingerprint does not match campaign manifest")
         if resources is not None and resources.simulator is not simulator:
             raise ValueError("resources must reference replay simulator")
         if adapter is not None and adapter.simulator is not simulator:
             raise ValueError("adapter must reference replay simulator")
         self.simulator = simulator
         self.manifest = manifest
+        self.git_commit = git_commit
+        self.scenario_fingerprint = scenario_fingerprint
         self.resources = resources
         self.adapter = adapter
 
