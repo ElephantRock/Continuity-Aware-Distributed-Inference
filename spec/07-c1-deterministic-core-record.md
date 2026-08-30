@@ -575,7 +575,7 @@ Python 3.13
 Latest completion-candidate result after all review fixes:
 
 ```text
-151 passed
+152 passed
 ```
 
 The final review-regression set verifies that:
@@ -600,7 +600,7 @@ The final review-regression set verifies that:
 - strict JSON parsing rejects numeric exponent overflow that would become ±infinity;
 - Operation JSONL arguments are validated against whitelisted `ContinuityCore` signatures before construction, serialization, and dispatch;
 - nested semantic-operation dataclass, enum, scalar, finite-float, and typed-container values are recursively validated;
-- malformed directly constructed `SemanticOperation` objects, duplicate argument names, and one-shot iterator arguments are rejected before canonical emission or mutation.
+- malformed directly constructed `SemanticOperation` objects, duplicate argument names, one-shot iterator arguments, and mutable sets are rejected before canonical emission or mutation.
 
 The full suite includes:
 
@@ -640,7 +640,7 @@ The eight planned C1 exit artifacts are now implemented:
 
 Implementation exit criteria are therefore satisfied.
 
-Codex review identified fourteen correctness inconsistencies during closure:
+Codex review identified fifteen correctness inconsistencies during closure:
 
 1. wall-clock-dependent time-sensitive operation replay;
 2. missing independent Phase-dependency ordering validation in restored/corrupted State provenance;
@@ -655,9 +655,10 @@ Codex review identified fourteen correctness inconsistencies during closure:
 11. decoded snapshot collection members and internal enum/scalar types were not schema-validated;
 12. restore validation depended on Python `assert` and could disappear under `python -O`;
 13. snapshot restore did not enforce the core global logical-ID namespace across entity collections;
-14. external semantic-operation traces could inject wrongly typed decoded arguments, including forged Evidence authority, because replay did not validate action argument/entity types.
+14. external semantic-operation traces could inject wrongly typed decoded arguments, including forged Evidence authority, because replay did not validate action argument/entity types;
+15. typed `Iterable[...]` operation arguments admitted mutable `set` values that the canonical Operation encoder could not serialize.
 
-All fourteen are fixed and covered by regression tests.
+All fifteen are fixed and covered by regression tests.
 
 Formal milestone closure still requires:
 
