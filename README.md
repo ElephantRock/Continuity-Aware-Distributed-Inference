@@ -6,11 +6,11 @@
 
 - **C0.1 Research Specification:** complete
 - **Gate G0:** PASS
-- **C1 Deterministic Continuity Core:** completion candidate; implementation exit criteria and bounded independent exact-head semantic audit satisfied, pending final exact-head CI/merge
+- **C1 Deterministic Continuity Core:** **CLOSED** — PR #5 squash-merged to `main` as `562718f8137ed7f0e7087eab861c5e939e028e57` after exact-head CI and bounded independent semantic closure review
 - **C1 validation:** 157 deterministic/invariant/adversarial tests passing; permanent CI covers Python 3.11, 3.12, and 3.13
 - **C1 closure review:** fifteen substantive Codex correctness/consistency findings plus two independent closure-audit findings fixed and regression-tested; all review threads resolved
 - **Final Codex rerun:** requested on the prior exact head but unavailable because the GitHub Codex integration reached its code-review usage limit; this is recorded as a tooling/quota limitation, not a successful review
-- **C2 simulator / performance modeling:** intentionally not started
+- **C2 simulator / performance modeling:** not started; the merged C1 semantic baseline is now available for C2
 
 The repository is the canonical system of record for the project.
 
@@ -77,7 +77,7 @@ python -m pip install pytest
 python -m pytest
 ```
 
-C1 deliberately excludes queueing, networking, accelerator timing, public-trace ingestion, and performance simulation. Those enter at C2 and later milestones only after the C1 completion PR is cleanly reviewed and merged.
+C1 deliberately excludes queueing, networking, accelerator timing, public-trace ingestion, and performance simulation. C1 is now closed; those concerns may enter at C2 and later milestones without redefining the merged C1 semantics.
 
 ## Research discipline
 

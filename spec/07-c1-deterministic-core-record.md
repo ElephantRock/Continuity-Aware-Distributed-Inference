@@ -1,10 +1,10 @@
 # 07 — C1 Deterministic Continuity Core
-## Completion Candidate Record
+## Closure Record
 
 **Project:** Continuity-Aware Distributed Inference  
 **Milestone:** C1 — Deterministic Continuity Core  
 **Prerequisite:** Gate G0 PASS after C0.1 normalization  
-**Status:** Completion candidate; implementation exit criteria satisfied, pending final PR review and merge
+**Status:** CLOSED — PR #5 squash-merged to `main` on 2026-08-30 as `562718f8137ed7f0e7087eab861c5e939e028e57` after exact-head CI and bounded independent semantic closure review
 
 ---
 
@@ -572,7 +572,7 @@ Python 3.12
 Python 3.13
 ```
 
-Latest completion-candidate result after all review fixes:
+Final C1 validation result:
 
 ```text
 157 passed
@@ -671,16 +671,16 @@ Both independent findings are fixed and covered by regression tests. The registr
 
 The unavailable Codex exact-head rerun is recorded as a tooling/quota limitation, not as a successful Codex review. C1 closure therefore relies on the completed independent exact-head semantic audit plus permanent exact-head CI.
 
-Formal milestone closure still requires:
+Formal milestone closure is complete:
 
 ```text
-independent exact-head semantic review with no unresolved blocking finding
-clean permanent CI on that exact head
-resolution of all review threads
-merge of the C1 completion PR to main
+[complete] independent exact-head semantic review with no unresolved blocking finding
+[complete] clean permanent CI on exact head f187c610e8f691aa74113133dee0364a27d237c1
+[complete] all review threads resolved
+[complete] PR #5 squash-merged to main as 562718f8137ed7f0e7087eab861c5e939e028e57
 ```
 
-C2 must not begin before those closure steps are complete.
+C1 is closed. C2 may now begin from the merged deterministic semantic baseline.
 
 ---
 
@@ -707,8 +707,8 @@ Those belong to C2 and later milestones.
 
 # 19. C1 Closure Decision Rule
 
-C1 closes only when the completion PR is merged after clean review and CI.
+C1 closed on 2026-08-30 when PR #5 was squash-merged to `main` as `562718f8137ed7f0e7087eab861c5e939e028e57` after exact-head CI and bounded independent semantic closure review.
 
-At that point the deterministic kernel becomes the semantic reference implementation for C2.
+The deterministic kernel is now the semantic reference implementation for C2.
 
-C2 may then add time, queues, failures, resources, and simulated costs around the C1 semantics, but must not silently redefine them.
+C2 may add time, queues, failures, resources, and simulated costs around the C1 semantics, but must not silently redefine them.
