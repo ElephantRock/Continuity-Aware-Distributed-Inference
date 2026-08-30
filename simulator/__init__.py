@@ -19,6 +19,17 @@ from .fault_campaign import (
     PolicyFaultBinding,
     assert_paired_policy_reuse,
 )
+from .fault_oracle import (
+    FAULT_RECORD_SCHEMA,
+    FaultTrustOracle,
+    FaultTrustReport,
+    fault_record_from_dict,
+    fault_record_from_json,
+    fault_record_to_dict,
+    fault_record_to_json,
+    fault_records_from_jsonl,
+    fault_records_to_jsonl,
+)
 from .resources import (
     NetworkLink,
     ReplicaRuntime,
@@ -61,6 +72,15 @@ __all__ = [
     "FaultScheduleReplayer",
     "PolicyFaultBinding",
     "assert_paired_policy_reuse",
+    "FAULT_RECORD_SCHEMA",
+    "FaultTrustOracle",
+    "FaultTrustReport",
+    "fault_record_from_dict",
+    "fault_record_from_json",
+    "fault_record_to_dict",
+    "fault_record_to_json",
+    "fault_records_from_jsonl",
+    "fault_records_to_jsonl",
     "NetworkLink",
     "ReplicaRuntime",
     "ReplicaRuntimeStatus",
