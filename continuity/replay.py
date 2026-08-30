@@ -4,7 +4,6 @@ from collections.abc import Iterable as IterableABC
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 import inspect
-import json
 import math
 import types
 from typing import Any, Iterable, Union, get_args, get_origin, get_type_hints
@@ -65,7 +64,10 @@ def _matches_operation_annotation(value: Any, annotation: Any) -> bool:
         return any(_matches_operation_annotation(value, arg) for arg in args)
 
     if origin is IterableABC:
-        if isinstance(value, (str, bytes, dict)) or not isinstance(value, IterableABC):
+        # Semantic traces must contain stable, replayable values. One-shot
+        # iterators/generators are rejected because validating them would consume
+        # them and change subsequent serialization or dispatch semantics.
+        if not isinstance(value, (list, tuple, set, frozenset)):
             return False
         return len(args) == 1 and all(
             _matches_operation_annotation(item, args[0]) for item in value
@@ -188,12 +190,34 @@ class SemanticOperation:
         return dict(self.arguments)
 
 
+def _validated_operation_arguments(operation: SemanticOperation) -> dict[str, Any]:
+    """Return validated arguments for serialization or dispatch."""
+    if not isinstance(operation, SemanticOperation):
+        raise ValueError("semantic operation must be a SemanticOperation")
+    if type(operation.id) is not str or not operation.id:
+        raise ValueError("semantic operation requires a non-empty operation_id")
+    if type(operation.action) is not str or operation.action not in _ALLOWED_ACTIONS:
+        raise ValueError(f"unsupported semantic operation action: {operation.action!r}")
+    try:
+        arguments = operation.kwargs()
+    except (TypeError, ValueError) as exc:
+        raise ValueError("semantic operation arguments are malformed") from exc
+    if len(arguments) != len(operation.arguments):
+        raise ValueError("duplicate semantic operation argument name")
+    if not all(type(k) is str for k in arguments):
+        raise ValueError("semantic operation arguments must be string-keyed")
+    _require_explicit_replay_time(operation.action, arguments)
+    _validate_operation_arguments(operation.action, arguments)
+    return arguments
+
+
 def operation_to_record(operation: SemanticOperation) -> dict[str, Any]:
+    arguments = _validated_operation_arguments(operation)
     return {
         "schema": OPERATION_TRACE_SCHEMA,
         "operation_id": operation.id,
         "action": operation.action,
-        "arguments": _encode(operation.kwargs()),
+        "arguments": _encode(arguments),
     }
 
 
@@ -232,18 +256,7 @@ def operations_from_jsonl(text: str) -> list[SemanticOperation]:
 
 
 def apply_operation(core: ContinuityCore, operation: SemanticOperation) -> Any:
-    if type(operation.id) is not str or not operation.id:
-        raise ValueError("semantic operation requires a non-empty operation_id")
-    if operation.action not in _ALLOWED_ACTIONS:
-        raise ValueError(f"unsupported semantic operation action: {operation.action!r}")
-    try:
-        arguments = operation.kwargs()
-    except (TypeError, ValueError) as exc:
-        raise ValueError("semantic operation arguments are malformed") from exc
-    if not all(type(k) is str for k in arguments):
-        raise ValueError("semantic operation arguments must be string-keyed")
-    _require_explicit_replay_time(operation.action, arguments)
-    _validate_operation_arguments(operation.action, arguments)
+    arguments = _validated_operation_arguments(operation)
     method = getattr(core, operation.action)
     return method(**arguments)
 
