@@ -3,18 +3,17 @@ import pytest
 from continuity import ContinuityCore
 from continuity.entities import Evidence, EvidenceAuthority, EvidenceStatus
 from continuity.errors import InvalidTransition
-from simulator.scenarios import (
+from simulator import (
+    AdapterOutcome,
     FAILURE_SCENARIOS,
     SCENARIO_BY_CATALOGUE_ID,
     SCENARIO_BY_NAME,
     WORKLOAD_SCENARIOS,
-    assert_same_seed_replay,
-    build_scenario_schedule,
-)
-from simulator import (
     ContinuityAdapter,
     DiscreteEventSimulator,
     assert_authoritative_equivalent,
+    assert_same_seed_replay,
+    build_scenario_schedule,
 )
 
 
@@ -26,13 +25,7 @@ def _semantic_core() -> ContinuityCore:
     return core
 
 
-def _exact(
-    core: ContinuityCore,
-    evidence_id: str,
-    attempt_id: str,
-    *,
-    observed_at: float = 10.0,
-) -> None:
+def _exact(core: ContinuityCore, evidence_id: str, attempt_id: str, *, observed_at: float = 10.0) -> None:
     core.record_evidence(
         Evidence(
             id=evidence_id,
@@ -46,25 +39,20 @@ def _exact(
     )
 
 
-def _finalize(
-    core: ContinuityCore,
-    attempt_id: str,
-    output_id: str,
-    evidence_id: str,
-) -> None:
+def _finalize(core: ContinuityCore, attempt_id: str, output_id: str, evidence_id: str) -> None:
     core.complete_attempt(attempt_id, succeeded=True)
     _exact(core, evidence_id, attempt_id)
     core.create_output(output_id, attempt_id, True, [evidence_id])
     core.finalize_request("r", output_id, now=10.0)
 
 
-def _run_c2(catalogue_id: str, seed: int = 17) -> ContinuityCore:
+def _run_c2(catalogue_id: str, seed: int = 17):
     core = _semantic_core()
     simulator = DiscreteEventSimulator(seed=seed)
-    ContinuityAdapter(simulator, core)
+    adapter = ContinuityAdapter(simulator, core)
     build_scenario_schedule(catalogue_id, seed=seed).apply(simulator)
     simulator.run()
-    return core
+    return core, adapter
 
 
 def test_registry_covers_exact_normalized_workload_and_failure_catalogues():
@@ -117,6 +105,18 @@ def test_failure_registry_uses_current_ftr_numbers_with_legacy_c1_test_locations
     assert all(item.c1_reference for item in FAILURE_SCENARIOS)
 
 
+def test_all_c1_failure_references_resolve_to_declared_test_functions():
+    from pathlib import Path
+
+    repository_root = Path(__file__).resolve().parents[2]
+    for scenario in FAILURE_SCENARIOS:
+        path_text, function_name = scenario.c1_reference.split("::", 1)
+        source_path = repository_root / path_text
+        assert source_path.is_file(), scenario.catalogue_id
+        source = source_path.read_text(encoding="utf-8")
+        assert f"def {function_name}(" in source, scenario.catalogue_id
+
+
 def test_ftr1_c2_authoritative_outcome_matches_direct_c1_semantics():
     reference = _semantic_core()
     reference.create_request("r", "c")
@@ -125,7 +125,7 @@ def test_ftr1_c2_authoritative_outcome_matches_direct_c1_semantics():
     _finalize(reference, "a2", "o2", "e2")
     reference.complete_attempt("a1", succeeded=True)
 
-    candidate = _run_c2("FTR1")
+    candidate, _adapter = _run_c2("FTR1")
     outcome = assert_authoritative_equivalent(reference, candidate, "r")
     assert outcome.committed_attempt_id == "a2"
     assert outcome.authoritative_output_id == "o2"
@@ -138,7 +138,13 @@ def test_ftr2_c2_authoritative_outcome_matches_direct_c1_duplicate_finalization(
     _finalize(reference, "a1", "o1", "e1")
     reference.finalize_request("r", "o1", now=10.0)
 
-    candidate = _run_c2("FTR2")
+    candidate, adapter = _run_c2("FTR2")
+    duplicate_records = [
+        record for record in adapter.records
+        if record.event_id.endswith(":duplicate-observe")
+    ]
+    assert duplicate_records
+    assert all(record.outcome is not AdapterOutcome.REJECTED for record in duplicate_records)
     outcome = assert_authoritative_equivalent(reference, candidate, "r")
     assert outcome.committed_attempt_id == "a1"
     assert outcome.authoritative_output_id == "o1"
@@ -156,7 +162,7 @@ def test_ftr3_c2_authoritative_outcome_matches_direct_c1_reordered_retry_semanti
     with pytest.raises(InvalidTransition):
         reference.finalize_request("r", "o1", now=10.0)
 
-    candidate = _run_c2("FTR3")
+    candidate, _adapter = _run_c2("FTR3")
     outcome = assert_authoritative_equivalent(reference, candidate, "r")
     assert outcome.committed_attempt_id == "a2"
     assert outcome.authoritative_output_id == "o2"
