@@ -17,6 +17,7 @@ from simulator.fault_oracle import (
     fault_records_from_jsonl,
     fault_records_to_jsonl,
 )
+from simulator.fault_linkage import CrossLayerFaultInjector
 from simulator.faults import FaultClass, FaultInjector, ProbabilisticFaultDecision
 from simulator.resources import WorkerStatus
 
@@ -298,3 +299,83 @@ def test_c1_invariant_failure_is_reported_by_independent_trust_oracle(monkeypatc
     ).inspect()
     assert not report.semantic_invariants_ok
     assert any("C1 invariant oracle failure" in item for item in report.violations)
+
+
+
+def test_delivery_time_parameter_wrong_scalar_type_is_rejected_by_schema():
+    sim, injector, record = _delay_case()
+    forged = replace(
+        record,
+        parameters=freeze_payload(
+            {
+                "original_time": "not-a-time",
+                "replacement_time": 5.0,
+                "replacement_event_id": record.produced_event_ids[0],
+            }
+        ),
+    )
+    report = FaultTrustOracle(sim, (forged,), injector_seed=injector.seed).inspect()
+    assert any(
+        "parameter original_time must be finite and non-negative" in item
+        for item in report.violations
+    )
+
+
+def test_physical_resource_fault_duration_must_be_zero():
+    sim = DiscreteEventSimulator()
+    resources = ResourceModel(sim)
+    resources.add_worker("w1")
+    injector = FaultInjector(sim, resources)
+    record = injector.fail_worker("w1", fault_id="down")
+    forged = replace(record, duration=1.0)
+    report = FaultTrustOracle(
+        sim,
+        (forged,),
+        injector_seed=injector.seed,
+        resources=resources,
+    ).inspect()
+    assert any(
+        "physical resource fault duration must be zero" in item
+        for item in report.violations
+    )
+
+
+def test_cross_layer_identity_parameters_must_be_nonempty():
+    sim = DiscreteEventSimulator()
+    core = ContinuityCore()
+    core.create_program("p")
+    core.create_session("s", "p")
+    core.create_continuation("c", "s")
+    adapter = ContinuityAdapter(sim, core)
+    adapter.schedule_request("r", "c", at=0)
+    adapter.schedule_attempt_start("r", "a1", at=1)
+    sim.run(until=1)
+    injector = CrossLayerFaultInjector(sim)
+    record = injector.inject_attempt_timeout(
+        adapter,
+        "r",
+        "a1",
+        "a2",
+        at=2,
+        fault_id="timeout",
+    )
+    forged = replace(
+        record,
+        parameters=freeze_payload(
+            {
+                "request_id": "",
+                "retry_attempt_id": "a2",
+                "event_id": record.produced_event_ids[0],
+            }
+        ),
+    )
+    report = FaultTrustOracle(
+        sim,
+        (forged,),
+        injector_seed=injector.seed,
+        adapter=adapter,
+    ).inspect()
+    assert any(
+        "parameter request_id must be a non-empty string" in item
+        for item in report.violations
+    )
