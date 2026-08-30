@@ -1,0 +1,44 @@
+name: c2-4-2-metadata-finite
+
+on:
+  push:
+    branches: [c2/fault-outcome-linkage]
+    paths:
+      - .github/workflows/c2-4-2-metadata-finite.yml
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c2/fault-outcome-linkage
+          fetch-depth: 0
+      - name: Reject non-finite recovery latency
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('simulator/fault_linkage.py')
+          text = path.read_text()
+          text = text.replace('from enum import Enum\n', 'from enum import Enum\nimport math\n', 1)
+          old = '''            recovery_latency = float(recovery_latency)\n            if recovery_latency < 0:\n                raise ValueError("recovery_latency must be non-negative")\n'''
+          new = '''            recovery_latency = float(recovery_latency)\n            if not math.isfinite(recovery_latency) or recovery_latency < 0:\n                raise ValueError("recovery_latency must be finite and non-negative")\n'''
+          if old not in text:
+              raise SystemExit('missing recovery latency target')
+          path.write_text(text.replace(old, new, 1))
+          PY
+      - name: Validate fault-linkage tests
+        run: |
+          python -m pip install --upgrade pip pytest
+          python -m pytest tests/simulator/test_fault_linkage.py
+      - name: Commit hardening and remove workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/c2-4-2-metadata-finite.yml
+          git add simulator/fault_linkage.py
+          git commit -m "Reject non-finite C2.4 recovery metadata"
+          git push origin HEAD:c2/fault-outcome-linkage
