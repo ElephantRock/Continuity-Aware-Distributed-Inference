@@ -9,6 +9,16 @@ from .fault_linkage import (
     FaultOutcomeLinker,
     FaultOutcomeRecord,
 )
+from .fault_campaign import (
+    FAULT_CAMPAIGN_SCHEMA,
+    POLICY_FAULT_BINDING_SCHEMA,
+    FaultCampaignManifest,
+    FaultReplayEntry,
+    FaultReplayError,
+    FaultScheduleReplayer,
+    PolicyFaultBinding,
+    assert_paired_policy_reuse,
+)
 from .resources import (
     NetworkLink,
     ReplicaRuntime,
@@ -43,6 +53,14 @@ __all__ = [
     "FaultOutcomeClass",
     "FaultOutcomeLinker",
     "FaultOutcomeRecord",
+    "FAULT_CAMPAIGN_SCHEMA",
+    "POLICY_FAULT_BINDING_SCHEMA",
+    "FaultCampaignManifest",
+    "FaultReplayEntry",
+    "FaultReplayError",
+    "FaultScheduleReplayer",
+    "PolicyFaultBinding",
+    "assert_paired_policy_reuse",
     "NetworkLink",
     "ReplicaRuntime",
     "ReplicaRuntimeStatus",
