@@ -119,10 +119,20 @@ def test_phase_status_cannot_move_backward(core):
 
 
 def test_output_rejects_unresolved_evidence_reference(core):
-    import pytest
-    from continuity.errors import SemanticViolation
     core.create_program('p'); core.create_session('s', 'p'); core.create_continuation('c', 's')
     core.create_request('r', 'c'); core.start_attempt('a', 'r')
     with pytest.raises(SemanticViolation):
         core.create_output('o', 'a', True, ['later'])
     assert 'o' not in core.outputs
+
+
+def test_oracle_rejects_mismatched_declared_phase_origin(core):
+    from continuity.entities import PhaseStatus, PhaseType
+    core.create_program('p'); core.create_session('s', 'p'); core.create_continuation('c', 's')
+    core.create_request('r', 'c'); core.start_attempt('a', 'r')
+    core.create_phase('p1', 'a', PhaseType.PREFILL); core.set_phase_status('p1', PhaseStatus.RUNNING); core.complete_phase('p1')
+    core.create_phase('p2', 'a', PhaseType.DECODE); core.set_phase_status('p2', PhaseStatus.RUNNING); core.complete_phase('p2')
+    core.create_state('x', origin_type='phase', origin_id='p1')
+    core.states['x'] = replace(core.states['x'], origin_id='p2')
+    with pytest.raises(AssertionError):
+        InvariantOracle(core).assert_all()
