@@ -1,4 +1,3 @@
-import math
 import pytest
 
 from continuity import ContinuityCore
@@ -31,6 +30,16 @@ def test_operation_jsonl_parser_rejects_non_finite_numbers(constant):
         '{"schema":"cadi.semantic-operation.v1","operation_id":"op",'
         '"action":"finalize_request","arguments":{"$dict":['
         '["now",' + constant + '],["output_id","o"],["request_id","r"]]}}\n'
+    )
+    with pytest.raises(ValueError):
+        operations_from_jsonl(text)
+
+
+def test_operation_jsonl_parser_rejects_float_overflow_to_infinity():
+    text = (
+        '{"schema":"cadi.semantic-operation.v1","operation_id":"op",'
+        '"action":"finalize_request","arguments":{"$dict":['
+        '["now",-1e999],["output_id","o"],["request_id","r"]]}}\n'
     )
     with pytest.raises(ValueError):
         operations_from_jsonl(text)
