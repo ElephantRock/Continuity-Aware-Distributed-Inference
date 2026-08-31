@@ -33,6 +33,7 @@ from .fault_oracle import (
 from .policies import (
     INFORMATION_CONTRACTS,
     POLICY_CONTRACT_SCHEMA,
+    CacheAwarePolicy,
     InformationContract,
     InformationField,
     PlacementDecision,
@@ -127,6 +128,7 @@ __all__ = [
     "PlacementDecision",
     "PlacementPolicy",
     "RequestCentricPolicy",
+    "CacheAwarePolicy",
     "observe_resources",
     "project_observation",
     "decide_placement",
