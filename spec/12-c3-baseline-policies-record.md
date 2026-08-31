@@ -296,13 +296,13 @@ B0 decisions are invariant to changes in all hidden Continuity metadata
 
 # 10. C3.1 Closure Candidate
 
-Final reviewed PR #34 head:
+Final implementation-bearing head before documentation-only closure-evidence synchronization:
 
 ```text
 b0558644d15fd63fcc9aa200b634310fa6214333
 ```
 
-Exact-head full-suite validation:
+That implementation-bearing head passed the full repository suite with:
 
 ```text
 Python 3.11  PASS
@@ -320,7 +320,7 @@ tests/simulator/test_policies.py
 spec/12-c3-baseline-policies-record.md
 ```
 
-C3.1 may be merged only if PR #34 is SHA-fenced to the reviewed head above.
+Any documentation-only closure-evidence commit above the implementation-bearing head must preserve that exact file boundary and the final PR head must pass the same Python 3.11–3.13 matrix before merge.
 
 ---
 
@@ -340,7 +340,7 @@ Every later slice must preserve the information contracts established here unles
 
 # 12. C3.1 Exit Gate
 
-The implementation/review gate is satisfied on the exact head recorded above:
+The implementation/review gate is satisfied for the implementation-bearing head recorded above. Final merge additionally requires the actual final PR head to pass the full matrix:
 
 ```text
 machine-readable B0–B4 contracts exist
