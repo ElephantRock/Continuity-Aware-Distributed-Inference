@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 import json
 
 import pytest
@@ -9,6 +10,7 @@ from experiments.correctness import (
     CorrectnessEvaluationRecord,
     CorrectnessMetric,
     ExplicitNonSuccess,
+    MetricOpportunityScope,
     OutcomeClass,
     RecoveryAction,
     ResultEvidenceProvenance,
@@ -17,6 +19,49 @@ from experiments.correctness import (
     summarize_correctness,
 )
 from simulator.policies import PolicyID
+
+
+def _scope(metric: CorrectnessMetric) -> MetricOpportunityScope:
+    if metric in {
+        CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE,
+        CorrectnessMetric.WRONG_BRANCH_REUSE_RATE,
+        CorrectnessMetric.SILENT_BINDING_DIVERGENCE_RATE,
+    }:
+        return MetricOpportunityScope.EXOGENOUS_PAIRED
+    return MetricOpportunityScope.POLICY_DERIVED
+
+
+def _event_metadata(
+    opportunities: tuple[CorrectnessMetric, ...],
+    violations: tuple[CorrectnessMetric, ...],
+    *,
+    prefix: str,
+    opportunity_event_ids: tuple[str, ...] | None = None,
+    opportunity_scopes: tuple[MetricOpportunityScope, ...] | None = None,
+    violation_event_ids: tuple[str, ...] | None = None,
+) -> tuple[tuple[str, ...], tuple[MetricOpportunityScope, ...], tuple[str, ...]]:
+    if opportunity_event_ids is None:
+        opportunity_event_ids = tuple(
+            f"{prefix}:opportunity:{index}:{metric.name}"
+            for index, metric in enumerate(opportunities)
+        )
+    if opportunity_scopes is None:
+        opportunity_scopes = tuple(_scope(metric) for metric in opportunities)
+    if violation_event_ids is None:
+        by_metric: dict[CorrectnessMetric, list[str]] = defaultdict(list)
+        for metric, event_id in zip(opportunities, opportunity_event_ids, strict=True):
+            by_metric[metric].append(event_id)
+        offsets: dict[CorrectnessMetric, int] = defaultdict(int)
+        ids: list[str] = []
+        for index, metric in enumerate(violations):
+            offset = offsets[metric]
+            if offset < len(by_metric[metric]):
+                ids.append(by_metric[metric][offset])
+                offsets[metric] += 1
+            else:
+                ids.append(f"{prefix}:missing:{index}:{metric.name}")
+        violation_event_ids = tuple(ids)
+    return opportunity_event_ids, opportunity_scopes, violation_event_ids
 
 
 def _record(
@@ -28,12 +73,23 @@ def _record(
     semantic_result: SemanticResult | None = None,
     opportunities: tuple[CorrectnessMetric, ...] = (),
     violations: tuple[CorrectnessMetric, ...] = (),
+    opportunity_event_ids: tuple[str, ...] | None = None,
+    opportunity_scopes: tuple[MetricOpportunityScope, ...] | None = None,
+    violation_event_ids: tuple[str, ...] | None = None,
     faulted: bool = True,
     validation_level: ValidationEvidenceLevel = ValidationEvidenceLevel.EV0_DETERMINISTIC_SEMANTICS,
     evidence_provenance: ResultEvidenceProvenance = ResultEvidenceProvenance.SYNTHETICALLY_GENERATED,
     ground_truth: dict | None = None,
     scenario_id: str | None = None,
 ) -> CorrectnessEvaluationRecord:
+    event_ids, scopes, violation_ids = _event_metadata(
+        opportunities,
+        violations,
+        prefix=trial_id,
+        opportunity_event_ids=opportunity_event_ids,
+        opportunity_scopes=opportunity_scopes,
+        violation_event_ids=violation_event_ids,
+    )
     return CorrectnessEvaluationRecord.create(
         cohort_id=cohort_id,
         trial_id=trial_id,
@@ -57,7 +113,10 @@ def _record(
             semantically_correct=True,
         ),
         metric_opportunities=opportunities,
+        metric_opportunity_event_ids=event_ids,
+        metric_opportunity_scopes=scopes,
         metric_violations=violations,
+        metric_violation_event_ids=violation_ids,
         fault_id="fault-1" if faulted else None,
         fault_class="LATE_SUPERSEDED_ATTEMPT" if faulted else None,
     )
@@ -227,22 +286,67 @@ def test_paired_cohort_rejects_policy_specific_operation_subset():
 
 
 def test_paired_cohort_rejects_mismatched_ground_truth_or_opportunities():
+    metric = CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE
+    common_event_id = "stale-result:a1"
     b0 = _record(
         trial_id="paired",
         operation_id="op",
         policy_id=PolicyID.B0,
-        opportunities=(CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE,),
+        opportunities=(metric,),
+        opportunity_event_ids=(common_event_id,),
+        opportunity_scopes=(MetricOpportunityScope.EXOGENOUS_PAIRED,),
     )
     b4 = _record(
         trial_id="paired",
         operation_id="op",
         policy_id=PolicyID.B4,
         ground_truth={"active_attempt_id": "different"},
-        opportunities=(CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE,),
+        opportunities=(metric,),
+        opportunity_event_ids=(common_event_id,),
+        opportunity_scopes=(MetricOpportunityScope.EXOGENOUS_PAIRED,),
     )
 
     with pytest.raises(ValueError, match="metadata mismatch"):
         summarize_correctness((b0, b4))
+
+
+def test_paired_exogenous_gate_events_require_same_stable_identity():
+    metric = CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE
+    b0 = _record(
+        trial_id="paired-events",
+        operation_id="op",
+        policy_id=PolicyID.B0,
+        opportunities=(metric,),
+        opportunity_event_ids=("stale-result:a1",),
+        opportunity_scopes=(MetricOpportunityScope.EXOGENOUS_PAIRED,),
+    )
+    b4 = _record(
+        trial_id="paired-events",
+        operation_id="op",
+        policy_id=PolicyID.B4,
+        opportunities=(metric,),
+        opportunity_event_ids=("stale-result:a2",),
+        opportunity_scopes=(MetricOpportunityScope.EXOGENOUS_PAIRED,),
+    )
+
+    with pytest.raises(ValueError, match="opportunity-event identity mismatch"):
+        summarize_correctness((b0, b4))
+
+
+def test_metric_scope_is_fixed_by_canonical_denominator_semantics():
+    with pytest.raises(ValueError, match="EXOGENOUS_PAIRED"):
+        _record(
+            opportunities=(CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE,),
+            opportunity_event_ids=("stale:a1",),
+            opportunity_scopes=(MetricOpportunityScope.POLICY_DERIVED,),
+        )
+
+    with pytest.raises(ValueError, match="POLICY_DERIVED"):
+        _record(
+            opportunities=(CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE,),
+            opportunity_event_ids=("consume:x1",),
+            opportunity_scopes=(MetricOpportunityScope.EXOGENOUS_PAIRED,),
+        )
 
 
 def test_canonical_mapping_snapshot_is_detached_and_fingerprint_order_independent():
@@ -311,8 +415,8 @@ def test_round_trip_rejects_tampered_outcome_class():
         CorrectnessEvaluationRecord.from_dict(payload)
 
 
-def test_metric_violation_must_have_matching_opportunity():
-    with pytest.raises(ValueError, match="event counts"):
+def test_metric_violation_must_reference_matching_opportunity_event():
+    with pytest.raises(ValueError, match="matching metric opportunity event"):
         _record(
             violations=(CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE,),
         )
