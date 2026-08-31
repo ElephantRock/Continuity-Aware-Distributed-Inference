@@ -5,6 +5,7 @@ import pytest
 from experiments.correctness import (
     CorrectnessEvaluationRecord,
     CorrectnessMetric,
+    MetricOpportunityScope,
     OutcomeClass,
     RecoveryAction,
     ResultEvidenceProvenance,
@@ -27,6 +28,8 @@ def _record_with_metric_events(
     opportunities: tuple[CorrectnessMetric, ...],
     violations: tuple[CorrectnessMetric, ...],
 ) -> CorrectnessEvaluationRecord:
+    opportunity_ids = tuple(f"stale-result:a{index + 1}" for index in range(len(opportunities)))
+    violation_ids = opportunity_ids[: len(violations)]
     return CorrectnessEvaluationRecord.create(
         cohort_id="cohort",
         trial_id="event-cardinality",
@@ -40,13 +43,19 @@ def _record_with_metric_events(
         policy_decision={"trace": [{"action": "EVALUATE"}]},
         semantic_result=SemanticResult(True, True, True),
         metric_opportunities=opportunities,
+        metric_opportunity_event_ids=opportunity_ids,
+        metric_opportunity_scopes=tuple(
+            MetricOpportunityScope.EXOGENOUS_PAIRED for _ in opportunities
+        ),
         metric_violations=violations,
+        metric_violation_event_ids=violation_ids,
         fault_id="fault",
         fault_class="LATE_SUPERSEDED_ATTEMPT",
     )
 
 
 def test_gate_metric_violation_is_independent_from_o4_outcome_class():
+    metric = CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE
     record = CorrectnessEvaluationRecord.create(
         cohort_id="cohort",
         trial_id="recovered-wrong-state",
@@ -64,8 +73,11 @@ def test_gate_metric_violation_is_independent_from_o4_outcome_class():
             semantically_correct=True,
             recovery_actions=(RecoveryAction.RECOMPUTE,),
         ),
-        metric_opportunities=(CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE,),
-        metric_violations=(CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE,),
+        metric_opportunities=(metric,),
+        metric_opportunity_event_ids=("state-consumption:1",),
+        metric_opportunity_scopes=(MetricOpportunityScope.POLICY_DERIVED,),
+        metric_violations=(metric,),
+        metric_violation_event_ids=("state-consumption:1",),
         fault_id="fault-wrong-state",
         fault_class="WRONG_SIBLING_STATE_PRESENTED",
     )
@@ -129,17 +141,42 @@ def test_gate_event_multiset_preserves_multiple_events_within_one_operation():
 
     assert record.metric_opportunities == (metric, metric, metric)
     assert record.metric_violations == (metric, metric)
+    assert record.metric_opportunity_event_ids == (
+        "stale-result:a1",
+        "stale-result:a2",
+        "stale-result:a3",
+    )
+    assert record.metric_violation_event_ids == (
+        "stale-result:a1",
+        "stale-result:a2",
+    )
 
     rate = _rate(summarize_correctness((record,)), metric)
     assert (rate.numerator, rate.denominator, rate.rate) == (2, 3, 2 / 3)
 
 
-def test_gate_violation_event_count_cannot_exceed_matching_opportunity_count():
+def test_gate_violation_must_reference_an_existing_opportunity_event():
     metric = CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE
-    with pytest.raises(ValueError, match="event counts"):
-        _record_with_metric_events(
-            opportunities=(metric,),
-            violations=(metric, metric),
+    with pytest.raises(ValueError, match="matching metric opportunity event"):
+        CorrectnessEvaluationRecord.create(
+            cohort_id="cohort",
+            trial_id="invalid-event",
+            operation_id="operation",
+            policy_id=PolicyID.B4,
+            scenario_id="S1-attempt-fencing",
+            validation_level=ValidationEvidenceLevel.EV0_DETERMINISTIC_SEMANTICS,
+            evidence_provenance=ResultEvidenceProvenance.SYNTHETICALLY_GENERATED,
+            ground_truth={"current_attempt": "a2"},
+            observed_evidence={"late_attempt": "a1"},
+            policy_decision={"trace": [{"action": "EVALUATE"}]},
+            semantic_result=SemanticResult(True, True, True),
+            metric_opportunities=(metric,),
+            metric_opportunity_event_ids=("stale-result:a1",),
+            metric_opportunity_scopes=(MetricOpportunityScope.EXOGENOUS_PAIRED,),
+            metric_violations=(metric,),
+            metric_violation_event_ids=("stale-result:not-presented",),
+            fault_id="fault",
+            fault_class="LATE_SUPERSEDED_ATTEMPT",
         )
 
 
@@ -162,7 +199,10 @@ def test_behavior_dependent_gate_opportunities_may_differ_across_paired_policies
         policy_decision={"trace": [{"action": "CONSUME"}]},
         semantic_result=SemanticResult(True, True, False),
         metric_opportunities=(metric,),
+        metric_opportunity_event_ids=("b0:state-consumption:1",),
+        metric_opportunity_scopes=(MetricOpportunityScope.POLICY_DERIVED,),
         metric_violations=(metric,),
+        metric_violation_event_ids=("b0:state-consumption:1",),
         **common,
     )
     b4 = CorrectnessEvaluationRecord.create(
@@ -176,7 +216,10 @@ def test_behavior_dependent_gate_opportunities_may_differ_across_paired_policies
             recovery_actions=(RecoveryAction.RECOMPUTE,),
         ),
         metric_opportunities=(),
+        metric_opportunity_event_ids=(),
+        metric_opportunity_scopes=(),
         metric_violations=(),
+        metric_violation_event_ids=(),
         **common,
     )
 
