@@ -148,7 +148,6 @@ class WorkerObservation:
 class PolicyObservation:
     request_id: str
     workers: tuple[WorkerObservation, ...]
-    program_id: str | None = None
     attempt_id: str | None = None
     attempt_authority: str | None = None
     session_id: str | None = None
@@ -159,13 +158,14 @@ class PolicyObservation:
     exact_state_id: str | None = None
     state_locations: tuple[str, ...] = ()
     state_provenance: tuple[tuple[str, str], ...] = ()
-    state_lifecycle: str | None = None
     producer_attempt_id: str | None = None
     binding_id: str | None = None
     binding_epoch: int | None = None
     evidence_authority: str | None = None
     evidence_status: str | None = None
     evidence_freshness: float | None = None
+    program_id: str | None = None
+    state_lifecycle: str | None = None
     reconciliation: str | None = None
 
     def __post_init__(self) -> None:
@@ -180,7 +180,6 @@ class PolicyObservation:
         if tuple(sorted(ids)) != tuple(ids):
             raise ValueError("worker observations must be sorted by worker_id")
         for value, name in (
-            (self.program_id, "program_id"),
             (self.attempt_id, "attempt_id"),
             (self.attempt_authority, "attempt_authority"),
             (self.session_id, "session_id"),
@@ -188,11 +187,12 @@ class PolicyObservation:
             (self.continuation_id, "continuation_id"),
             (self.state_candidate_key, "state_candidate_key"),
             (self.exact_state_id, "exact_state_id"),
-            (self.state_lifecycle, "state_lifecycle"),
             (self.producer_attempt_id, "producer_attempt_id"),
             (self.binding_id, "binding_id"),
             (self.evidence_authority, "evidence_authority"),
             (self.evidence_status, "evidence_status"),
+            (self.program_id, "program_id"),
+            (self.state_lifecycle, "state_lifecycle"),
             (self.reconciliation, "reconciliation"),
         ):
             if value is not None:
