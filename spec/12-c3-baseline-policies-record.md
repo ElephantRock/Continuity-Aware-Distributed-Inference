@@ -5,7 +5,7 @@
 **Milestone:** C3 — Baseline Policies B0–B4  
 **Prerequisite:** C2 CLOSED  
 **Tracking:** #32  
-**Status:** IN PROGRESS — C3.1–C3.4 CLOSED; C3.5 B4 Continuity-Aware candidate
+**Status:** IN PROGRESS — C3.1–C3.4 CLOSED; C3.5 implementation/review candidate
 
 ---
 
@@ -73,6 +73,8 @@ cadi.policy-information-contract.v2
 and adds exactly those fields.
 
 B0–B3 privileges are unchanged. The new fields are B4-only because B0–B3 use explicit field sets while B4 receives the complete normalized vocabulary.
+
+The v2 fields are appended to the end of `PolicyObservation`. Existing v1 positional constructor slots therefore retain their original meanings.
 
 ---
 
@@ -153,15 +155,14 @@ issue              #39 CLOSED
 
 Tracking: #41.
 
-B4 receives the complete normalized v2 information contract and may invoke the closed C1 semantic authority for Continuity judgments.
-
-C3.5 does **not** reconstruct C1 compatibility, evidence, or migration invariants in the policy layer.
+B4 receives the complete normalized v2 information contract and invokes the closed C1 semantic authority for Continuity judgments. C3.5 does **not** reconstruct C1 compatibility, evidence, or migration invariants in the policy layer.
 
 ## 4.1 Read-only C1 authority
 
-`CoreContinuityAuthority` exposes one placement-time semantic query:
+`CoreContinuityAuthority` exposes two read-only placement-time semantic judgments over the closed C1 core:
 
 ```text
+attempt_current(LogicalRequestID, AttemptID)
 state_compatible(
     exact StateID,
     ProgramID,
@@ -172,18 +173,19 @@ state_compatible(
 )
 ```
 
-The adapter constructs the public C1 `ExecutionContext` and calls the public C1 `ContinuityCore.state_compatible` method.
+`attempt_current` validates the observed Attempt against C1's authoritative current-Attempt state. `state_compatible` constructs the public C1 `ExecutionContext` and calls the public `ContinuityCore.state_compatible` method.
 
-Placement evaluation does not mutate C1.
+Neither query mutates C1.
 
 ## 4.2 Attempt fencing
 
-B4 requires a declared current Attempt before placement:
+Attempt fencing precedes physical worker availability. B4 permits placement only when:
 
 ```text
-attempt_id exists
-AND
-attempt_authority == CURRENT
+LogicalRequestID exists
+AttemptID exists
+observed Attempt authority == CURRENT
+C1 attempt_current(LogicalRequestID, AttemptID) == true
 ```
 
 Otherwise the policy returns:
@@ -194,7 +196,7 @@ ATTEMPT_FENCED
 
 with no worker ranking.
 
-The C1 semantic core remains authoritative for finalization and other state-machine effects.
+This prevents a stale observation that still claims `CURRENT` from overriding C1 authority after a retry has superseded that Attempt.
 
 ## 4.3 Compatible-State routing
 
@@ -220,9 +222,7 @@ remote workers
 
 with the shared B0 load key inside each class.
 
-If reconciliation is not matched or C1 reports incompatibility, B4 fails closed to load/recomputation routing rather than consuming the attractive State.
-
-This creates the intended executable B3↔B4 distinction for later H2 evaluation.
+If reconciliation is not matched or C1 reports incompatibility, B4 fails closed to load/recomputation routing rather than consuming the attractive State. This creates the intended executable B3↔B4 distinction for later H2 evaluation.
 
 ## 4.4 Lifecycle-aware retention
 
@@ -235,11 +235,11 @@ SPECULATIVE  priority 1  BEST_EFFORT
 TERMINAL     priority 0  RELEASE
 ```
 
-These are deterministic preference classes, not calibrated time/cost weights. C6 remains responsible for performance calibration and parameter sweeps.
+The ordinal mapping is a deterministic C3 implementation choice over the canonical lifecycle classes, not a measured or calibrated cost model. C6 remains responsible for performance calibration and parameter sweeps.
 
 ## 4.5 Safe-migration policy surface
 
-C3.5 exposes a migration disposition rather than mutating Binding state directly.
+C3.5 exposes migration eligibility rather than mutating Binding state directly.
 
 A migration-sensitive commit is policy-eligible only when:
 
@@ -249,68 +249,70 @@ Binding epoch exists
 Reconciliation == MATCHED
 ```
 
-The policy returns:
+The policy returns `ALLOW_COMMIT` only in that case; otherwise it returns `WAIT`.
 
-```text
-ALLOW_COMMIT
-```
-
-only in that case. Otherwise it returns:
-
-```text
-WAIT
-```
-
-Actual migration commit, epoch fencing, evidence sufficiency, old-binding supersession, and atomic semantic transition remain C1 responsibilities.
+Actual migration commit, epoch fencing, Evidence sufficiency, old-binding supersession, and atomic semantic transition remain C1 responsibilities.
 
 ## 4.6 Paired placement interface
 
 `build_baseline_policies(...)` constructs exactly B0–B4.
 
-`decide_paired_placements(...)` requires exactly those five policies and executes them in canonical B0→B4 order against the **same immutable `PolicyObservation`**.
-
-Each policy independently receives its own `PolicyView` projection.
+`decide_paired_placements(...)` requires exactly those five policies and executes them in canonical B0→B4 order against the **same immutable `PolicyObservation`**. Each policy independently receives its own `PolicyView` projection.
 
 This is the C3 paired-interface boundary intended for C4/C6 experiments.
 
 ---
 
-# 5. C3.5 test obligations
+# 5. C3.5 bounded review findings
+
+Three substantive issues were found before finalizing C3.5:
+
+1. **Incomplete B4 information contract.** Schema v1 omitted `program_id`, `state_lifecycle`, and `reconciliation`, despite those concepts being explicitly required by the canonical B4 definition. Schema v2 adds exactly those B4 inputs without expanding B0–B3 privileges.
+2. **Attempt-fencing weakness and ordering.** The first B4 candidate trusted the observed `attempt_authority` and checked worker availability before fencing. B4 now cross-checks the request/Attempt against C1 `attempt_current`, and fencing precedes physical availability.
+3. **PolicyObservation positional compatibility.** The first v2 draft inserted new fields into existing dataclass positions. The fields are now appended at the tail and a regression test proves v1 positional slots retain their original meaning.
+
+The behavior-bearing candidate after these fixes is:
+
+```text
+cae12c30b4592cfe768803045aa852ca95b111f9
+```
+
+It passed the full repository suite with:
+
+```text
+326 passed on Python 3.11
+326 passed on Python 3.12
+326 passed on Python 3.13
+```
+
+Any later commit in PR #42 is documentation-only and must pass the same three-version matrix before merge.
+
+---
+
+# 6. C3.5 test obligations
 
 `tests/simulator/test_continuity_aware_policy.py` requires:
 
 ```text
 schema v2 contains the three source-backed B4 contract repairs
 B0–B3 privileges are unchanged
+v1 PolicyObservation positional slots retain their original meanings
 B4 can read Program/lifecycle/reconciliation while B3 cannot
 compatible exact State locality is preferred only after C1 compatibility + MATCHED reconciliation
 wrong-sibling State fails closed to recomputation/load routing
 unmatched/ambiguous reconciliation blocks State locality
-non-current Attempt is fenced
+observed non-current Attempt is fenced
+stale CURRENT observation is rejected when C1 says the Attempt is no longer current
+Attempt fencing precedes worker availability
 candidate-only locality is not promoted into verified reuse
 lifecycle priority is deterministic across ACTIVE/WAITING/SPECULATIVE/TERMINAL
-migration disposition allows commit only for reconciled declared Binding context
+migration eligibility requires reconciled declared Binding context
 B4 placement/retention/migration queries do not mutate C1
 paired interface executes exactly B0–B4 over one observation
 equal paired observations produce equal paired decisions
 ```
 
 Existing B0–B3 suites remain regression obligations.
-
----
-
-# 6. C3.5 bounded-review questions
-
-Before merge, review must answer:
-
-1. Did schema v2 expand any B0–B3 privilege accidentally?
-2. Does B4 consume unverified cache/candidate locality anywhere?
-3. Does C3 duplicate C1 State compatibility, Evidence sufficiency, Binding epoch, or reconciliation semantics?
-4. Can a superseded Attempt obtain a placement decision?
-5. Can ambiguous/non-matched reconciliation produce State-local reuse or migration eligibility?
-6. Does the B4 C1 adapter mutate semantic state during policy evaluation?
-7. Do all five baselines execute through the same `PolicyObservation -> PolicyView -> PlacementDecision` path?
-8. Is any calibrated performance weight introduced before C6?
 
 ---
 
