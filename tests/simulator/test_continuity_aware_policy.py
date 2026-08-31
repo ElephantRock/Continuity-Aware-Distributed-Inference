@@ -163,6 +163,35 @@ def test_b4_fences_non_current_attempt_before_placement():
     assert decision.reason == "ATTEMPT_FENCED"
 
 
+def test_b4_cross_checks_observed_attempt_authority_with_c1_authority():
+    core = compatible_core()
+    core.start_attempt("a2", "r")
+    policy = ContinuityAwarePolicy(CoreContinuityAuthority(core))
+
+    decision = decide_placement(
+        policy,
+        observation(attempt_id="a", attempt_authority="CURRENT"),
+    )
+
+    assert decision.worker_id is None
+    assert decision.ranked_worker_ids == ()
+    assert decision.reason == "ATTEMPT_FENCED"
+
+
+def test_b4_attempt_fencing_precedes_physical_worker_availability():
+    core = compatible_core()
+    policy = ContinuityAwarePolicy(CoreContinuityAuthority(core))
+
+    decision = decide_placement(
+        policy,
+        observation(workers=(), attempt_authority="SUPERSEDED"),
+    )
+
+    assert decision.worker_id is None
+    assert decision.ranked_worker_ids == ()
+    assert decision.reason == "ATTEMPT_FENCED"
+
+
 def test_b4_does_not_promote_candidate_only_locality_without_exact_state_identity():
     core = compatible_core()
     policy = ContinuityAwarePolicy(CoreContinuityAuthority(core))
