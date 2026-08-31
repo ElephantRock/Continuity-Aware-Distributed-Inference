@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import math
+from types import MappingProxyType
 from typing import Any, Mapping, Protocol
 
 from .resources import ResourceModel, WorkerStatus
@@ -94,13 +95,15 @@ _B3_FIELDS = _B0_FIELDS | frozenset(
 _B4_FIELDS = frozenset(InformationField)
 
 
-INFORMATION_CONTRACTS: Mapping[PolicyID, InformationContract] = {
-    PolicyID.B0: InformationContract(PolicyID.B0, "request-centric", _B0_FIELDS),
-    PolicyID.B1: InformationContract(PolicyID.B1, "cache-aware", _B1_FIELDS),
-    PolicyID.B2: InformationContract(PolicyID.B2, "session-affinity", _B2_FIELDS),
-    PolicyID.B3: InformationContract(PolicyID.B3, "state-aware", _B3_FIELDS),
-    PolicyID.B4: InformationContract(PolicyID.B4, "continuity-aware", _B4_FIELDS),
-}
+INFORMATION_CONTRACTS: Mapping[PolicyID, InformationContract] = MappingProxyType(
+    {
+        PolicyID.B0: InformationContract(PolicyID.B0, "request-centric", _B0_FIELDS),
+        PolicyID.B1: InformationContract(PolicyID.B1, "cache-aware", _B1_FIELDS),
+        PolicyID.B2: InformationContract(PolicyID.B2, "session-affinity", _B2_FIELDS),
+        PolicyID.B3: InformationContract(PolicyID.B3, "state-aware", _B3_FIELDS),
+        PolicyID.B4: InformationContract(PolicyID.B4, "continuity-aware", _B4_FIELDS),
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
