@@ -9,7 +9,7 @@ from typing import Any, Mapping, Protocol
 from .resources import ResourceModel, WorkerStatus
 
 
-POLICY_CONTRACT_SCHEMA = "cadi.policy-information-contract.v1"
+POLICY_CONTRACT_SCHEMA = "cadi.policy-information-contract.v2"
 
 
 class PolicyID(str, Enum):
@@ -21,6 +21,7 @@ class PolicyID(str, Enum):
 
 
 class InformationField(str, Enum):
+    PROGRAM_ID = "program_id"
     LOGICAL_REQUEST_ID = "logical_request_id"
     ATTEMPT_ID = "attempt_id"
     ATTEMPT_AUTHORITY = "attempt_authority"
@@ -32,12 +33,14 @@ class InformationField(str, Enum):
     EXACT_STATE_ID = "exact_state_id"
     STATE_LOCATION = "state_location"
     STATE_PROVENANCE = "state_provenance"
+    STATE_LIFECYCLE = "state_lifecycle"
     PRODUCER_ATTEMPT = "producer_attempt"
     BINDING_ID = "binding_id"
     BINDING_EPOCH = "binding_epoch"
     EVIDENCE_AUTHORITY = "evidence_authority"
     EVIDENCE_STATUS = "evidence_status"
     EVIDENCE_FRESHNESS = "evidence_freshness"
+    RECONCILIATION = "reconciliation"
     RESOURCE_LOAD = "resource_load"
 
 
@@ -145,6 +148,7 @@ class WorkerObservation:
 class PolicyObservation:
     request_id: str
     workers: tuple[WorkerObservation, ...]
+    program_id: str | None = None
     attempt_id: str | None = None
     attempt_authority: str | None = None
     session_id: str | None = None
@@ -155,12 +159,14 @@ class PolicyObservation:
     exact_state_id: str | None = None
     state_locations: tuple[str, ...] = ()
     state_provenance: tuple[tuple[str, str], ...] = ()
+    state_lifecycle: str | None = None
     producer_attempt_id: str | None = None
     binding_id: str | None = None
     binding_epoch: int | None = None
     evidence_authority: str | None = None
     evidence_status: str | None = None
     evidence_freshness: float | None = None
+    reconciliation: str | None = None
 
     def __post_init__(self) -> None:
         _require_id(self.request_id, "request_id")
@@ -174,6 +180,7 @@ class PolicyObservation:
         if tuple(sorted(ids)) != tuple(ids):
             raise ValueError("worker observations must be sorted by worker_id")
         for value, name in (
+            (self.program_id, "program_id"),
             (self.attempt_id, "attempt_id"),
             (self.attempt_authority, "attempt_authority"),
             (self.session_id, "session_id"),
@@ -181,10 +188,12 @@ class PolicyObservation:
             (self.continuation_id, "continuation_id"),
             (self.state_candidate_key, "state_candidate_key"),
             (self.exact_state_id, "exact_state_id"),
+            (self.state_lifecycle, "state_lifecycle"),
             (self.producer_attempt_id, "producer_attempt_id"),
             (self.binding_id, "binding_id"),
             (self.evidence_authority, "evidence_authority"),
             (self.evidence_status, "evidence_status"),
+            (self.reconciliation, "reconciliation"),
         ):
             if value is not None:
                 _require_id(value, name)
@@ -408,6 +417,7 @@ def project_observation(observation: PolicyObservation, policy_id: PolicyID) -> 
     if not isinstance(policy_id, PolicyID):
         raise TypeError("policy_id must be PolicyID")
     source = {
+        InformationField.PROGRAM_ID: observation.program_id,
         InformationField.LOGICAL_REQUEST_ID: observation.request_id,
         InformationField.ATTEMPT_ID: observation.attempt_id,
         InformationField.ATTEMPT_AUTHORITY: observation.attempt_authority,
@@ -419,12 +429,14 @@ def project_observation(observation: PolicyObservation, policy_id: PolicyID) -> 
         InformationField.EXACT_STATE_ID: observation.exact_state_id,
         InformationField.STATE_LOCATION: observation.state_locations,
         InformationField.STATE_PROVENANCE: observation.state_provenance,
+        InformationField.STATE_LIFECYCLE: observation.state_lifecycle,
         InformationField.PRODUCER_ATTEMPT: observation.producer_attempt_id,
         InformationField.BINDING_ID: observation.binding_id,
         InformationField.BINDING_EPOCH: observation.binding_epoch,
         InformationField.EVIDENCE_AUTHORITY: observation.evidence_authority,
         InformationField.EVIDENCE_STATUS: observation.evidence_status,
         InformationField.EVIDENCE_FRESHNESS: observation.evidence_freshness,
+        InformationField.RECONCILIATION: observation.reconciliation,
         InformationField.RESOURCE_LOAD: observation.workers,
     }
     contract = INFORMATION_CONTRACTS[policy_id]
