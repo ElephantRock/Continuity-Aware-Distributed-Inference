@@ -5,7 +5,7 @@
 **Milestone:** C4 — Correctness Evaluation / Gate G1  
 **Prerequisite:** C3 CLOSED at `950dbb2303a49482e27ee09468717102eec8b0f0`  
 **Tracking:** #44 / #45 / PR #46  
-**Status:** IN PROGRESS — C4.1 final review candidate
+**Status:** IN PROGRESS — implementation/test gate green; final exact-head review pending
 
 ---
 
@@ -32,9 +32,10 @@ explicit non-success != silent semantic error
 Gate-specific event rates != O1/O2/O3/O4 terminal outcome class
 operation-level outcome denominator != Gate-event denominator
 exogenous paired cohort != policy-derived denominator events
+paired event cardinality != paired event identity
 ```
 
-The measurement layer must not manufacture a correctness advantage by changing baseline capabilities, cohort membership, evidence strata, denominator cardinality, or zero-coverage semantics.
+The measurement layer must not manufacture a correctness advantage by changing baseline capabilities, cohort membership, evidence strata, denominator cardinality, event identity, or zero-coverage semantics.
 
 ---
 
@@ -57,57 +58,49 @@ WAIT -> RETRY -> COMMIT
 
 remains one operation and one terminal O1/O2/O3/O4 row. Its ordered decisions live inside `policy_decision`.
 
-Duplicate:
-
-```text
-(policy_id, cohort_id, trial_id, operation_id)
-```
-
-records are rejected before aggregation.
-
-This prevents scheduler or reconciliation decision count from inflating the Failure Model's `TotalFaultedOperations` denominator.
+Duplicate `(policy_id, cohort_id, trial_id, operation_id)` records are rejected before aggregation. This prevents scheduler or reconciliation decision count from inflating `TotalFaultedOperations`.
 
 ---
 
-# 3. Gate metrics preserve event cardinality
+# 3. Gate events preserve cardinality and identity
 
-The six Gate G1 safety rates are event-level ratios. A complete operation can contain more than one denominator event of the same metric.
+The six Gate G1 safety rates are event-level ratios. A complete operation can contain multiple denominator events of the same metric, and those events must remain distinguishable.
 
-C4.1 therefore treats:
+Each Gate opportunity therefore carries three aligned fields:
 
 ```text
 metric_opportunities
-metric_violations
+metric_opportunity_event_ids
+metric_opportunity_scopes
 ```
 
-as canonical multisets of Gate metric identifiers. Repeated identifiers preserve event cardinality.
+Each Gate violation carries:
+
+```text
+metric_violations
+metric_violation_event_ids
+```
+
+Event IDs are non-empty and unique within an operation. A violation is valid only when its `(metric, event_id)` exactly references a declared opportunity event.
 
 Example:
 
 ```text
-metric_opportunities = [SAAR, SAAR, SAAR]
-metric_violations    = [SAAR, SAAR]
+metric_opportunities          = [SAAR, SAAR, SAAR]
+metric_opportunity_event_ids  = [stale:a1, stale:a2, stale:a3]
+metric_violations             = [SAAR, SAAR]
+metric_violation_event_ids    = [stale:a1, stale:a2]
 ```
 
-means three stale-Attempt-result presentation events occurred inside one complete operation and two were accepted authoritatively. Its SAAR contribution is `2 / 3`, while the operation contributes only one terminal O-class outcome.
+This contributes `2 / 3` to SAAR while the operation still contributes one terminal O-class outcome.
 
-For every Gate metric:
-
-```text
-violation_event_count <= opportunity_event_count
-```
-
-is enforced.
-
-Gate aggregation sums event counts across records. It does not reduce repeated events to a binary per-operation indicator.
+Gate aggregation sums explicit event rows. It never collapses repeated events to a binary per-operation indicator.
 
 ---
 
-# 4. Exogenous paired cohorts versus behavior-dependent opportunities
+# 4. Exogenous paired events versus policy-derived events
 
-Paired B0–B4 evaluation requires the same **exogenous operation cohort** across compared policies.
-
-For one `cohort_id + trial_id + operation_id`, the following must match across policies:
+Paired B0–B4 evaluation requires the same exogenous operation cohort across compared policies. For the same `cohort_id + trial_id + operation_id`, all compared policies must share:
 
 ```text
 scenario_id
@@ -118,43 +111,59 @@ ground_truth
 
 Every included policy must have the same operation keys.
 
-The following are policy-specific and may differ:
+C4.1 also distinguishes Gate denominator events by causal source.
+
+## 4.1 Exogenous paired Gate opportunities
+
+These opportunities are fixed by the experiment input and must therefore carry the same stable event identities across paired policies:
 
 ```text
-observed_evidence
-policy_decision
-semantic_result
-metric_opportunities
-metric_violations
+SAAR  stale Attempt result presentations
+WBRR  incompatible branch-reuse opportunities
+SBDR  Binding-sensitive operations
 ```
 
-This distinction is necessary because some canonical Gate denominators depend on policy behavior. For example:
+Machine scope:
 
 ```text
-WSCR denominator = State consumptions
-DFR denominator  = completed LogicalRequests
+EXOGENOUS_PAIRED
 ```
 
-If B0 consumes a presented incompatible State while B4 rejects it before consumption, truthful records are:
+Equal metric counts are insufficient. If B0 is evaluated on stale result `a1` and B4 on stale result `a2`, the cohort is rejected even though both have one SAAR opportunity.
+
+## 4.2 Policy-derived Gate opportunities
+
+These denominators arise from actual policy execution and may legitimately differ:
 
 ```text
-B0 WSCR opportunities = 1
-B4 WSCR opportunities = 0
+WSCR  actual State consumptions
+ACR   actual ambiguous correctness-sensitive decisions
+DFR   completed LogicalRequests
 ```
 
-Forcing those opportunity counts equal would either reject a valid paired comparison or fabricate a denominator event for B4, turning genuine no-coverage `0/0 = null` into a fictitious `0/1 = 0` safety pass.
+Machine scope:
 
-Therefore paired fairness means:
+```text
+POLICY_DERIVED
+```
+
+For example, if B0 consumes an incompatible State while B4 rejects it before consumption:
+
+```text
+B0 WSCR = 1 / 1
+B4 WSCR = 0 / 0 = null
+```
+
+This is a valid paired comparison. Forcing a fictitious B4 consumption event would manufacture a `0 / 1` safety pass.
+
+Thus paired fairness is:
 
 ```text
 same exogenous workload/fault/ground truth
-+ policy-specific observed behavior
-+ policy-specific denominator events derived from that behavior
++ same stable identities for exogenous Gate opportunities
++ policy-specific execution behavior
++ policy-specific behavior-derived denominator events
 ```
-
-not identical post-decision event counts.
-
-A single-policy summary remains valid for implementation checks or pilot evidence, but it is not itself a paired B0–B4 comparison.
 
 ---
 
@@ -183,16 +192,9 @@ ANALYTICALLY_DERIVED
 ESTIMATED
 ```
 
-The machine-readable fields are:
+The machine-readable fields are `validation_level` and `evidence_provenance`. A `CorrectnessSummary` contains exactly one evidence stratum. Mixed strata are rejected and the stratum is serialized into the summary fingerprint.
 
-```text
-validation_level
-evidence_provenance
-```
-
-A `CorrectnessSummary` contains exactly one `(validation_level, evidence_provenance)` stratum. Mixed strata are rejected, and both dimensions are serialized into the summary fingerprint.
-
-Runtime C1 `Evidence` authority/status/freshness is a distinct semantic concept.
+Runtime C1 `Evidence` authority/status/freshness remains a separate semantic concept.
 
 ---
 
@@ -205,16 +207,6 @@ O1  Correct transparent recovery
 O2  Correct degraded recovery
 O3  Explicit non-success
 O4  Silent semantic violation
-```
-
-`SemanticResult` records:
-
-```text
-reported_success
-authoritative_commit
-semantically_correct
-explicit_non_success
-recovery_actions
 ```
 
 Classification:
@@ -237,9 +229,9 @@ O1–O4 counts are over faulted operations only. Controls remain visible in tota
 
 ---
 
-# 7. Gate-specific rates are independent from O1–O4
+# 7. Gate rates remain independent from O1–O4
 
-Gate G1 uses:
+Gate G1 metrics are:
 
 ```text
 Stale Attempt Acceptance Rate      (SAAR)
@@ -260,16 +252,14 @@ Recovery Rate
 
 The six Gate metrics count specific unsafe events. O4 is narrower: a semantically incorrect committed success.
 
-Thus:
-
 ```text
 Gate violation does not imply O4
 O4 does not imply a named Gate violation
 ```
 
-An operation may consume incompatible State, detect the problem, recompute, and complete correctly. It is O2 while still contributing a WSCR violation. Conversely an O4 semantic violation may exist without attribution to one of the six named Gate metrics.
+An operation may consume incompatible State, detect the problem, recompute, and finish correctly. That operation is O2 while still contributing a WSCR violation.
 
-For Gate metrics:
+Gate metrics use:
 
 ```text
 numerator   = total matching violation events
@@ -277,15 +267,13 @@ denominator = total matching opportunity events
 rate        = numerator / denominator
 ```
 
-If no opportunity event was evaluated:
+Zero coverage is explicit:
 
 ```text
-numerator   = 0
-denominator = 0
-rate        = null
+0 / 0 -> null
 ```
 
-For operation-level aggregate outcomes:
+Operation-level aggregates use:
 
 ```text
 SSER                   = O4 / TotalFaultedOperations
@@ -305,15 +293,14 @@ cadi.correctness-evaluation.v1
 
 Canonical serialization emits the complete record field set. Deserialization requires that exact field set; missing or misspelled safety fields are rejected rather than defaulted.
 
-In particular, omission of `metric_violations` cannot become an empty safe result.
+Safety-relevant JSON parsing is fail-closed in two additional ways:
 
-The record also:
+1. non-finite JSON constants are rejected;
+2. duplicate object member names are rejected recursively before last-value-wins semantics can erase evidence.
 
-- snapshots caller-owned ground truth / observation / decision mappings into canonical JSON;
-- rejects non-finite numeric data;
-- validates serialized `outcome_class` against `semantic_result`;
-- canonicalizes Gate-event multisets while preserving multiplicity;
-- produces a stable SHA-256 fingerprint.
+For example, persisted JSON containing both a non-empty and a later empty `metric_violations` member is invalid rather than silently becoming safe.
+
+The record also snapshots caller-owned mappings into canonical JSON, validates serialized `outcome_class` against `semantic_result`, preserves explicit Gate event identities, and produces a stable SHA-256 fingerprint.
 
 ---
 
@@ -326,8 +313,9 @@ The record also:
 3. rejects duplicate policy/operation identities;
 4. requires one evidence stratum;
 5. validates paired operation coverage and exogenous invariant metadata;
-6. leaves behavior-derived Gate opportunity/violation events policy-specific;
-7. aggregates policies in canonical B0→B4 order.
+6. validates identical exogenous Gate opportunity event identities across paired policies;
+7. leaves policy-derived Gate events policy-specific;
+8. aggregates policies in canonical B0→B4 order.
 
 Each policy summary reports:
 
@@ -339,8 +327,6 @@ metric numerator
 metric denominator
 metric rate
 ```
-
-The top-level summary records `validation_level` and `evidence_provenance`.
 
 ---
 
@@ -354,9 +340,7 @@ A critical S1 rule is:
 
 S1 must measure whether a stale Attempt result is accepted authoritatively. It must not count mere scheduling of stale physical work as stale authoritative acceptance.
 
-If competent simpler baselines independently fence stale result acceptance through ordinary correctness mechanisms allowed by their abstraction, the hypothesis must be narrowed rather than those mechanisms being disabled.
-
-Negative or null results remain valid research outcomes.
+If competent simpler baselines independently fence stale result acceptance through ordinary correctness mechanisms allowed by their abstraction, the hypothesis must be narrowed rather than those mechanisms being disabled. Negative or null results remain valid research outcomes.
 
 ---
 
@@ -383,9 +367,9 @@ S5 -> DFR, invariant violations, semantic-state equivalence
 
 ---
 
-# 12. Bounded-review findings resolved before merge
+# 12. Bounded-review findings repaired before final review
 
-Nine substantive measurement-integrity findings were identified:
+Eleven substantive measurement-integrity findings have been repaired:
 
 1. **Validation/provenance conflation.** EV0–EV4 and result provenance were collapsed and `ESTIMATED` omitted. Fixed by orthogonal fields.
 2. **Decision rows could inflate faulted-operation denominators.** Fixed by one record per complete operation.
@@ -394,39 +378,44 @@ Nine substantive measurement-integrity findings were identified:
 5. **Summary artifacts could hide mixed evidence strata.** Fixed by single-stratum summaries with evidence-sensitive fingerprints.
 6. **Missing violation arrays could default to safe.** Fixed by exact-schema fail-closed deserialization.
 7. **Gate-specific violations were incorrectly forced into O4.** Fixed by keeping named Gate event rates independent from terminal outcome class.
-8. **Gate event cardinality was collapsed to binary per-operation presence.** Fixed by canonical opportunity/violation multisets and event-count aggregation.
-9. **Behavior-dependent Gate opportunities were incorrectly forced equal across paired policies.** Fixed by restricting paired invariants to the exogenous cohort while allowing each policy's actual behavior to produce its own denominator events.
+8. **Gate event cardinality was collapsed to binary per-operation presence.** Fixed by explicit event-level denominator/numerator records.
+9. **Behavior-dependent Gate opportunities were incorrectly forced equal across paired policies.** Fixed by separating exogenous paired events from policy-derived events.
+10. **Equal opportunity counts could hide different paired events.** Fixed by stable event identities and exact paired validation for exogenous Gate opportunities.
+11. **Duplicate JSON object members could erase safety evidence.** Fixed by recursive duplicate-member rejection before deserialization.
 
-The final candidate must retain regression coverage for all nine findings.
+The final candidate must retain regression coverage for all eleven findings.
 
 ---
 
 # 13. C4.1 test obligations
 
-At minimum:
+The regression suite covers, at minimum:
 
 ```text
 O1/O2/O3/O4 deterministic classification
 explicit non-success is not SSER
 Gate metrics use explicit event-level opportunity denominators
-repeated Gate opportunity/violation events preserve cardinality
-violation event count cannot exceed opportunity event count
+multiple same-metric events preserve cardinality
+violations reference exact declared opportunity event IDs
 zero opportunity => null rate, not zero
 controls do not inflate fault denominators or O counts
 EV0-EV4 vocabulary is complete
-result provenance vocabulary includes ESTIMATED
+result provenance includes ESTIMATED
 validation level and provenance serialize independently
 one operation cannot be split into multiple denominator rows
 paired cohorts reject policy-specific exogenous operation subsets
-paired cohorts reject mismatched exogenous ground truth/scenario/fault metadata
-behavior-dependent Gate opportunity sets may differ across paired policies
-B0 WSCR 1/1 versus B4 WSCR 0/0 is representable for consume-vs-reject behavior
-mixed validation levels are rejected
-mixed result provenance is rejected
+paired cohorts reject mismatched scenario/fault/ground truth
+same metric/count with different exogenous event IDs is rejected
+canonical Gate metric scope is enforced
+policy-derived opportunity sets may differ across paired policies
+B0 WSCR 1/1 versus B4 WSCR 0/0 is representable
+mixed evidence strata are rejected
 summary fingerprint preserves evidence stratum
-missing or misspelled metric_violations is rejected
+missing or misspelled safety fields are rejected
+duplicate top-level JSON members are rejected
+duplicate nested JSON members are rejected
 Gate metric violations do not imply O4
-O2 can carry a Gate metric violation while SSER remains zero
+O2 can carry a Gate violation while SSER remains zero
 O4 can exist without named Gate attribution
 canonical fingerprints ignore mapping insertion order
 record construction snapshots caller-owned mappings
@@ -439,6 +428,20 @@ paired summaries use canonical policy order
 ```
 
 All pre-existing C1/C2/C3 tests remain regression obligations.
+
+Behavior-bearing candidate before this documentation synchronization:
+
+`d8e829ed8e5d58f21f76a2f86cacf89e164cf8f2`
+
+Exact candidate matrix:
+
+```text
+Python 3.11  358 passed
+Python 3.12  358 passed
+Python 3.13  358 passed
+```
+
+The documentation-synchronized exact PR head must pass the same full matrix before final review/merge.
 
 ---
 
@@ -468,13 +471,13 @@ C4.1 closes only when:
 1. `cadi.correctness-evaluation.v1` is merged;
 2. independent ground truth remains distinct from policy-visible observation;
 3. O1–O4 denominators are complete faulted operations, not decision rows;
-4. Gate-specific denominators preserve event cardinality inside those operations;
-5. paired exogenous cohorts are integrity-checked before comparison;
+4. Gate-specific denominators preserve event cardinality and stable event identity;
+5. paired exogenous cohorts and exogenous Gate event identities are integrity-checked before comparison;
 6. behavior-derived denominator events remain policy-specific and are not fabricated for comparability;
 7. evidence strata are explicit and cannot be silently mixed;
-8. O1–O4 and all Gate G1 metrics are represented without conflating their semantics;
+8. O1–O4 and Gate metrics remain semantically independent;
 9. zero coverage is distinguishable from zero violations;
-10. persisted safety fields fail closed on omission/corruption;
+10. persisted safety fields fail closed on omission, duplicate members, malformed schema, and non-finite data;
 11. deterministic serialization/fingerprints are regression-tested;
 12. the full repository suite passes on Python 3.11, 3.12, and 3.13;
 13. a final exact-head bounded review finds no remaining rule capable of manufacturing a correctness advantage.
