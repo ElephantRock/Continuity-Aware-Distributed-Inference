@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
@@ -224,7 +225,16 @@ class SemanticResult:
 
 @dataclass(frozen=True, slots=True)
 class CorrectnessEvaluationRecord:
+    """One complete correctness-sensitive operation under one policy.
+
+    If an operation requires multiple scheduler/reconciliation decisions, the ordered
+    decision trace belongs inside ``policy_decision``. It must not be split into
+    multiple records because aggregate failure denominators are operation-based.
+    """
+
+    cohort_id: str
     trial_id: str
+    operation_id: str
     policy_id: PolicyID
     scenario_id: str
     validation_level: ValidationEvidenceLevel
@@ -239,7 +249,9 @@ class CorrectnessEvaluationRecord:
     fault_class: str | None = None
 
     def __post_init__(self) -> None:
+        _require_id(self.cohort_id, "cohort_id")
         _require_id(self.trial_id, "trial_id")
+        _require_id(self.operation_id, "operation_id")
         if not isinstance(self.policy_id, PolicyID):
             raise TypeError("policy_id must be PolicyID")
         _require_id(self.scenario_id, "scenario_id")
@@ -287,13 +299,15 @@ class CorrectnessEvaluationRecord:
             _require_id(self.fault_id, "fault_id")
             _require_id(self.fault_class, "fault_class")
         elif opportunities:
-            raise ValueError("Gate G1 metric opportunities require a faulted trial")
+            raise ValueError("Gate G1 metric opportunities require a faulted operation")
 
     @classmethod
     def create(
         cls,
         *,
+        cohort_id: str,
         trial_id: str,
+        operation_id: str,
         policy_id: PolicyID,
         scenario_id: str,
         validation_level: ValidationEvidenceLevel,
@@ -308,7 +322,9 @@ class CorrectnessEvaluationRecord:
         fault_class: str | None = None,
     ) -> "CorrectnessEvaluationRecord":
         return cls(
+            cohort_id=cohort_id,
             trial_id=trial_id,
+            operation_id=operation_id,
             policy_id=policy_id,
             scenario_id=scenario_id,
             validation_level=validation_level,
@@ -344,13 +360,19 @@ class CorrectnessEvaluationRecord:
         return self.semantic_result.outcome_class
 
     @property
+    def operation_key(self) -> tuple[str, str, str]:
+        return (self.cohort_id, self.trial_id, self.operation_id)
+
+    @property
     def fingerprint(self) -> str:
         return hashlib.sha256(self.to_json().encode("utf-8")).hexdigest()
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema": CORRECTNESS_EVALUATION_SCHEMA,
+            "cohort_id": self.cohort_id,
             "trial_id": self.trial_id,
+            "operation_id": self.operation_id,
             "policy_id": self.policy_id.value,
             "scenario_id": self.scenario_id,
             "fault_id": self.fault_id,
@@ -377,7 +399,9 @@ class CorrectnessEvaluationRecord:
             raise ValueError("unsupported correctness evaluation schema")
         semantic_result = SemanticResult.from_dict(value.get("semantic_result", {}))
         record = cls.create(
+            cohort_id=value.get("cohort_id"),
             trial_id=value.get("trial_id"),
+            operation_id=value.get("operation_id"),
             policy_id=PolicyID(value.get("policy_id")),
             scenario_id=value.get("scenario_id"),
             validation_level=ValidationEvidenceLevel(value.get("validation_level")),
@@ -453,8 +477,8 @@ class RateCount:
 @dataclass(frozen=True, slots=True)
 class PolicyCorrectnessSummary:
     policy_id: PolicyID
-    trial_count: int
-    faulted_trial_count: int
+    operation_count: int
+    faulted_operation_count: int
     outcome_counts: tuple[tuple[OutcomeClass, int], ...]
     rates: tuple[RateCount, ...]
 
@@ -462,30 +486,32 @@ class PolicyCorrectnessSummary:
         if not isinstance(self.policy_id, PolicyID):
             raise TypeError("policy_id must be PolicyID")
         if (
-            not isinstance(self.trial_count, int)
-            or isinstance(self.trial_count, bool)
-            or self.trial_count < 0
+            not isinstance(self.operation_count, int)
+            or isinstance(self.operation_count, bool)
+            or self.operation_count < 0
         ):
-            raise ValueError("trial_count must be a non-negative integer")
+            raise ValueError("operation_count must be a non-negative integer")
         if (
-            not isinstance(self.faulted_trial_count, int)
-            or isinstance(self.faulted_trial_count, bool)
-            or self.faulted_trial_count < 0
-            or self.faulted_trial_count > self.trial_count
+            not isinstance(self.faulted_operation_count, int)
+            or isinstance(self.faulted_operation_count, bool)
+            or self.faulted_operation_count < 0
+            or self.faulted_operation_count > self.operation_count
         ):
-            raise ValueError("faulted_trial_count must be between zero and trial_count")
+            raise ValueError(
+                "faulted_operation_count must be between zero and operation_count"
+            )
         if tuple(item[0] for item in self.outcome_counts) != tuple(OutcomeClass):
             raise ValueError("outcome_counts must contain every OutcomeClass in canonical order")
-        if sum(count for _, count in self.outcome_counts) != self.trial_count:
-            raise ValueError("outcome_counts must sum to trial_count")
+        if sum(count for _, count in self.outcome_counts) != self.faulted_operation_count:
+            raise ValueError("outcome_counts must sum to faulted_operation_count")
         if tuple(rate.metric for rate in self.rates) != tuple(CorrectnessMetric):
             raise ValueError("rates must contain every metric in canonical order")
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "policy_id": self.policy_id.value,
-            "trial_count": self.trial_count,
-            "faulted_trial_count": self.faulted_trial_count,
+            "operation_count": self.operation_count,
+            "faulted_operation_count": self.faulted_operation_count,
             "outcome_counts": {
                 outcome.value: count for outcome, count in self.outcome_counts
             },
@@ -526,34 +552,87 @@ class CorrectnessSummary:
         return _canonical_json(self.to_dict())
 
 
+def _paired_invariant_signature(
+    record: CorrectnessEvaluationRecord,
+) -> tuple[Any, ...]:
+    return (
+        record.scenario_id,
+        record.fault_id,
+        record.fault_class,
+        record.validation_level,
+        record.evidence_provenance,
+        record.ground_truth_json,
+        record.metric_opportunities,
+    )
+
+
+def _validate_paired_cohorts(
+    records: tuple[CorrectnessEvaluationRecord, ...],
+) -> tuple[PolicyID, ...]:
+    policy_ids = tuple(
+        policy_id
+        for policy_id in PolicyID
+        if any(record.policy_id is policy_id for record in records)
+    )
+    groups: dict[tuple[str, str, str], list[CorrectnessEvaluationRecord]] = defaultdict(list)
+    for record in records:
+        groups[record.operation_key].append(record)
+
+    for operation_key, group in groups.items():
+        group_policy_ids = tuple(
+            policy_id
+            for policy_id in PolicyID
+            if any(record.policy_id is policy_id for record in group)
+        )
+        if group_policy_ids != policy_ids:
+            raise ValueError(
+                "paired cohort operation coverage mismatch for "
+                f"{operation_key}: expected {tuple(item.value for item in policy_ids)}, "
+                f"got {tuple(item.value for item in group_policy_ids)}"
+            )
+        signatures = {_paired_invariant_signature(record) for record in group}
+        if len(signatures) != 1:
+            raise ValueError(
+                "paired cohort operation metadata mismatch for "
+                f"{operation_key}; scenario/fault/ground-truth/opportunities/evidence "
+                "must be invariant across policies"
+            )
+    return policy_ids
+
+
 def summarize_correctness(
     records: Iterable[CorrectnessEvaluationRecord],
 ) -> CorrectnessSummary:
     materialized = tuple(records)
     if not all(isinstance(record, CorrectnessEvaluationRecord) for record in materialized):
         raise TypeError("records must contain only CorrectnessEvaluationRecord")
-    identities = [(record.policy_id, record.trial_id) for record in materialized]
+
+    identities = [
+        (record.policy_id, *record.operation_key) for record in materialized
+    ]
     if len(identities) != len(set(identities)):
-        raise ValueError("duplicate (policy_id, trial_id) evaluation record")
+        raise ValueError(
+            "duplicate (policy_id, cohort_id, trial_id, operation_id) evaluation operation"
+        )
+
+    policy_ids = _validate_paired_cohorts(materialized)
     summaries: list[PolicyCorrectnessSummary] = []
-    for policy_id in PolicyID:
+    for policy_id in policy_ids:
         policy_records = tuple(
             sorted(
                 (record for record in materialized if record.policy_id is policy_id),
-                key=lambda record: record.trial_id,
+                key=lambda record: record.operation_key,
             )
-        )
-        if not policy_records:
-            continue
-        outcome_counts = tuple(
-            (
-                outcome,
-                sum(record.outcome_class is outcome for record in policy_records),
-            )
-            for outcome in OutcomeClass
         )
         faulted_records = tuple(
             record for record in policy_records if record.fault_id is not None
+        )
+        outcome_counts = tuple(
+            (
+                outcome,
+                sum(record.outcome_class is outcome for record in faulted_records),
+            )
+            for outcome in OutcomeClass
         )
         rates = []
         for metric in CorrectnessMetric:
@@ -596,8 +675,8 @@ def summarize_correctness(
         summaries.append(
             PolicyCorrectnessSummary(
                 policy_id=policy_id,
-                trial_count=len(policy_records),
-                faulted_trial_count=len(faulted_records),
+                operation_count=len(policy_records),
+                faulted_operation_count=len(faulted_records),
                 outcome_counts=outcome_counts,
                 rates=tuple(rates),
             )

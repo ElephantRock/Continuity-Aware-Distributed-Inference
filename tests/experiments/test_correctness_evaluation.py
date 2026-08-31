@@ -21,7 +21,9 @@ from simulator.policies import PolicyID
 
 def _record(
     *,
+    cohort_id: str = "cohort",
     trial_id: str = "trial",
+    operation_id: str | None = None,
     policy_id: PolicyID = PolicyID.B4,
     semantic_result: SemanticResult | None = None,
     opportunities: tuple[CorrectnessMetric, ...] = (),
@@ -29,20 +31,25 @@ def _record(
     faulted: bool = True,
     validation_level: ValidationEvidenceLevel = ValidationEvidenceLevel.EV0_DETERMINISTIC_SEMANTICS,
     evidence_provenance: ResultEvidenceProvenance = ResultEvidenceProvenance.SYNTHETICALLY_GENERATED,
+    ground_truth: dict | None = None,
+    scenario_id: str | None = None,
 ) -> CorrectnessEvaluationRecord:
     return CorrectnessEvaluationRecord.create(
+        cohort_id=cohort_id,
         trial_id=trial_id,
+        operation_id=operation_id or trial_id,
         policy_id=policy_id,
-        scenario_id="FTR1" if faulted else "W1",
+        scenario_id=scenario_id or ("FTR1" if faulted else "W1"),
         validation_level=validation_level,
         evidence_provenance=evidence_provenance,
-        ground_truth={
+        ground_truth=ground_truth
+        or {
             "active_attempt_id": "a2",
             "state_compatibility": {"x1": False},
             "binding_epoch": 2,
         },
         observed_evidence={"attempt_id": "a1", "binding_epoch": 1},
-        policy_decision={"action": "REJECT"},
+        policy_decision={"trace": [{"action": "REJECT"}]},
         semantic_result=semantic_result
         or SemanticResult(
             reported_success=True,
@@ -59,6 +66,11 @@ def _record(
 def _rate(summary, policy_id: PolicyID, metric: CorrectnessMetric):
     policy = next(item for item in summary.policy_summaries if item.policy_id is policy_id)
     return next(item for item in policy.rates if item.metric is metric)
+
+
+def _outcome_count(summary, policy_id: PolicyID, outcome: OutcomeClass) -> int:
+    policy = next(item for item in summary.policy_summaries if item.policy_id is policy_id)
+    return dict(policy.outcome_counts)[outcome]
 
 
 def test_semantic_result_classifies_all_four_failure_outcomes():
@@ -135,7 +147,7 @@ def test_zero_opportunity_denominator_is_explicit_none_not_zero():
     assert rate.rate is None
 
 
-def test_control_trial_does_not_inflate_faulted_outcome_denominators():
+def test_control_operation_does_not_inflate_faulted_denominators_or_o_counts():
     control = _record(trial_id="control", faulted=False)
     faulted = _record(
         trial_id="faulted",
@@ -144,8 +156,15 @@ def test_control_trial_does_not_inflate_faulted_outcome_denominators():
     summary = summarize_correctness((control, faulted))
     policy = summary.policy_summaries[0]
 
-    assert policy.trial_count == 2
-    assert policy.faulted_trial_count == 1
+    assert policy.operation_count == 2
+    assert policy.faulted_operation_count == 1
+    assert sum(dict(policy.outcome_counts).values()) == 1
+    assert _outcome_count(
+        summary, PolicyID.B4, OutcomeClass.O1_CORRECT_TRANSPARENT_RECOVERY
+    ) == 0
+    assert _outcome_count(
+        summary, PolicyID.B4, OutcomeClass.O3_EXPLICIT_NON_SUCCESS
+    ) == 1
     assert _rate(
         summary, PolicyID.B4, CorrectnessMetric.EXPLICIT_NON_SUCCESS_RATE
     ).denominator == 1
@@ -176,17 +195,69 @@ def test_validation_level_and_result_provenance_are_orthogonal_and_complete():
     assert payload["evidence_provenance"] == "ESTIMATED"
 
 
+def test_operation_identity_prevents_decision_rows_from_double_counting_one_operation():
+    first = _record(operation_id="op")
+    second = _record(
+        operation_id="op",
+        semantic_result=SemanticResult(
+            True,
+            True,
+            True,
+            recovery_actions=(RecoveryAction.RETRY,),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="duplicate"):
+        summarize_correctness((first, second))
+
+
+def test_paired_cohort_rejects_policy_specific_operation_subset():
+    b0_first = _record(
+        trial_id="t1", operation_id="op1", policy_id=PolicyID.B0
+    )
+    b4_first = _record(
+        trial_id="t1", operation_id="op1", policy_id=PolicyID.B4
+    )
+    b4_only = _record(
+        trial_id="t2", operation_id="op2", policy_id=PolicyID.B4
+    )
+
+    with pytest.raises(ValueError, match="coverage mismatch"):
+        summarize_correctness((b0_first, b4_first, b4_only))
+
+
+def test_paired_cohort_rejects_mismatched_ground_truth_or_opportunities():
+    b0 = _record(
+        trial_id="paired",
+        operation_id="op",
+        policy_id=PolicyID.B0,
+        opportunities=(CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE,),
+    )
+    b4 = _record(
+        trial_id="paired",
+        operation_id="op",
+        policy_id=PolicyID.B4,
+        ground_truth={"active_attempt_id": "different"},
+        opportunities=(CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE,),
+    )
+
+    with pytest.raises(ValueError, match="metadata mismatch"):
+        summarize_correctness((b0, b4))
+
+
 def test_canonical_mapping_snapshot_is_detached_and_fingerprint_order_independent():
     ground_truth = {"z": [3, 2, 1], "a": {"epoch": 4}}
     first = CorrectnessEvaluationRecord.create(
+        cohort_id="cohort",
         trial_id="trial",
+        operation_id="operation",
         policy_id=PolicyID.B4,
         scenario_id="FTR9",
         validation_level=ValidationEvidenceLevel.EV0_DETERMINISTIC_SEMANTICS,
         evidence_provenance=ResultEvidenceProvenance.SYNTHETICALLY_GENERATED,
         ground_truth=ground_truth,
         observed_evidence={"b": 2, "a": 1},
-        policy_decision={"decision": "WAIT"},
+        policy_decision={"trace": [{"decision": "WAIT"}]},
         semantic_result=SemanticResult(False, False, None, ExplicitNonSuccess.WAIT),
         fault_id="f",
         fault_class="STALE_BINDING",
@@ -194,14 +265,16 @@ def test_canonical_mapping_snapshot_is_detached_and_fingerprint_order_independen
     ground_truth["a"]["epoch"] = 99
 
     second = CorrectnessEvaluationRecord.create(
+        cohort_id="cohort",
         trial_id="trial",
+        operation_id="operation",
         policy_id=PolicyID.B4,
         scenario_id="FTR9",
         validation_level=ValidationEvidenceLevel.EV0_DETERMINISTIC_SEMANTICS,
         evidence_provenance=ResultEvidenceProvenance.SYNTHETICALLY_GENERATED,
         ground_truth={"a": {"epoch": 4}, "z": [3, 2, 1]},
         observed_evidence={"a": 1, "b": 2},
-        policy_decision={"decision": "WAIT"},
+        policy_decision={"trace": [{"decision": "WAIT"}]},
         semantic_result=SemanticResult(False, False, None, ExplicitNonSuccess.WAIT),
         fault_id="f",
         fault_class="STALE_BINDING",
@@ -212,13 +285,14 @@ def test_canonical_mapping_snapshot_is_detached_and_fingerprint_order_independen
     assert first.fingerprint == second.fingerprint
 
 
-def test_evaluation_record_round_trip_preserves_all_required_views_and_evidence_dimensions():
+def test_evaluation_record_round_trip_preserves_required_views_and_denominator_identity():
     record = _record(
         opportunities=(CorrectnessMetric.DUPLICATE_FINALIZATION_RATE,),
     )
     restored = CorrectnessEvaluationRecord.from_json(record.to_json())
 
     assert restored == record
+    assert restored.operation_key == record.operation_key
     assert restored.ground_truth == record.ground_truth
     assert restored.observed_evidence == record.observed_evidence
     assert restored.policy_decision == record.policy_decision
@@ -244,8 +318,8 @@ def test_metric_violation_must_have_matching_opportunity():
         )
 
 
-def test_gate_metric_opportunity_requires_faulted_trial():
-    with pytest.raises(ValueError, match="faulted trial"):
+def test_gate_metric_opportunity_requires_faulted_operation():
+    with pytest.raises(ValueError, match="faulted operation"):
         _record(
             faulted=False,
             opportunities=(CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE,),
@@ -255,7 +329,9 @@ def test_gate_metric_opportunity_requires_faulted_trial():
 def test_nonfinite_ground_truth_is_rejected_before_serialization():
     with pytest.raises(ValueError, match="non-finite"):
         CorrectnessEvaluationRecord.create(
+            cohort_id="cohort",
             trial_id="trial",
+            operation_id="operation",
             policy_id=PolicyID.B4,
             scenario_id="FTR1",
             validation_level=ValidationEvidenceLevel.EV0_DETERMINISTIC_SEMANTICS,
@@ -269,24 +345,31 @@ def test_nonfinite_ground_truth_is_rejected_before_serialization():
         )
 
 
-def test_duplicate_policy_trial_identity_cannot_be_double_counted():
-    first = _record()
-    duplicate = _record()
+def test_single_policy_summary_is_allowed_without_paired_comparator():
+    first = _record(trial_id="t1")
+    second = _record(trial_id="t2")
 
-    with pytest.raises(ValueError, match="duplicate"):
-        summarize_correctness((first, duplicate))
+    summary = summarize_correctness((first, second))
+
+    assert tuple(item.policy_id for item in summary.policy_summaries) == (PolicyID.B4,)
+    assert summary.policy_summaries[0].operation_count == 2
 
 
-def test_summary_policy_order_is_canonical_independent_of_input_order():
-    b4 = _record(trial_id="b4", policy_id=PolicyID.B4)
-    b1 = _record(trial_id="b1", policy_id=PolicyID.B1)
-    b0 = _record(trial_id="b0", policy_id=PolicyID.B0)
+def test_summary_policy_order_is_canonical_for_complete_paired_operations():
+    records = tuple(
+        _record(
+            trial_id="paired",
+            operation_id="op",
+            policy_id=policy_id,
+        )
+        for policy_id in (PolicyID.B4, PolicyID.B1, PolicyID.B0)
+    )
 
-    summary = summarize_correctness((b4, b1, b0))
+    summary = summarize_correctness(records)
 
     assert tuple(item.policy_id for item in summary.policy_summaries) == (
         PolicyID.B0,
         PolicyID.B1,
         PolicyID.B4,
     )
-    assert summary.fingerprint == summarize_correctness((b0, b4, b1)).fingerprint
+    assert summary.fingerprint == summarize_correctness(tuple(reversed(records))).fingerprint
