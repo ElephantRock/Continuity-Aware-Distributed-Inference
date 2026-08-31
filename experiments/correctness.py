@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
@@ -68,6 +68,13 @@ class CorrectnessMetric(str, Enum):
     RECOVERY_RATE = "Recovery Rate"
 
 
+class MetricOpportunityScope(str, Enum):
+    """Whether a Gate denominator event is paired input or policy-derived behavior."""
+
+    EXOGENOUS_PAIRED = "EXOGENOUS_PAIRED"
+    POLICY_DERIVED = "POLICY_DERIVED"
+
+
 GATE_G1_METRICS = frozenset(
     {
         CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE,
@@ -78,6 +85,16 @@ GATE_G1_METRICS = frozenset(
         CorrectnessMetric.DUPLICATE_FINALIZATION_RATE,
     }
 )
+
+EXOGENOUS_PAIRED_GATE_METRICS = frozenset(
+    {
+        CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE,
+        CorrectnessMetric.WRONG_BRANCH_REUSE_RATE,
+        CorrectnessMetric.SILENT_BINDING_DIVERGENCE_RATE,
+    }
+)
+
+POLICY_DERIVED_GATE_METRICS = GATE_G1_METRICS - EXOGENOUS_PAIRED_GATE_METRICS
 
 _SEMANTIC_RESULT_KEYS = frozenset(
     {
@@ -107,7 +124,10 @@ _RECORD_KEYS = frozenset(
         "semantic_result",
         "outcome_class",
         "metric_opportunities",
+        "metric_opportunity_event_ids",
+        "metric_opportunity_scopes",
         "metric_violations",
+        "metric_violation_event_ids",
     }
 )
 
@@ -129,6 +149,30 @@ def _require_exact_keys(
             f"{name} fields must exactly match schema; "
             f"missing={missing}, unexpected={unexpected}"
         )
+
+
+def _reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON member: {key}")
+        result[key] = value
+    return result
+
+
+def _load_json_no_duplicates(value: str, name: str) -> Any:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be JSON text")
+    try:
+        return json.loads(
+            value,
+            object_pairs_hook=_reject_duplicate_members,
+            parse_constant=lambda token: (_ for _ in ()).throw(
+                ValueError(f"non-finite JSON constant: {token}")
+            ),
+        )
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid {name} JSON") from exc
 
 
 def _validate_json_value(value: Any, path: str = "$") -> None:
@@ -187,12 +231,7 @@ def _enum_tuple(
     return tuple(sorted(result, key=lambda value: value.value))
 
 
-def _metric_multiset(values: Iterable[Any], name: str) -> tuple[CorrectnessMetric, ...]:
-    """Canonical multiset of Gate-metric events.
-
-    Repeated entries preserve event cardinality within one complete operation.
-    """
-
+def _metric_tuple(values: Iterable[Any], name: str) -> tuple[CorrectnessMetric, ...]:
     if isinstance(values, (str, bytes)):
         raise TypeError(f"{name} must be an iterable of CorrectnessMetric")
     result = tuple(values)
@@ -200,7 +239,90 @@ def _metric_multiset(values: Iterable[Any], name: str) -> tuple[CorrectnessMetri
         raise TypeError(f"{name} must contain only CorrectnessMetric")
     if not set(result) <= GATE_G1_METRICS:
         raise ValueError(f"{name} may contain only Gate G1 metrics")
-    return tuple(sorted(result, key=lambda value: value.value))
+    return result
+
+
+def _scope_for_metric(metric: CorrectnessMetric) -> MetricOpportunityScope:
+    if metric in EXOGENOUS_PAIRED_GATE_METRICS:
+        return MetricOpportunityScope.EXOGENOUS_PAIRED
+    if metric in POLICY_DERIVED_GATE_METRICS:
+        return MetricOpportunityScope.POLICY_DERIVED
+    raise ValueError(f"{metric.value} is not a Gate G1 metric")
+
+
+def _canonicalize_opportunity_events(
+    metrics: Iterable[Any],
+    event_ids: Iterable[Any],
+    scopes: Iterable[Any],
+) -> tuple[
+    tuple[CorrectnessMetric, ...],
+    tuple[str, ...],
+    tuple[MetricOpportunityScope, ...],
+]:
+    metric_values = _metric_tuple(metrics, "metric_opportunities")
+    if isinstance(event_ids, (str, bytes)):
+        raise TypeError("metric_opportunity_event_ids must be an iterable of strings")
+    event_id_values = tuple(event_ids)
+    if isinstance(scopes, (str, bytes)):
+        raise TypeError("metric_opportunity_scopes must be an iterable of MetricOpportunityScope")
+    scope_values = tuple(scopes)
+
+    if len(metric_values) != len(event_id_values) or len(metric_values) != len(scope_values):
+        raise ValueError(
+            "metric_opportunities, metric_opportunity_event_ids, and "
+            "metric_opportunity_scopes must have identical lengths"
+        )
+    if metric_values and not event_id_values:
+        raise ValueError("Gate metric opportunities require explicit event identities")
+    if not all(isinstance(event_id, str) and event_id for event_id in event_id_values):
+        raise ValueError("metric_opportunity_event_ids must contain non-empty strings")
+    if len(event_id_values) != len(set(event_id_values)):
+        raise ValueError("metric_opportunity_event_ids must be unique within an operation")
+    if not all(isinstance(scope, MetricOpportunityScope) for scope in scope_values):
+        raise TypeError("metric_opportunity_scopes must contain only MetricOpportunityScope")
+
+    triples = list(zip(metric_values, event_id_values, scope_values, strict=True))
+    for metric, _, scope in triples:
+        required = _scope_for_metric(metric)
+        if scope is not required:
+            raise ValueError(
+                f"{metric.value} opportunity scope must be {required.value}, got {scope.value}"
+            )
+    triples.sort(key=lambda item: (item[0].value, item[1], item[2].value))
+    return (
+        tuple(item[0] for item in triples),
+        tuple(item[1] for item in triples),
+        tuple(item[2] for item in triples),
+    )
+
+
+def _canonicalize_violation_events(
+    metrics: Iterable[Any],
+    event_ids: Iterable[Any],
+    opportunity_metrics: tuple[CorrectnessMetric, ...],
+    opportunity_event_ids: tuple[str, ...],
+) -> tuple[tuple[CorrectnessMetric, ...], tuple[str, ...]]:
+    metric_values = _metric_tuple(metrics, "metric_violations")
+    if isinstance(event_ids, (str, bytes)):
+        raise TypeError("metric_violation_event_ids must be an iterable of strings")
+    event_id_values = tuple(event_ids)
+    if len(metric_values) != len(event_id_values):
+        raise ValueError(
+            "metric_violations and metric_violation_event_ids must have identical lengths"
+        )
+    if not all(isinstance(event_id, str) and event_id for event_id in event_id_values):
+        raise ValueError("metric_violation_event_ids must contain non-empty strings")
+    if len(event_id_values) != len(set(event_id_values)):
+        raise ValueError("metric_violation_event_ids must be unique within an operation")
+
+    opportunity_pairs = set(zip(opportunity_metrics, opportunity_event_ids, strict=True))
+    pairs = list(zip(metric_values, event_id_values, strict=True))
+    if any(pair not in opportunity_pairs for pair in pairs):
+        raise ValueError(
+            "every metric violation event must reference a matching metric opportunity event"
+        )
+    pairs.sort(key=lambda item: (item[0].value, item[1]))
+    return tuple(item[0] for item in pairs), tuple(item[1] for item in pairs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,11 +405,9 @@ class SemanticResult:
 class CorrectnessEvaluationRecord:
     """One complete correctness-sensitive operation under one policy.
 
-    Multi-step decisions such as WAIT -> RETRY -> COMMIT belong in the ordered
-    ``policy_decision`` trace of one record. Gate-event arrays are multisets:
-    repeated entries preserve multiple denominator/numerator events inside that
-    single operation. Gate opportunities are policy-specific because some
-    denominators depend on behavior (for example, actual State consumptions).
+    O-class outcomes are operation-level. Gate opportunities are event-level and
+    carry stable event identities. SAAR/WBRR/SBDR opportunities are exogenous
+    paired inputs; WSCR/ACR/DFR opportunities are derived from policy behavior.
     """
 
     cohort_id: str
@@ -302,7 +422,10 @@ class CorrectnessEvaluationRecord:
     policy_decision_json: str
     semantic_result: SemanticResult
     metric_opportunities: tuple[CorrectnessMetric, ...] = ()
+    metric_opportunity_event_ids: tuple[str, ...] = ()
+    metric_opportunity_scopes: tuple[MetricOpportunityScope, ...] = ()
     metric_violations: tuple[CorrectnessMetric, ...] = ()
+    metric_violation_event_ids: tuple[str, ...] = ()
     fault_id: str | None = None
     fault_class: str | None = None
 
@@ -317,6 +440,7 @@ class CorrectnessEvaluationRecord:
             raise TypeError("validation_level must be ValidationEvidenceLevel")
         if not isinstance(self.evidence_provenance, ResultEvidenceProvenance):
             raise TypeError("evidence_provenance must be ResultEvidenceProvenance")
+
         for value, name in (
             (self.ground_truth_json, "ground_truth_json"),
             (self.observed_evidence_json, "observed_evidence_json"),
@@ -324,33 +448,32 @@ class CorrectnessEvaluationRecord:
         ):
             if not isinstance(value, str):
                 raise TypeError(f"{name} must be canonical JSON text")
-            parsed = json.loads(value)
+            parsed = _load_json_no_duplicates(value, name)
             if not isinstance(parsed, dict):
                 raise TypeError(f"{name} must encode a JSON object")
             if _canonical_mapping_json(parsed, name) != value:
                 raise ValueError(f"{name} must be canonical JSON")
+
         if not isinstance(self.semantic_result, SemanticResult):
             raise TypeError("semantic_result must be SemanticResult")
 
-        object.__setattr__(
-            self,
-            "metric_opportunities",
-            _metric_multiset(self.metric_opportunities, "metric_opportunities"),
+        metrics, event_ids, scopes = _canonicalize_opportunity_events(
+            self.metric_opportunities,
+            self.metric_opportunity_event_ids,
+            self.metric_opportunity_scopes,
         )
-        object.__setattr__(
-            self,
-            "metric_violations",
-            _metric_multiset(self.metric_violations, "metric_violations"),
+        object.__setattr__(self, "metric_opportunities", metrics)
+        object.__setattr__(self, "metric_opportunity_event_ids", event_ids)
+        object.__setattr__(self, "metric_opportunity_scopes", scopes)
+
+        violation_metrics, violation_event_ids = _canonicalize_violation_events(
+            self.metric_violations,
+            self.metric_violation_event_ids,
+            metrics,
+            event_ids,
         )
-        opportunity_counts = Counter(self.metric_opportunities)
-        violation_counts = Counter(self.metric_violations)
-        if any(
-            violation_counts[metric] > opportunity_counts[metric]
-            for metric in GATE_G1_METRICS
-        ):
-            raise ValueError(
-                "metric_violations event counts must not exceed matching metric_opportunities"
-            )
+        object.__setattr__(self, "metric_violations", violation_metrics)
+        object.__setattr__(self, "metric_violation_event_ids", violation_event_ids)
 
         if (self.fault_id is None) != (self.fault_class is None):
             raise ValueError("fault_id and fault_class must either both be set or both be None")
@@ -376,7 +499,10 @@ class CorrectnessEvaluationRecord:
         policy_decision: Mapping[str, Any],
         semantic_result: SemanticResult,
         metric_opportunities: Iterable[CorrectnessMetric] = (),
+        metric_opportunity_event_ids: Iterable[str] = (),
+        metric_opportunity_scopes: Iterable[MetricOpportunityScope] = (),
         metric_violations: Iterable[CorrectnessMetric] = (),
+        metric_violation_event_ids: Iterable[str] = (),
         fault_id: str | None = None,
         fault_class: str | None = None,
     ) -> "CorrectnessEvaluationRecord":
@@ -393,22 +519,25 @@ class CorrectnessEvaluationRecord:
             policy_decision_json=_canonical_mapping_json(policy_decision, "policy_decision"),
             semantic_result=semantic_result,
             metric_opportunities=tuple(metric_opportunities),
+            metric_opportunity_event_ids=tuple(metric_opportunity_event_ids),
+            metric_opportunity_scopes=tuple(metric_opportunity_scopes),
             metric_violations=tuple(metric_violations),
+            metric_violation_event_ids=tuple(metric_violation_event_ids),
             fault_id=fault_id,
             fault_class=fault_class,
         )
 
     @property
     def ground_truth(self) -> dict[str, Any]:
-        return json.loads(self.ground_truth_json)
+        return _load_json_no_duplicates(self.ground_truth_json, "ground_truth_json")
 
     @property
     def observed_evidence(self) -> dict[str, Any]:
-        return json.loads(self.observed_evidence_json)
+        return _load_json_no_duplicates(self.observed_evidence_json, "observed_evidence_json")
 
     @property
     def policy_decision(self) -> dict[str, Any]:
-        return json.loads(self.policy_decision_json)
+        return _load_json_no_duplicates(self.policy_decision_json, "policy_decision_json")
 
     @property
     def outcome_class(self) -> OutcomeClass:
@@ -421,6 +550,19 @@ class CorrectnessEvaluationRecord:
     @property
     def fingerprint(self) -> str:
         return hashlib.sha256(self.to_json().encode("utf-8")).hexdigest()
+
+    @property
+    def exogenous_opportunity_signature(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (metric.value, event_id)
+            for metric, event_id, scope in zip(
+                self.metric_opportunities,
+                self.metric_opportunity_event_ids,
+                self.metric_opportunity_scopes,
+                strict=True,
+            )
+            if scope is MetricOpportunityScope.EXOGENOUS_PAIRED
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -440,7 +582,10 @@ class CorrectnessEvaluationRecord:
             "semantic_result": self.semantic_result.to_dict(),
             "outcome_class": self.outcome_class.value,
             "metric_opportunities": [item.value for item in self.metric_opportunities],
+            "metric_opportunity_event_ids": list(self.metric_opportunity_event_ids),
+            "metric_opportunity_scopes": [item.value for item in self.metric_opportunity_scopes],
             "metric_violations": [item.value for item in self.metric_violations],
+            "metric_violation_event_ids": list(self.metric_violation_event_ids),
         }
 
     def to_json(self) -> str:
@@ -469,9 +614,14 @@ class CorrectnessEvaluationRecord:
             metric_opportunities=tuple(
                 CorrectnessMetric(item) for item in value["metric_opportunities"]
             ),
+            metric_opportunity_event_ids=tuple(value["metric_opportunity_event_ids"]),
+            metric_opportunity_scopes=tuple(
+                MetricOpportunityScope(item) for item in value["metric_opportunity_scopes"]
+            ),
             metric_violations=tuple(
                 CorrectnessMetric(item) for item in value["metric_violations"]
             ),
+            metric_violation_event_ids=tuple(value["metric_violation_event_ids"]),
             fault_id=value["fault_id"],
             fault_class=value["fault_class"],
         )
@@ -481,17 +631,7 @@ class CorrectnessEvaluationRecord:
 
     @classmethod
     def from_json(cls, value: str) -> "CorrectnessEvaluationRecord":
-        if not isinstance(value, str):
-            raise TypeError("evaluation JSON must be str")
-        try:
-            parsed = json.loads(
-                value,
-                parse_constant=lambda token: (_ for _ in ()).throw(
-                    ValueError(f"non-finite JSON constant: {token}")
-                ),
-            )
-        except json.JSONDecodeError as exc:
-            raise ValueError("invalid correctness evaluation JSON") from exc
+        parsed = _load_json_no_duplicates(value, "correctness evaluation")
         return cls.from_dict(parsed)
 
 
@@ -611,13 +751,6 @@ class CorrectnessSummary:
 
 
 def _paired_invariant_signature(record: CorrectnessEvaluationRecord) -> tuple[Any, ...]:
-    """Policy-independent cohort facts only.
-
-    Metric opportunities are deliberately excluded because some canonical Gate
-    denominators depend on policy behavior (for example, actual State
-    consumptions or completed LogicalRequests).
-    """
-
     return (
         record.scenario_id,
         record.fault_id,
@@ -671,6 +804,11 @@ def _validate_paired_cohorts(
                 f"{operation_key}; scenario/fault/ground-truth must be invariant "
                 "across policies"
             )
+        if len({record.exogenous_opportunity_signature for record in group}) != 1:
+            raise ValueError(
+                "paired exogenous opportunity-event identity mismatch for "
+                f"{operation_key}; paired Gate inputs must reference the same events"
+            )
     return policy_ids
 
 
@@ -714,10 +852,12 @@ def summarize_correctness(
         for metric in CorrectnessMetric:
             if metric in GATE_G1_METRICS:
                 numerator = sum(
-                    record.metric_violations.count(metric) for record in policy_records
+                    sum(item is metric for item in record.metric_violations)
+                    for record in policy_records
                 )
                 denominator = sum(
-                    record.metric_opportunities.count(metric) for record in policy_records
+                    sum(item is metric for item in record.metric_opportunities)
+                    for record in policy_records
                 )
             elif metric is CorrectnessMetric.SILENT_SEMANTIC_ERROR_RATE:
                 numerator = sum(
