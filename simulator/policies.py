@@ -25,6 +25,7 @@ class InformationField(str, Enum):
     ATTEMPT_ID = "attempt_id"
     ATTEMPT_AUTHORITY = "attempt_authority"
     SESSION_ID = "session_id"
+    SESSION_PREFERRED_LOCATION = "session_preferred_location"
     CONTINUATION_ID = "continuation_id"
     CONTINUATION_ANCESTRY = "continuation_ancestry"
     STATE_CANDIDATE_KEY = "state_candidate_key"
@@ -84,7 +85,12 @@ _B1_FIELDS = _B0_FIELDS | frozenset(
         InformationField.STATE_LOCATION,
     }
 )
-_B2_FIELDS = _B1_FIELDS | frozenset({InformationField.SESSION_ID})
+_B2_FIELDS = _B1_FIELDS | frozenset(
+    {
+        InformationField.SESSION_ID,
+        InformationField.SESSION_PREFERRED_LOCATION,
+    }
+)
 _B3_FIELDS = _B0_FIELDS | frozenset(
     {
         InformationField.STATE_CANDIDATE_KEY,
@@ -142,6 +148,7 @@ class PolicyObservation:
     attempt_id: str | None = None
     attempt_authority: str | None = None
     session_id: str | None = None
+    session_preferred_location: str | None = None
     continuation_id: str | None = None
     continuation_ancestry: tuple[str, ...] = ()
     state_candidate_key: str | None = None
@@ -170,6 +177,7 @@ class PolicyObservation:
             (self.attempt_id, "attempt_id"),
             (self.attempt_authority, "attempt_authority"),
             (self.session_id, "session_id"),
+            (self.session_preferred_location, "session_preferred_location"),
             (self.continuation_id, "continuation_id"),
             (self.state_candidate_key, "state_candidate_key"),
             (self.exact_state_id, "exact_state_id"),
@@ -318,6 +326,7 @@ def project_observation(observation: PolicyObservation, policy_id: PolicyID) -> 
         InformationField.ATTEMPT_ID: observation.attempt_id,
         InformationField.ATTEMPT_AUTHORITY: observation.attempt_authority,
         InformationField.SESSION_ID: observation.session_id,
+        InformationField.SESSION_PREFERRED_LOCATION: observation.session_preferred_location,
         InformationField.CONTINUATION_ID: observation.continuation_id,
         InformationField.CONTINUATION_ANCESTRY: observation.continuation_ancestry,
         InformationField.STATE_CANDIDATE_KEY: observation.state_candidate_key,
