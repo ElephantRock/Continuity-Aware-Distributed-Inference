@@ -5,7 +5,7 @@
 **Milestone:** C3 — Baseline Policies B0–B4  
 **Prerequisite:** C2 CLOSED on `main` at `afcce955517b9cb063cc75c9d098d24a5171dbdb`  
 **Tracking:** #32  
-**Status:** IN PROGRESS — C3.1 information contracts/common interface/B0 implementation candidate
+**Status:** IN PROGRESS — C3.1 implementation/review gate satisfied; merge pending
 
 ---
 
@@ -294,7 +294,37 @@ B0 decisions are invariant to changes in all hidden Continuity metadata
 
 ---
 
-# 10. Staged C3 Plan
+# 10. C3.1 Closure Candidate
+
+Final reviewed PR #34 head:
+
+```text
+b0558644d15fd63fcc9aa200b634310fa6214333
+```
+
+Exact-head full-suite validation:
+
+```text
+Python 3.11  PASS
+Python 3.12  PASS
+Python 3.13  PASS
+288 passed
+```
+
+The reviewed delta from the C2 closure checkpoint is restricted to:
+
+```text
+simulator/policies.py
+simulator/__init__.py
+tests/simulator/test_policies.py
+spec/12-c3-baseline-policies-record.md
+```
+
+C3.1 may be merged only if PR #34 is SHA-fenced to the reviewed head above.
+
+---
+
+# 11. Staged C3 Plan
 
 ```text
 C3.1  information contracts + common interface + B0
@@ -308,9 +338,9 @@ Every later slice must preserve the information contracts established here unles
 
 ---
 
-# 11. C3.1 Exit Gate
+# 12. C3.1 Exit Gate
 
-C3.1 may close only when:
+The implementation/review gate is satisfied on the exact head recorded above:
 
 ```text
 machine-readable B0–B4 contracts exist
@@ -323,9 +353,9 @@ B0 cannot observe privileged Continuity fields
 full repository tests pass on Python 3.11
 full repository tests pass on Python 3.12
 full repository tests pass on Python 3.13
-review findings are resolved
+bounded review findings are resolved
 ```
 
-B1–B4 ranking behavior remains outside C3.1.
+The actual squash-merge SHA will be recorded after merge. B1–B4 ranking behavior remains outside C3.1.
 
 C4 correctness evaluation remains outside C3 entirely until all five policies are implemented against the identical closed interface.
