@@ -49,6 +49,17 @@ from .policies import (
     observe_resources,
     project_observation,
 )
+from .continuity_policy import (
+    ContinuityAwarePolicy,
+    ContinuitySemanticAuthority,
+    CoreContinuityAuthority,
+    MigrationDecision,
+    MigrationDisposition,
+    RetentionDisposition,
+    StateRetentionDecision,
+    build_baseline_policies,
+    decide_paired_placements,
+)
 from .resources import (
     NetworkLink,
     ReplicaRuntime,
@@ -133,6 +144,15 @@ __all__ = [
     "CacheAwarePolicy",
     "SessionAffinityPolicy",
     "StateAwarePolicy",
+    "ContinuitySemanticAuthority",
+    "CoreContinuityAuthority",
+    "ContinuityAwarePolicy",
+    "RetentionDisposition",
+    "StateRetentionDecision",
+    "MigrationDisposition",
+    "MigrationDecision",
+    "build_baseline_policies",
+    "decide_paired_placements",
     "observe_resources",
     "project_observation",
     "decide_placement",
