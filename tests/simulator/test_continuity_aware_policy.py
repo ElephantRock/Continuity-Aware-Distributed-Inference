@@ -98,6 +98,17 @@ def test_contract_schema_v2_repairs_b4_only_without_expanding_b0_to_b3():
     assert INFORMATION_CONTRACTS[PolicyID.B4].fields == frozenset(InformationField)
 
 
+def test_schema_v2_preserves_v1_policy_observation_positional_slots():
+    obs = PolicyObservation("r", workers(), "a", "CURRENT", "s")
+
+    assert obs.attempt_id == "a"
+    assert obs.attempt_authority == "CURRENT"
+    assert obs.session_id == "s"
+    assert obs.program_id is None
+    assert obs.state_lifecycle is None
+    assert obs.reconciliation is None
+
+
 def test_b4_projection_exposes_repaired_contract_and_b3_cannot_read_it():
     b4 = project_observation(observation(), PolicyID.B4)
     assert b4.value(InformationField.PROGRAM_ID) == "p"
