@@ -340,6 +340,12 @@ def decide_paired_placements(
         raise TypeError("policies must be a Mapping")
     if set(policies) != set(PolicyID):
         raise ValueError("paired placement requires exactly B0 through B4")
+    for policy_id in PolicyID:
+        mapped_policy_id = getattr(policies[policy_id], "policy_id", None)
+        if mapped_policy_id is not policy_id:
+            raise ValueError(
+                f"paired placement entry {policy_id.value} must expose matching policy_id"
+            )
     if not isinstance(observation, PolicyObservation):
         raise TypeError("observation must be PolicyObservation")
     return tuple(decide_placement(policies[policy_id], observation) for policy_id in PolicyID)
