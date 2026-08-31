@@ -180,13 +180,9 @@ class PolicyObservation:
         ):
             if value is not None:
                 _require_id(value, name)
-        _require_id_tuple(self.continuation_ancestry, "continuation_ancestry")
-        _require_id_tuple(self.state_locations, "state_locations")
-        if not isinstance(self.state_provenance, tuple):
-            raise TypeError("state_provenance must be tuple")
-        for key, value in self.state_provenance:
-            _require_id(key, "state_provenance key")
-            _require_id(value, "state_provenance value")
+        _require_canonical_id_set_tuple(self.continuation_ancestry, "continuation_ancestry")
+        _require_canonical_id_set_tuple(self.state_locations, "state_locations")
+        _require_canonical_pairs(self.state_provenance, "state_provenance")
         if self.binding_epoch is not None:
             if not isinstance(self.binding_epoch, int) or isinstance(self.binding_epoch, bool) or self.binding_epoch < 0:
                 raise ValueError("binding_epoch must be a non-negative integer")
@@ -368,3 +364,26 @@ def _require_id_tuple(values: tuple[str, ...], name: str) -> None:
         raise TypeError(f"{name} must be tuple[str, ...]")
     if not all(isinstance(value, str) and value for value in values):
         raise ValueError(f"{name} must contain non-empty strings")
+
+
+def _require_canonical_id_set_tuple(values: tuple[str, ...], name: str) -> None:
+    _require_id_tuple(values, name)
+    if len(values) != len(set(values)) or values != tuple(sorted(values)):
+        raise ValueError(f"{name} must be unique and sorted")
+
+
+def _require_canonical_pairs(values: tuple[tuple[str, str], ...], name: str) -> None:
+    if not isinstance(values, tuple):
+        raise TypeError(f"{name} must be tuple[tuple[str, str], ...]")
+    normalized = []
+    keys = []
+    for item in values:
+        if not isinstance(item, tuple) or len(item) != 2:
+            raise TypeError(f"{name} entries must be 2-tuples")
+        key, value = item
+        _require_id(key, f"{name} key")
+        _require_id(value, f"{name} value")
+        normalized.append(item)
+        keys.append(key)
+    if len(keys) != len(set(keys)) or tuple(normalized) != tuple(sorted(normalized)):
+        raise ValueError(f"{name} must have unique keys and canonical ordering")
