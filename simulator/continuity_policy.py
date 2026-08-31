@@ -6,7 +6,7 @@ from types import MappingProxyType
 from typing import Mapping, Protocol
 
 from continuity.core import ContinuityCore
-from continuity.entities import ExecutionContext, ReconcileOutcome, StateLifecycle
+from continuity.entities import AttemptAuthority, ExecutionContext, ReconcileOutcome, StateLifecycle
 
 from .policies import (
     CacheAwarePolicy,
@@ -82,6 +82,9 @@ class MigrationDecision:
 
 
 class ContinuitySemanticAuthority(Protocol):
+    def attempt_current(self, request_id: str, attempt_id: str) -> bool:
+        ...
+
     def state_compatible(
         self,
         state_id: str,
@@ -102,6 +105,19 @@ class CoreContinuityAuthority:
         if not isinstance(core, ContinuityCore):
             raise TypeError("core must be ContinuityCore")
         self._core = core
+
+    def attempt_current(self, request_id: str, attempt_id: str) -> bool:
+        _require_nonempty(request_id, "request_id")
+        _require_nonempty(attempt_id, "attempt_id")
+        request = self._core.requests.get(request_id)
+        attempt = self._core.attempts.get(attempt_id)
+        if request is None or attempt is None:
+            return False
+        return (
+            attempt.request_id == request_id
+            and request.current_attempt_id == attempt_id
+            and attempt.authority_status is AttemptAuthority.CURRENT
+        )
 
     def state_compatible(
         self,
@@ -138,32 +154,40 @@ class ContinuityAwarePolicy:
     policy_id = PolicyID.B4
 
     def __init__(self, authority: ContinuitySemanticAuthority) -> None:
-        if not hasattr(authority, "state_compatible"):
+        if not callable(getattr(authority, "attempt_current", None)):
+            raise TypeError("authority must expose attempt_current")
+        if not callable(getattr(authority, "state_compatible", None)):
             raise TypeError("authority must expose state_compatible")
         self._authority = authority
 
     def decide(self, view: PolicyView) -> PlacementDecision:
         _require_policy_view(view, self.policy_id, "ContinuityAwarePolicy")
-        available = _available_workers(_workers_from_view(view))
-        if not available:
-            return PlacementDecision(self.policy_id, None, (), "NO_AVAILABLE_WORKER")
 
+        request_id = _optional_string(
+            view.value(InformationField.LOGICAL_REQUEST_ID), "logical_request_id"
+        )
         attempt_id = _optional_string(view.value(InformationField.ATTEMPT_ID), "attempt_id")
         attempt_authority = _optional_string(
             view.value(InformationField.ATTEMPT_AUTHORITY), "attempt_authority"
         )
-        if attempt_id is None or attempt_authority != "CURRENT":
+        if (
+            request_id is None
+            or attempt_id is None
+            or attempt_authority != AttemptAuthority.CURRENT.name
+            or not self._authority.attempt_current(request_id, attempt_id)
+        ):
             return PlacementDecision(self.policy_id, None, (), "ATTEMPT_FENCED")
+
+        available = _available_workers(_workers_from_view(view))
+        if not available:
+            return PlacementDecision(self.policy_id, None, (), "NO_AVAILABLE_WORKER")
 
         program_id = _optional_string(view.value(InformationField.PROGRAM_ID), "program_id")
         session_id = _optional_string(view.value(InformationField.SESSION_ID), "session_id")
         continuation_id = _optional_string(
             view.value(InformationField.CONTINUATION_ID), "continuation_id"
         )
-        request_id = _optional_string(
-            view.value(InformationField.LOGICAL_REQUEST_ID), "logical_request_id"
-        )
-        if None in {program_id, session_id, continuation_id, request_id}:
+        if None in {program_id, session_id, continuation_id}:
             return PlacementDecision(
                 self.policy_id,
                 None,
