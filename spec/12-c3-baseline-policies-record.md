@@ -1,17 +1,17 @@
 # 12 — C3 Baseline Policies
-## Implementation Record
+## Closure Record
 
 **Project:** Continuity-Aware Distributed Inference  
 **Milestone:** C3 — Baseline Policies B0–B4  
 **Prerequisite:** C2 CLOSED  
 **Tracking:** #32  
-**Status:** IN PROGRESS — C3.1–C3.4 CLOSED; C3.5 implementation/review candidate
+**Status:** CLOSED
 
 ---
 
-# 1. Architectural boundary
+# 1. Closure statement
 
-C3 implements the five normalized Experimental Plan baselines through one policy-neutral simulator-facing placement interface:
+C3 implements the five normalized Experimental Plan baselines through one deterministic simulator-facing policy boundary:
 
 ```text
 B0  Request-Centric
@@ -21,42 +21,27 @@ B3  State-Aware
 B4  Continuity-Aware
 ```
 
-The governing boundary remains:
+The governing architectural boundary remains:
 
-> **C1 is semantic authority. C2 is the deterministic policy-neutral time/resource/fault substrate. C3 chooses policy actions only from each baseline's declared information and may delegate Continuity semantic judgments to C1 rather than reimplement them.**
+> **C1 is semantic authority. C2 is the deterministic policy-neutral time/resource/fault substrate. C3 chooses policy actions only from each baseline's declared information and delegates Continuity semantic judgments to C1 rather than reimplementing them.**
 
-No C3 policy mutates C1 during placement evaluation.
+No C3 placement, retention, or migration-eligibility query mutates C1 semantic state.
+
+C3 closed after the final B4 implementation and paired-interface slice was squash-merged as:
+
+```text
+PR #42 reviewed head  5d42dcd93842664034698180854ccd5b6877d0a6
+C3.5 squash merge     ffa1ebb8a2aec63221252152c65069eef653259c
+suite                  327 passed on Python 3.11 / 3.12 / 3.13
+```
+
+The exact final PR head received a clean automated re-review with no major issues after all bounded-review findings were resolved.
 
 ---
 
 # 2. Information-contract schema
 
-C3.1 introduced the machine-readable policy information contract. Before C3.5 implementation, bounded review found that schema v1 could not faithfully express the canonical B4 definition.
-
-The Experimental Plan explicitly states that B4 receives/enforces:
-
-```text
-Program identity
-Session identity
-Continuation identity
-LogicalRequest identity
-Attempt identity
-State lineage
-Binding epoch
-Evidence authority/status/freshness
-Reconciliation
-```
-
-and implements:
-
-```text
-attempt fencing
-compatible-state routing
-lifecycle-aware retention
-safe migration
-```
-
-Schema v1 omitted three B4 inputs required by that definition:
+C3.1 introduced machine-readable policy information contracts. C3.5 bounded review found that schema v1 could not faithfully express the canonical B4 definition because it omitted three source-required B4 inputs:
 
 ```text
 program_id
@@ -64,25 +49,43 @@ state_lifecycle
 reconciliation
 ```
 
-C3.5 therefore bumps the schema to:
+C3 therefore closes on:
 
 ```text
 cadi.policy-information-contract.v2
 ```
 
-and adds exactly those fields.
+B0–B3 information privileges remain unchanged. The three v2 fields are B4-only additions because B0–B3 use explicit field sets while B4 receives the complete normalized vocabulary.
 
-B0–B3 privileges are unchanged. The new fields are B4-only because B0–B3 use explicit field sets while B4 receives the complete normalized vocabulary.
+The v2 fields are appended to the end of `PolicyObservation`; all v1 positional constructor slots retain their original meanings.
 
-The v2 fields are appended to the end of `PolicyObservation`. Existing v1 positional constructor slots therefore retain their original meanings.
+The normalized vocabulary now covers:
+
+```text
+Program identity
+LogicalRequest identity
+Attempt identity / authority
+Session identity / preferred location
+Continuation identity / ancestry
+State candidate key
+exact StateID
+State location
+State provenance
+State lifecycle
+producer Attempt
+BindingID / epoch
+Evidence authority / status / freshness
+Reconciliation
+resource / load observations
+```
 
 ---
 
-# 3. Closed baseline slices
+# 3. Baseline definitions and provenance
 
 ## C3.1 — B0 Request-Centric — CLOSED
 
-B0 ranks available workers by:
+B0 uses request identity plus worker availability/load and ranks available workers by deterministic normalized load:
 
 ```text
 normalized_load = (active_tasks + queued_tasks) / capacity
@@ -92,13 +95,7 @@ active_tasks
 worker_id
 ```
 
-Bounded review fixed:
-
-1. mutable contract registry;
-2. non-canonical set-like observation ordering;
-3. missing B2 `session_preferred_location`.
-
-Provenance:
+Bounded review fixed the mutable contract registry, non-canonical set-like observation ordering, and the missing B2 `session_preferred_location` field.
 
 ```text
 implementation-bearing head  b0558644d15fd63fcc9aa200b634310fa6214333
@@ -110,9 +107,7 @@ issue                         #33 CLOSED
 
 ## C3.2 — B1 Cache-Aware — CLOSED
 
-B1 adds candidate-key-scoped State/cache locality. Candidate-local workers rank before non-local workers; the B0 load key orders workers within each class. Unscoped or unavailable locality degenerates exactly to B0.
-
-Provenance:
+B1 adds candidate-key-scoped cache/State locality. Candidate-local workers rank before non-local workers, with the exact B0 load key inside each locality class. Missing, unscoped, unknown, or unavailable locality degenerates to B0 ordering.
 
 ```text
 final PR #36 head  0c4028ca6d9a90260a88412a1c209fdfea924d49
@@ -125,8 +120,6 @@ issue              #35 CLOSED
 
 B2 adds SessionID-scoped preferred previous location. A usable preferred worker moves to the front while every remaining worker preserves exact B1 order. Missing, unscoped, or unavailable affinity degenerates exactly to B1.
 
-Provenance:
-
 ```text
 final PR #38 head  b75528f7c0bcb71cd82a6cadd2c7e0dad6cfd30a
 suite              303 passed on Python 3.11 / 3.12 / 3.13
@@ -136,11 +129,9 @@ issue              #37 CLOSED
 
 ## C3.4 — B3 State-Aware — CLOSED
 
-B3 may use exact StateID and precise State location but remains causally blind. Exact-State-local workers form a preferred locality class. If exact-State locality is absent or unusable, B3 falls back to B1 candidate locality and then load.
+B3 receives exact StateID and precise State location but remains causally blind. Exact-State-local workers form a preferred locality class; if exact locality is absent or unusable, B3 falls back to B1 candidate locality and then load.
 
-The adversarial test obligation explicitly proves that hidden compatible-ancestor provenance and hidden wrong-sibling/superseded provenance cannot change a B3 decision when its visible exact StateID/location is unchanged.
-
-Provenance:
+Adversarial regression coverage proves that hidden compatible-ancestor provenance and hidden wrong-sibling/superseded provenance cannot change a B3 decision when its visible StateID/location is unchanged.
 
 ```text
 final PR #40 head  2d69a86fadd2424764415322746f310a7ad1568b
@@ -149,17 +140,25 @@ squash merge       1ce103ab0805fa81a4da4c9c4cc708475a891bd6
 issue              #39 CLOSED
 ```
 
+## C3.5 — B4 Continuity-Aware — CLOSED
+
+B4 receives the complete v2 information contract and enforces the Paper 1 Continuity policy surface while preserving C1 as semantic authority.
+
+```text
+final behavior-bearing head  50f5653e8a39549bbdac828b8677afea28356db7
+final reviewed PR #42 head   5d42dcd93842664034698180854ccd5b6877d0a6
+suite                         327 passed on Python 3.11 / 3.12 / 3.13
+squash merge                  ffa1ebb8a2aec63221252152c65069eef653259c
+issue                         #41 CLOSED by PR #42 merge
+```
+
 ---
 
-# 4. C3.5 — B4 Continuity-Aware
-
-Tracking: #41.
-
-B4 receives the complete normalized v2 information contract and invokes the closed C1 semantic authority for Continuity judgments. C3.5 does **not** reconstruct C1 compatibility, evidence, or migration invariants in the policy layer.
+# 4. B4 semantic boundary
 
 ## 4.1 Read-only C1 authority
 
-`CoreContinuityAuthority` exposes two read-only placement-time semantic judgments over the closed C1 core:
+`CoreContinuityAuthority` exposes two read-only judgments over the closed C1 core:
 
 ```text
 attempt_current(LogicalRequestID, AttemptID)
@@ -173,9 +172,9 @@ state_compatible(
 )
 ```
 
-`attempt_current` validates the observed Attempt against C1's authoritative current-Attempt state. `state_compatible` constructs the public C1 `ExecutionContext` and calls the public `ContinuityCore.state_compatible` method.
+`attempt_current` cross-checks the observation against C1's authoritative current-Attempt state. `state_compatible` constructs the public C1 `ExecutionContext` and delegates to `ContinuityCore.state_compatible`.
 
-Neither query mutates C1.
+C3 does not reimplement C1 Attempt, State-lineage, producer-authority, Evidence, Binding, or reconciliation semantics.
 
 ## 4.2 Attempt fencing
 
@@ -188,15 +187,15 @@ observed Attempt authority == CURRENT
 C1 attempt_current(LogicalRequestID, AttemptID) == true
 ```
 
-Otherwise the policy returns `ATTEMPT_FENCED` with no worker ranking.
+Otherwise B4 returns `ATTEMPT_FENCED` with no worker ranking.
 
-This prevents a stale observation that still claims `CURRENT` from overriding C1 authority after a retry has superseded that Attempt.
+This rejects both explicitly superseded Attempts and stale observations that still claim `CURRENT` after C1 has advanced the request to a newer Attempt.
 
 ## 4.3 Compatible-State routing
 
-B4 never treats candidate-only locality as verified reusable State.
+B4 does not promote candidate-only cache locality into verified reusable State.
 
-Exact-State locality is used only when all of the following hold:
+Exact-State locality is preferred only when:
 
 ```text
 exact StateID exists
@@ -206,13 +205,15 @@ C1 state_compatible(...) == true
 at least one declared State location is available
 ```
 
-Then B4 ranks compatible exact-State-local workers before remote workers, with the shared B0 load key inside each class.
+Compatible local workers rank before remote workers, with the shared B0 load key inside each class.
 
-If reconciliation is not matched or C1 reports incompatibility, B4 fails closed to load/recomputation routing rather than consuming the attractive State. This creates the intended executable B3↔B4 distinction for later H2 evaluation.
+If reconciliation is not matched, C1 reports incompatibility, or compatible locality is unavailable, B4 fails closed to recomputation/load routing rather than consuming attractive but unverified State.
+
+This is the executable B3↔B4 causal-compatibility distinction required for later correctness evaluation.
 
 ## 4.4 Lifecycle-aware retention
 
-C3.5 exposes an ordinal lifecycle retention policy over the four canonical Paper 1 classes:
+B4 exposes deterministic ordinal retention classes over the canonical Paper 1 lifecycle states:
 
 ```text
 ACTIVE       priority 3  PROTECT
@@ -221,11 +222,11 @@ SPECULATIVE  priority 1  BEST_EFFORT
 TERMINAL     priority 0  RELEASE
 ```
 
-The ordinal mapping is a deterministic C3 implementation choice over the canonical lifecycle classes, not a measured or calibrated cost model. C6 remains responsible for performance calibration and parameter sweeps.
+These are policy preference classes, not calibrated cost weights. Performance calibration remains a later milestone.
 
-## 4.5 Safe-migration policy surface
+## 4.5 Safe-migration eligibility
 
-C3.5 exposes migration eligibility rather than mutating Binding state directly.
+B4 exposes migration eligibility rather than mutating Binding state directly.
 
 A migration-sensitive commit is policy-eligible only when:
 
@@ -235,86 +236,85 @@ Binding epoch exists
 Reconciliation == MATCHED
 ```
 
-The policy returns `ALLOW_COMMIT` only in that case; otherwise it returns `WAIT`.
+B4 returns `ALLOW_COMMIT` only in that case; otherwise it returns `WAIT`.
 
 Actual migration commit, epoch fencing, Evidence sufficiency, old-binding supersession, and atomic semantic transition remain C1 responsibilities.
 
-## 4.6 Paired placement interface
+---
+
+# 5. Paired-interface closure
 
 `build_baseline_policies(...)` constructs exactly B0–B4.
 
-`decide_paired_placements(...)` requires exactly those five keys, verifies that each mapped policy's own `policy_id` matches its key, and executes the policies in canonical B0→B4 order against the **same immutable `PolicyObservation`**. Each policy independently receives its own `PolicyView` projection.
+`decide_paired_placements(...)`:
 
-This prevents duplicate or misregistered policy instances from silently invalidating a paired comparison.
+1. requires exactly the B0–B4 mapping keys;
+2. verifies each mapped policy's own `policy_id` matches its key;
+3. executes policies in canonical B0→B4 order;
+4. supplies every policy the same immutable `PolicyObservation`;
+5. independently projects that observation through each policy's declared `PolicyView` contract.
 
----
-
-# 5. C3.5 bounded review findings
-
-Four substantive issues were found before finalizing C3.5:
-
-1. **Incomplete B4 information contract.** Schema v1 omitted `program_id`, `state_lifecycle`, and `reconciliation`, despite those concepts being explicitly required by the canonical B4 definition. Schema v2 adds exactly those B4 inputs without expanding B0–B3 privileges.
-2. **Attempt-fencing weakness and ordering.** The first B4 candidate trusted the observed `attempt_authority` and checked worker availability before fencing. B4 now cross-checks the request/Attempt against C1 `attempt_current`, and fencing precedes physical availability.
-3. **PolicyObservation positional compatibility.** The first v2 draft inserted new fields into existing dataclass positions. The fields are now appended at the tail and a regression test proves v1 positional slots retain their original meaning.
-4. **Paired-policy registration integrity.** The first paired harness checked only that mapping keys were B0–B4. It now also verifies every mapped policy exposes the matching `PolicyID`, preventing duplicate or wrong-policy registration from corrupting paired results.
-
-The final behavior-bearing candidate before documentation synchronization is:
-
-```text
-50f5653e8a39549bbdac828b8677afea28356db7
-```
-
-The exact final PR head above this behavior-bearing candidate must pass the full Python 3.11 / 3.12 / 3.13 matrix before merge.
+This makes the C3 exit criterion executable: the five baselines run through an identical simulator-facing interface while receiving only information permitted by their abstraction.
 
 ---
 
-# 6. C3.5 test obligations
+# 6. C3.5 bounded-review findings resolved
 
-`tests/simulator/test_continuity_aware_policy.py` requires:
+Four substantive findings were resolved before merge:
 
-```text
-schema v2 contains the three source-backed B4 contract repairs
-B0–B3 privileges are unchanged
-v1 PolicyObservation positional slots retain their original meanings
-B4 can read Program/lifecycle/reconciliation while B3 cannot
-compatible exact State locality is preferred only after C1 compatibility + MATCHED reconciliation
-wrong-sibling State fails closed to recomputation/load routing
-unmatched/ambiguous reconciliation blocks State locality
-observed non-current Attempt is fenced
-stale CURRENT observation is rejected when C1 says the Attempt is no longer current
-Attempt fencing precedes worker availability
-candidate-only locality is not promoted into verified reuse
-lifecycle priority is deterministic across ACTIVE/WAITING/SPECULATIVE/TERMINAL
-migration eligibility requires reconciled declared Binding context
-B4 placement/retention/migration queries do not mutate C1
-paired interface executes exactly B0–B4 over one observation
-wrong-ID policy registration is rejected
-identical paired observations produce identical paired decisions
-```
+1. **Incomplete B4 information contract.** Schema v1 omitted `program_id`, `state_lifecycle`, and `reconciliation`; v2 adds exactly those B4 inputs without expanding B0–B3 privileges.
+2. **Attempt-fencing weakness and ordering.** The first candidate trusted observed authority and checked worker availability before fencing; B4 now cross-checks C1 `attempt_current`, and fencing precedes availability.
+3. **PolicyObservation positional compatibility.** The first v2 draft inserted new fields into existing dataclass slots; v2 fields now append at the tail and regression coverage preserves v1 positional meanings.
+4. **Paired-policy registration integrity.** The first paired harness validated only the keys; it now rejects any mapped policy whose `policy_id` does not match its B0–B4 key.
 
-Existing B0–B3 suites remain regression obligations.
+Both original automated review threads were resolved. A fresh automated review explicitly reviewed final head `5d42dcd938` and reported no major issues.
 
 ---
 
-# 7. C3 exit gate
+# 7. Final validation
 
-C3 may close only when:
+The exact final C3.5 reviewed head passed the complete repository suite on every supported runtime:
 
 ```text
-B0 implemented and closed
-B1 implemented and closed
-B2 implemented and closed
-B3 implemented and closed
-B4 implemented and closed
-machine-readable B0–B4 information contracts fixed before evaluation
-B0–B3 privileges unchanged by C3.5 repair
-C1 remains semantic authority
-C2 remains policy-neutral
-paired B0–B4 placement interface exists and validates policy identity
-full repository tests pass on Python 3.11
-full repository tests pass on Python 3.12
-full repository tests pass on Python 3.13
-bounded review findings are resolved
+Python 3.11  PASS — 327 tests
+Python 3.12  PASS — 327 tests
+Python 3.13  PASS — 327 tests
 ```
 
-C4 correctness evaluation remains outside C3 until this gate closes.
+The C3.5 change boundary was limited to:
+
+```text
+simulator/policies.py
+simulator/continuity_policy.py
+simulator/__init__.py
+tests/simulator/test_continuity_aware_policy.py
+spec/12-c3-baseline-policies-record.md
+```
+
+No C4 experiment result, C6 calibrated cost model, or policy-specific C2 scenario fork was introduced.
+
+---
+
+# 8. C3 exit gate — SATISFIED
+
+```text
+B0 implemented and closed                           PASS
+B1 implemented and closed                           PASS
+B2 implemented and closed                           PASS
+B3 implemented and closed                           PASS
+B4 implemented and closed                           PASS
+machine-readable information contracts fixed        PASS
+B0–B3 privileges unchanged by v2 repair             PASS
+C1 remains semantic authority                       PASS
+C2 remains policy-neutral                           PASS
+paired B0–B4 placement interface exists             PASS
+paired policy identity is validated                 PASS
+full suite Python 3.11                              PASS
+full suite Python 3.12                              PASS
+full suite Python 3.13                              PASS
+bounded review findings resolved                    PASS
+```
+
+**C3 is CLOSED.**
+
+The next implementation milestone is **C4 — Correctness Evaluation**, which will apply the normalized fault/workload catalogue to B0–B4 and measure the correctness hypotheses without changing the closed C1/C2/C3 semantic and policy boundaries.
