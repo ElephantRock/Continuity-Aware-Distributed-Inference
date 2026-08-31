@@ -50,6 +50,11 @@ def test_information_contracts_cover_exact_b0_to_b4():
     assert INFORMATION_CONTRACTS[PolicyID.B4].fields == frozenset(InformationField)
 
 
+def test_information_contract_registry_cannot_be_mutated_after_import():
+    with pytest.raises(TypeError):
+        INFORMATION_CONTRACTS[PolicyID.B0] = INFORMATION_CONTRACTS[PolicyID.B4]
+
+
 def test_b0_projection_structurally_hides_privileged_fields():
     workers = (WorkerObservation("w1", True, 1, 0, 0),)
     view = project_observation(full_observation(workers), PolicyID.B0)
