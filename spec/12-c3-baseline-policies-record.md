@@ -5,13 +5,13 @@
 **Milestone:** C3 — Baseline Policies B0–B4  
 **Prerequisite:** C2 CLOSED on `main` at `afcce955517b9cb063cc75c9d098d24a5171dbdb`  
 **Tracking:** #32  
-**Status:** IN PROGRESS — C3.1 and C3.2 CLOSED; C3.3 B2 Session-Affinity implementation candidate
+**Status:** IN PROGRESS — C3.1–C3.3 CLOSED; C3.4 B3 State-Aware implementation candidate
 
 ---
 
-# 1. Purpose
+# 1. Purpose and fairness boundary
 
-C3 introduces the comparison policies required by the normalized Experimental Plan:
+C3 implements the normalized Experimental Plan baselines through one common simulator-facing interface:
 
 ```text
 B0  Request-Centric
@@ -21,23 +21,21 @@ B3  State-Aware
 B4  Continuity-Aware
 ```
 
-All five policies execute through the same simulator-facing decision interface.
-
 > **C1 remains semantic authority. C2 remains the policy-neutral time/resource/fault substrate. C3 may choose actions only from the information its baseline contract permits.**
 
----
-
-# 2. Baseline Fairness Boundary
-
-The Experimental Plan requires a machine-readable information contract before policy comparison begins. The projection boundary prevents privileged Continuity information from leaking into weaker baselines and prevents weaker baselines from being made artificially incompetent by withholding ordinary information their abstraction requires.
-
-The contract registry is immutable after import. Set-like observation fields are canonicalized at the interface boundary so incidental caller/container order cannot become a policy input.
+The machine-readable information boundary is part of the experimental method. The contract registry is immutable after import and set-like observations are canonicalized so neither privilege mutation nor incidental caller ordering can alter a policy's information model.
 
 ---
 
-# 3. Canonical Information Contracts
+# 2. Information contracts
 
-The normalized field vocabulary is:
+Schema:
+
+```text
+cadi.policy-information-contract.v1
+```
+
+Normalized fields:
 
 ```text
 logical_request_id
@@ -60,12 +58,6 @@ evidence_freshness
 resource_load
 ```
 
-Schema:
-
-```text
-cadi.policy-information-contract.v1
-```
-
 Baseline access:
 
 ```text
@@ -76,17 +68,13 @@ B3  logical_request_id + resource_load + state_candidate_key + exact_state_id + 
 B4  complete normalized field set
 ```
 
-B2 still does not receive Continuation identity/ancestry, exact State identity, causal State provenance, producer-Attempt authority, Binding generations, or Evidence authority.
-
-B3 may know exact State identity/location but does not thereby learn whether that State is causally valid for the current Continuation and authoritative Attempt.
-
-B4 may later invoke C1 public semantics; C3 must not independently reimplement those semantics.
+B3 receives exact logical/physical State identity and precise State location, as required by the Experimental Plan, but does **not** receive Continuation ancestry, Attempt authority, Evidence authority, Binding generations, reconciliation semantics, State provenance, or producer-Attempt authority.
 
 ---
 
-# 4. Common Interface
+# 3. Common interface
 
-The harness constructs a privileged immutable `PolicyObservation`, but policies receive only a projected `PolicyView`:
+The harness may collect a privileged immutable `PolicyObservation`, but each policy receives only:
 
 ```text
 PolicyObservation
@@ -98,9 +86,9 @@ project_observation(..., PolicyID)
 PolicyView
 ```
 
-`PolicyView` contains exactly the declared contract fields. Forbidden field access fails explicitly.
+`PolicyView` contains exactly the declared fields. Forbidden access fails explicitly.
 
-C2 workers are observed canonically as:
+C2 worker observations are canonical tuples of:
 
 ```text
 worker_id
@@ -110,11 +98,15 @@ active_tasks
 queued_tasks
 ```
 
+All ranking layers exclude unavailable workers before applying policy preference.
+
 ---
 
-# 5. C3.1 — B0 Request-Centric — CLOSED
+# 4. Closed slices
 
-B0 ranks available workers by:
+## C3.1 — B0 Request-Centric — CLOSED
+
+B0 ranks by:
 
 ```text
 normalized_load = (active_tasks + queued_tasks) / capacity
@@ -124,15 +116,7 @@ active_tasks
 worker_id
 ```
 
-No available worker returns `NO_AVAILABLE_WORKER`.
-
-C3.1 bounded review fixed:
-
-1. mutable information-contract registry;
-2. non-canonical set-like observation ordering;
-3. missing explicit B2 `session_preferred_location`.
-
-Provenance:
+C3.1 bounded review fixed the mutable contract registry, non-canonical set-like observation ordering, and the missing B2 preferred-location field.
 
 ```text
 implementation-bearing head  b0558644d15fd63fcc9aa200b634310fa6214333
@@ -142,21 +126,9 @@ squash merge                  b17e03867004ed0dc51aa821cbe10e98a888aebb
 issue                         #33 CLOSED
 ```
 
----
+## C3.2 — B1 Cache-Aware — CLOSED
 
-# 6. C3.2 — B1 Cache-Aware — CLOSED
-
-B1 receives only request/load plus candidate key/location. Unavailable workers are removed first.
-
-If a candidate key exists and one or more candidate locations are available, candidate-local workers rank before non-local workers. Within each class B1 uses exactly B0's load ordering.
-
-If locality is absent or unusable, B1 degenerates exactly to B0 worker ranking. A location tuple without a candidate key is ignored as unscoped locality.
-
-This avoids inventing a scalar cache-benefit-vs-load conversion before C6 calibration.
-
-C3.2 bounded review found no additional semantic-information leak or ordering defect after the C3.1 contract hardening.
-
-Provenance:
+B1 treats a candidate-key-scoped location as a deterministic locality preference class, then uses exact B0 load ordering within locality classes. No usable locality degenerates exactly to B0. An unscoped location without a candidate key is ignored.
 
 ```text
 final PR #36 head  0c4028ca6d9a90260a88412a1c209fdfea924d49
@@ -165,101 +137,120 @@ squash merge       d0742284de450b86ae98db4f52ea993e90d5f8e7
 issue              #35 CLOSED
 ```
 
----
+## C3.3 — B2 Session-Affinity — CLOSED
 
-# 7. C3.3 — B2 Session-Affinity
-
-Tracking: #37.
-
-B2 receives the B1 contract plus:
+B2 treats a SessionID-scoped preferred previous location as a deterministic preference. If usable, that worker is moved to the front and every remaining worker preserves exact B1 order. Absent, unscoped, or unavailable affinity degenerates exactly to B1. B2 deliberately cannot distinguish sibling branches because it receives no Continuation ancestry.
 
 ```text
-session_id
-session_preferred_location
+final PR #38 head  b75528f7c0bcb71cd82a6cadd2c7e0dad6cfd30a
+suite              303 passed on Python 3.11 / 3.12 / 3.13
+squash merge       b2a13e3bc372449fc5cd3bc8e5b925f7983d991e
+issue              #37 CLOSED
 ```
 
-## 7.1 Decision rule
+---
+
+# 5. C3.4 — B3 State-Aware
+
+Tracking: #39.
+
+The canonical Experimental Plan distinction is:
+
+> knowing where State is
+
+versus:
+
+> knowing whether State causally belongs to current work.
+
+B3 is therefore intentionally **exact-State-aware but causally blind**.
+
+## 5.1 Decision rule
 
 Unavailable workers are removed first.
 
-`session_preferred_location` is meaningful only when a `session_id` is present. A bare preferred location without Session identity is ignored as an unscoped affinity signal.
-
-When the scoped preferred location names an available worker:
+When `exact_state_id` is present, `state_location` is interpreted as the precise location set for that exact State. If one or more of those locations are available:
 
 ```text
-session-preferred worker
+exact-State-local workers
         before
-all remaining workers in exact B1 order
+remote workers
 ```
 
-The remaining workers are not re-ranked by a new B2-specific rule. This guarantees that B2 is a strict, inspectable extension of B1.
+Within locality classes B3 uses the shared B0 load key.
 
-When Session affinity is absent or unusable, B2 degenerates exactly to B1 ordering and returns:
+The exact StateID is a selector only. It does not imply:
 
 ```text
-SESSION_AFFINITY_B1_FALLBACK
+Continuation compatibility
+producer-Attempt authority
+branch membership
+Binding freshness
+Evidence sufficiency
 ```
 
-When affinity is used:
+When exact-State locality is absent or unusable, B3 falls back to the competent B1 candidate-key locality rule. This ensures B3 is not artificially weakened when only ordinary cache/prefix candidate information is available.
+
+When neither exact StateID nor candidate key scopes `state_location`, B3 falls back to load.
+
+Reasons:
 
 ```text
-SESSION_AFFINITY_THEN_CACHE_LOAD
-```
-
-No available worker returns:
-
-```text
+EXACT_STATE_LOCALITY_THEN_LOAD
+STATE_AWARE_CANDIDATE_FALLBACK
+STATE_AWARE_LOAD_FALLBACK
 NO_AVAILABLE_WORKER
 ```
 
-This intentionally models the known limitation that sibling branches share a Session: B2 has no Continuation ancestry and therefore cannot distinguish branch causality.
+The policy deliberately does not call C1 `state_compatible` or inspect provenance. Those semantics belong to B4.
 
 ---
 
-# 8. C3.3 Test Obligations
+# 6. C3.4 test obligations
 
-`tests/simulator/test_session_affinity_policy.py` requires:
+`tests/simulator/test_state_aware_policy.py` requires:
 
 ```text
-B2 PolicyView exposes Session affinity but no causal Continuity fields
-scoped available Session preference outranks cache locality
-workers after the preferred location preserve exact B1 ordering
-unscoped preferred location is ignored
-unavailable preferred location falls back exactly to B1
-missing preferred location falls back exactly to B1
+B3 PolicyView exposes exact State identity/location but no causal authority fields
+exact-State locality works without a cache candidate key
+multiple exact-State locations use shared B0 load ordering
+absence of exact StateID falls back exactly to B1 candidate locality
+unscoped locations fall back to load
+unavailable exact-State locality cannot override available workers
 no-available-worker behavior remains explicit
-B2 decisions are invariant to hidden branch/Continuity metadata
+compatible and wrong-branch hidden provenance produce the same B3 decision
 ```
+
+The last obligation is essential: it makes B3's intended inability to distinguish causal compatibility executable rather than merely descriptive.
 
 ---
 
-# 9. Staged C3 Plan
+# 7. Staged C3 plan
 
 ```text
 C3.1  information contracts + common interface + B0     CLOSED
 C3.2  B1 cache-aware                                    CLOSED
-C3.3  B2 session-affinity                               ACTIVE
-C3.4  B3 state-aware                                    PENDING
+C3.3  B2 session-affinity                               CLOSED
+C3.4  B3 state-aware                                    ACTIVE
 C3.5  B4 continuity-aware + paired-interface closure    PENDING
 ```
 
 ---
 
-# 10. C3.3 Exit Gate
+# 8. C3.4 exit gate
 
-C3.3 may close only when:
+C3.4 may close only when:
 
 ```text
-B2 uses only its declared PolicyView
-Session preferred location requires Session scope
-available Session preference is deterministic
-remaining workers preserve exact B1 ordering
-absence/unavailability of affinity falls back exactly to B1
-B2 remains invariant to hidden Continuation/causal metadata
+B3 uses only its declared PolicyView
+exact StateID scopes physical locality without implying causal validity
+exact-State locality is deterministic
+absence/unavailability of exact locality falls back to competent B1 behavior
+unscoped location falls back safely
+B3 remains invariant to hidden Continuation/provenance/authority metadata
 full repository tests pass on Python 3.11
 full repository tests pass on Python 3.12
 full repository tests pass on Python 3.13
 bounded review findings are resolved
 ```
 
-B3/B4 behavior and C4 evaluation remain out of scope.
+B4 and C4 remain out of scope until this gate closes.
