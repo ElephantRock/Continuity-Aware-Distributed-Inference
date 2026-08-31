@@ -91,6 +91,7 @@ EXOGENOUS_PAIRED_GATE_METRICS = frozenset(
         CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE,
         CorrectnessMetric.WRONG_BRANCH_REUSE_RATE,
         CorrectnessMetric.SILENT_BINDING_DIVERGENCE_RATE,
+        CorrectnessMetric.AMBIGUOUS_COMMIT_RATE,
     }
 )
 
@@ -406,8 +407,8 @@ class CorrectnessEvaluationRecord:
     """One complete correctness-sensitive operation under one policy.
 
     O-class outcomes are operation-level. Gate opportunities are event-level and
-    carry stable event identities. SAAR/WBRR/SBDR opportunities are exogenous
-    paired inputs; WSCR/ACR/DFR opportunities are derived from policy behavior.
+    carry stable event identities. SAAR/WBRR/SBDR/ACR opportunities are exogenous
+    paired inputs; WSCR/DFR opportunities are derived from policy behavior.
     """
 
     cohort_id: str
