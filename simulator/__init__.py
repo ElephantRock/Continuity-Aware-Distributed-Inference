@@ -1,4 +1,4 @@
-"""Deterministic discrete-event simulation substrate for CADI C2."""
+"""Deterministic discrete-event simulation substrate for CADI."""
 
 from .engine import DiscreteEventSimulator
 from .events import EventKind, SimEvent
@@ -29,6 +29,22 @@ from .fault_oracle import (
     fault_record_to_json,
     fault_records_from_jsonl,
     fault_records_to_jsonl,
+)
+from .policies import (
+    INFORMATION_CONTRACTS,
+    POLICY_CONTRACT_SCHEMA,
+    InformationContract,
+    InformationField,
+    PlacementDecision,
+    PlacementPolicy,
+    PolicyID,
+    PolicyObservation,
+    PolicyView,
+    RequestCentricPolicy,
+    WorkerObservation,
+    decide_placement,
+    observe_resources,
+    project_observation,
 )
 from .resources import (
     NetworkLink,
@@ -100,6 +116,20 @@ __all__ = [
     "fault_record_to_json",
     "fault_records_from_jsonl",
     "fault_records_to_jsonl",
+    "POLICY_CONTRACT_SCHEMA",
+    "PolicyID",
+    "InformationField",
+    "InformationContract",
+    "INFORMATION_CONTRACTS",
+    "WorkerObservation",
+    "PolicyObservation",
+    "PolicyView",
+    "PlacementDecision",
+    "PlacementPolicy",
+    "RequestCentricPolicy",
+    "observe_resources",
+    "project_observation",
+    "decide_placement",
     "NetworkLink",
     "ReplicaRuntime",
     "ReplicaRuntimeStatus",
