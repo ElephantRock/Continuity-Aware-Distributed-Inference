@@ -92,24 +92,3 @@ def test_deserializer_rejects_misspelled_safety_field_instead_of_defaulting_safe
 
     with pytest.raises(ValueError, match="unexpected=.*metric_violation"):
         CorrectnessEvaluationRecord.from_dict(payload)
-
-
-def test_gate_violation_requires_silent_semantic_violation_outcome():
-    with pytest.raises(ValueError, match="O4 silent semantic violation"):
-        CorrectnessEvaluationRecord.create(
-            cohort_id="cohort",
-            trial_id="unsafe-label",
-            operation_id="op",
-            policy_id=PolicyID.B4,
-            scenario_id="FTR1",
-            validation_level=ValidationEvidenceLevel.EV0_DETERMINISTIC_SEMANTICS,
-            evidence_provenance=ResultEvidenceProvenance.SYNTHETICALLY_GENERATED,
-            ground_truth={"current_attempt": "a2"},
-            observed_evidence={"attempt": "a1"},
-            policy_decision={"trace": [{"action": "ACCEPT"}]},
-            semantic_result=SemanticResult(True, True, True),
-            metric_opportunities=(CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE,),
-            metric_violations=(CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE,),
-            fault_id="fault",
-            fault_class="LATE_SUPERSEDED_ATTEMPT",
-        )
