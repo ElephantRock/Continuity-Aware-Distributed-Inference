@@ -285,44 +285,57 @@ class CacheAwarePolicy:
 
     def decide(self, view: PolicyView) -> PlacementDecision:
         _require_policy_view(view, self.policy_id, "CacheAwarePolicy")
-        workers = _workers_from_view(view)
-        available = _available_workers(workers)
+        available = _available_workers(_workers_from_view(view))
         if not available:
             return PlacementDecision(self.policy_id, None, (), "NO_AVAILABLE_WORKER")
 
-        candidate_key = view.value(InformationField.STATE_CANDIDATE_KEY)
-        locations = view.value(InformationField.STATE_LOCATION)
-        if candidate_key is not None and not isinstance(candidate_key, str):
-            raise TypeError("state_candidate_key observation must be string or None")
-        if not isinstance(locations, tuple) or not all(
-            isinstance(location, str) and location for location in locations
-        ):
-            raise TypeError("state_location observation must be tuple[str, ...]")
+        ranked_workers, locality_used = _rank_workers_cache_aware(view, available)
+        ranked = tuple(worker.worker_id for worker in ranked_workers)
+        reason = "CACHE_LOCALITY_THEN_LOAD" if locality_used else "CACHE_AWARE_LOAD_FALLBACK"
+        return PlacementDecision(self.policy_id, ranked[0], ranked, reason)
 
-        local_ids = frozenset(locations) if candidate_key is not None else frozenset()
-        has_available_locality = any(worker.worker_id in local_ids for worker in available)
-        if not has_available_locality:
-            ranked = _rank_worker_ids_by_load(available)
+
+class SessionAffinityPolicy:
+    policy_id = PolicyID.B2
+
+    def decide(self, view: PolicyView) -> PlacementDecision:
+        _require_policy_view(view, self.policy_id, "SessionAffinityPolicy")
+        available = _available_workers(_workers_from_view(view))
+        if not available:
+            return PlacementDecision(self.policy_id, None, (), "NO_AVAILABLE_WORKER")
+
+        b1_ranked, _ = _rank_workers_cache_aware(view, available)
+        session_id = view.value(InformationField.SESSION_ID)
+        preferred = view.value(InformationField.SESSION_PREFERRED_LOCATION)
+        if session_id is not None and not isinstance(session_id, str):
+            raise TypeError("session_id observation must be string or None")
+        if preferred is not None and not isinstance(preferred, str):
+            raise TypeError("session_preferred_location observation must be string or None")
+
+        usable_affinity = (
+            session_id is not None
+            and preferred is not None
+            and any(worker.worker_id == preferred for worker in available)
+        )
+        if not usable_affinity:
+            ranked = tuple(worker.worker_id for worker in b1_ranked)
             return PlacementDecision(
                 self.policy_id,
                 ranked[0],
                 ranked,
-                "CACHE_AWARE_LOAD_FALLBACK",
+                "SESSION_AFFINITY_B1_FALLBACK",
             )
 
-        ranked_workers = sorted(
-            available,
-            key=lambda worker: (
-                0 if worker.worker_id in local_ids else 1,
-                *_worker_load_key(worker),
-            ),
+        preferred_worker = next(worker for worker in available if worker.worker_id == preferred)
+        ranked_workers = (preferred_worker,) + tuple(
+            worker for worker in b1_ranked if worker.worker_id != preferred
         )
         ranked = tuple(worker.worker_id for worker in ranked_workers)
         return PlacementDecision(
             self.policy_id,
             ranked[0],
             ranked,
-            "CACHE_LOCALITY_THEN_LOAD",
+            "SESSION_AFFINITY_THEN_CACHE_LOAD",
         )
 
 
@@ -408,6 +421,40 @@ def _workers_from_view(view: PolicyView) -> tuple[WorkerObservation, ...]:
 
 def _available_workers(workers: tuple[WorkerObservation, ...]) -> tuple[WorkerObservation, ...]:
     return tuple(worker for worker in workers if worker.available)
+
+
+def _candidate_local_ids(view: PolicyView) -> frozenset[str]:
+    candidate_key = view.value(InformationField.STATE_CANDIDATE_KEY)
+    locations = view.value(InformationField.STATE_LOCATION)
+    if candidate_key is not None and not isinstance(candidate_key, str):
+        raise TypeError("state_candidate_key observation must be string or None")
+    if not isinstance(locations, tuple) or not all(
+        isinstance(location, str) and location for location in locations
+    ):
+        raise TypeError("state_location observation must be tuple[str, ...]")
+    return frozenset(locations) if candidate_key is not None else frozenset()
+
+
+def _rank_workers_cache_aware(
+    view: PolicyView,
+    available: tuple[WorkerObservation, ...],
+) -> tuple[tuple[WorkerObservation, ...], bool]:
+    local_ids = _candidate_local_ids(view)
+    locality_used = any(worker.worker_id in local_ids for worker in available)
+    if not locality_used:
+        return tuple(sorted(available, key=_worker_load_key)), False
+    return (
+        tuple(
+            sorted(
+                available,
+                key=lambda worker: (
+                    0 if worker.worker_id in local_ids else 1,
+                    *_worker_load_key(worker),
+                ),
+            )
+        ),
+        True,
+    )
 
 
 def _worker_load_key(worker: WorkerObservation) -> tuple[float, int, int, str]:
