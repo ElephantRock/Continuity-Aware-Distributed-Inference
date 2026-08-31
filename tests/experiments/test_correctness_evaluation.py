@@ -26,6 +26,7 @@ def _scope(metric: CorrectnessMetric) -> MetricOpportunityScope:
         CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE,
         CorrectnessMetric.WRONG_BRANCH_REUSE_RATE,
         CorrectnessMetric.SILENT_BINDING_DIVERGENCE_RATE,
+        CorrectnessMetric.AMBIGUOUS_COMMIT_RATE,
     }:
         return MetricOpportunityScope.EXOGENOUS_PAIRED
     return MetricOpportunityScope.POLICY_DERIVED
@@ -333,11 +334,41 @@ def test_paired_exogenous_gate_events_require_same_stable_identity():
         summarize_correctness((b0, b4))
 
 
+def test_paired_ambiguous_decision_events_require_same_stable_identity():
+    metric = CorrectnessMetric.AMBIGUOUS_COMMIT_RATE
+    b0 = _record(
+        trial_id="paired-ambiguity",
+        operation_id="op",
+        policy_id=PolicyID.B0,
+        opportunities=(metric,),
+        opportunity_event_ids=("ambiguous-decision:e1",),
+        opportunity_scopes=(MetricOpportunityScope.EXOGENOUS_PAIRED,),
+    )
+    b4 = _record(
+        trial_id="paired-ambiguity",
+        operation_id="op",
+        policy_id=PolicyID.B4,
+        opportunities=(metric,),
+        opportunity_event_ids=("ambiguous-decision:e2",),
+        opportunity_scopes=(MetricOpportunityScope.EXOGENOUS_PAIRED,),
+    )
+
+    with pytest.raises(ValueError, match="opportunity-event identity mismatch"):
+        summarize_correctness((b0, b4))
+
+
 def test_metric_scope_is_fixed_by_canonical_denominator_semantics():
     with pytest.raises(ValueError, match="EXOGENOUS_PAIRED"):
         _record(
             opportunities=(CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE,),
             opportunity_event_ids=("stale:a1",),
+            opportunity_scopes=(MetricOpportunityScope.POLICY_DERIVED,),
+        )
+
+    with pytest.raises(ValueError, match="EXOGENOUS_PAIRED"):
+        _record(
+            opportunities=(CorrectnessMetric.AMBIGUOUS_COMMIT_RATE,),
+            opportunity_event_ids=("ambiguous:e1",),
             opportunity_scopes=(MetricOpportunityScope.POLICY_DERIVED,),
         )
 
