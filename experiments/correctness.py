@@ -286,7 +286,8 @@ class CorrectnessEvaluationRecord:
     Multi-step decisions such as WAIT -> RETRY -> COMMIT belong in the ordered
     ``policy_decision`` trace of one record. Gate-event arrays are multisets:
     repeated entries preserve multiple denominator/numerator events inside that
-    single operation.
+    single operation. Gate opportunities are policy-specific because some
+    denominators depend on behavior (for example, actual State consumptions).
     """
 
     cohort_id: str
@@ -610,12 +611,18 @@ class CorrectnessSummary:
 
 
 def _paired_invariant_signature(record: CorrectnessEvaluationRecord) -> tuple[Any, ...]:
+    """Policy-independent cohort facts only.
+
+    Metric opportunities are deliberately excluded because some canonical Gate
+    denominators depend on policy behavior (for example, actual State
+    consumptions or completed LogicalRequests).
+    """
+
     return (
         record.scenario_id,
         record.fault_id,
         record.fault_class,
         record.ground_truth_json,
-        record.metric_opportunities,
     )
 
 
@@ -661,8 +668,8 @@ def _validate_paired_cohorts(
         if len({_paired_invariant_signature(record) for record in group}) != 1:
             raise ValueError(
                 "paired cohort operation metadata mismatch for "
-                f"{operation_key}; scenario/fault/ground-truth/opportunities "
-                "must be invariant across policies"
+                f"{operation_key}; scenario/fault/ground-truth must be invariant "
+                "across policies"
             )
     return policy_ids
 

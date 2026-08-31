@@ -15,8 +15,10 @@ from experiments.correctness import (
 from simulator.policies import PolicyID
 
 
-def _rate(summary, metric: CorrectnessMetric):
-    policy_summary = summary.policy_summaries[0]
+def _rate(summary, metric: CorrectnessMetric, policy_id: PolicyID = PolicyID.B4):
+    policy_summary = next(
+        item for item in summary.policy_summaries if item.policy_id is policy_id
+    )
     return next(rate for rate in policy_summary.rates if rate.metric is metric)
 
 
@@ -141,32 +143,46 @@ def test_gate_violation_event_count_cannot_exceed_matching_opportunity_count():
         )
 
 
-def test_paired_cohort_compares_gate_opportunity_multiplicity_not_just_presence():
-    metric = CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE
+def test_behavior_dependent_gate_opportunities_may_differ_across_paired_policies():
+    metric = CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE
     common = dict(
         cohort_id="cohort",
-        trial_id="paired-cardinality",
+        trial_id="paired-behavior",
         operation_id="operation",
-        scenario_id="S1-attempt-fencing",
+        scenario_id="S2-state-lineage",
         validation_level=ValidationEvidenceLevel.EV0_DETERMINISTIC_SEMANTICS,
         evidence_provenance=ResultEvidenceProvenance.SYNTHETICALLY_GENERATED,
-        ground_truth={"current_attempt": "a2"},
-        observed_evidence={"late_attempt": "a1"},
-        policy_decision={"trace": [{"action": "EVALUATE"}]},
-        semantic_result=SemanticResult(True, True, True),
+        ground_truth={"presented_state_compatible": False},
         fault_id="fault",
-        fault_class="LATE_SUPERSEDED_ATTEMPT",
+        fault_class="WRONG_SIBLING_STATE_PRESENTED",
     )
     b0 = CorrectnessEvaluationRecord.create(
         policy_id=PolicyID.B0,
-        metric_opportunities=(metric, metric),
+        observed_evidence={"state": "wrong-sibling"},
+        policy_decision={"trace": [{"action": "CONSUME"}]},
+        semantic_result=SemanticResult(True, True, False),
+        metric_opportunities=(metric,),
+        metric_violations=(metric,),
         **common,
     )
     b4 = CorrectnessEvaluationRecord.create(
         policy_id=PolicyID.B4,
-        metric_opportunities=(metric,),
+        observed_evidence={"state": "wrong-sibling"},
+        policy_decision={"trace": [{"action": "REJECT"}, {"action": "RECOMPUTE"}]},
+        semantic_result=SemanticResult(
+            True,
+            True,
+            True,
+            recovery_actions=(RecoveryAction.RECOMPUTE,),
+        ),
+        metric_opportunities=(),
+        metric_violations=(),
         **common,
     )
 
-    with pytest.raises(ValueError, match="metadata mismatch"):
-        summarize_correctness((b0, b4))
+    summary = summarize_correctness((b0, b4))
+    b0_rate = _rate(summary, metric, PolicyID.B0)
+    b4_rate = _rate(summary, metric, PolicyID.B4)
+
+    assert (b0_rate.numerator, b0_rate.denominator, b0_rate.rate) == (1, 1, 1.0)
+    assert (b4_rate.numerator, b4_rate.denominator, b4_rate.rate) == (0, 0, None)
