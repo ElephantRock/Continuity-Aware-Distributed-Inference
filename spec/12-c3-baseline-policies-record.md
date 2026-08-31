@@ -52,6 +52,8 @@ and to prevent two invalid comparisons:
 
 The projection boundary is therefore part of the experimental method, not merely an implementation convenience.
 
+The contract registry itself is immutable after import. A policy process cannot expand another baseline's information privileges by mutating the shared registry at runtime.
+
 ---
 
 # 3. Canonical Information Fields
@@ -63,6 +65,7 @@ logical_request_id
 attempt_id
 attempt_authority
 session_id
+session_preferred_location
 continuation_id
 continuation_ancestry
 state_candidate_key
@@ -83,6 +86,8 @@ The schema identifier is:
 ```text
 cadi.policy-information-contract.v1
 ```
+
+Set-like observation fields are canonicalized at the interface boundary: worker observations are sorted by WorkerID; Continuation ancestry and State-location tuples must be sorted and duplicate-free; State-provenance pairs must have unique keys and canonical ordering. This prevents caller/container order from becoming an accidental policy input.
 
 ---
 
@@ -118,9 +123,12 @@ B1 plus:
 
 ```text
 session_id
+session_preferred_location
 ```
 
-Session identity may influence preferred placement. Sibling branches remain in the same Session and B2 does not receive Continuation ancestry.
+The explicit preferred-location field is required by the canonical Experimental Plan definition of B2 (`SessionID` plus preferred previous location). Without it, a competent session-affinity implementation would have to smuggle prior location through an unrelated field or maintain an undeclared privileged side channel.
+
+Sibling branches remain in the same Session. B2 does not receive Continuation ancestry or producer-Attempt authority.
 
 ## B3 — State-Aware
 
@@ -250,15 +258,30 @@ This behavior is intentionally simple but competent within the B0 abstraction.
 
 ---
 
-# 8. C3.1 Test Obligations
+# 8. Bounded C3.1 Review Findings
+
+Three substantive contract defects were identified before finalizing the C3.1 candidate:
+
+1. `INFORMATION_CONTRACTS` was initially backed by a mutable dictionary despite being typed as `Mapping`, permitting runtime privilege mutation. It is now exposed through an immutable mapping proxy and mutation is regression-tested.
+2. set-like observation fields initially accepted arbitrary caller ordering, allowing future policies to become dependent on incidental container order. Canonical uniqueness/order validation is now enforced and regression-tested.
+3. B2 initially received `SessionID` but no explicit preferred previous location, contradicting the canonical B2 information model. `session_preferred_location` is now a first-class information field available to B2/B4 and hidden from B0/B1/B3.
+
+These changes strengthen baseline fairness without implementing any B1–B4 ranking behavior.
+
+---
+
+# 9. C3.1 Test Obligations
 
 `tests/simulator/test_policies.py` requires:
 
 ```text
 exact B0–B4 contract registry
+immutable contract registry
+canonical ordering for set-like observations
 B0 contract contains request identity + resource/load only
-B2 receives Session identity
-B3 receives exact StateID/location but not Continuation ancestry or producer Attempt
+B2 receives Session identity + preferred previous location
+B2 does not receive Continuation ancestry
+B3 receives exact StateID/location but not Session affinity, Continuation ancestry, or producer Attempt
 B4 receives the complete field vocabulary
 B0 PolicyView structurally omits privileged attributes
 forbidden field access fails explicitly
@@ -271,7 +294,7 @@ B0 decisions are invariant to changes in all hidden Continuity metadata
 
 ---
 
-# 9. Staged C3 Plan
+# 10. Staged C3 Plan
 
 ```text
 C3.1  information contracts + common interface + B0
@@ -285,13 +308,16 @@ Every later slice must preserve the information contracts established here unles
 
 ---
 
-# 10. C3.1 Exit Gate
+# 11. C3.1 Exit Gate
 
 C3.1 may close only when:
 
 ```text
 machine-readable B0–B4 contracts exist
 projection boundary is enforced
+contract registry is immutable
+set-like observation ordering is canonical
+B2 can receive its declared preferred prior location without a side channel
 B0 is deterministic and load-aware
 B0 cannot observe privileged Continuity fields
 full repository tests pass on Python 3.11
