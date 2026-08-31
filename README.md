@@ -11,8 +11,9 @@
 - **C1 closure review:** fifteen substantive Codex correctness/consistency findings plus two independent closure-audit findings fixed and regression-tested; all review threads resolved
 - **Final Codex rerun:** requested on the prior exact head but unavailable because the GitHub Codex integration reached its code-review usage limit; this is recorded as a tooling/quota limitation, not a successful review
 - **C2 Discrete-Event Simulator:** **CLOSED** — C2.1 event kernel via PR #14 / `f4e854fa930b09c27d2ea2bea9ecbca04b7ff00d`; C2.2 resource model via PR #15 / `9c2c3f0801bca9abf165bf626970c2e9d8fa7d5e`; C2.3 semantic adapter via PR #16 / `e1ff3e7c3f63a12755d519b6061ad7fc2feecfb6`; C2.4 deterministic/probabilistic fault injection via PR #28 / `f33b82d0802cfc97835049e274b288e06f87d369`; C2.5 workload/failure representability via PR #30 / `462e63685500e022a97386618ba606f1384d1c56`
-- **Current repository validation:** 278 tests passing on Python 3.11, 3.12, and 3.13 at the reviewed C2.5 head `a03ab77afd481005521e1cecacc5f25228ff1e29`
-- **Next implementation milestone:** C3 — baseline policies B0–B4 against identical C2 workload/fault interfaces
+- **C3 Baseline Policies:** **CLOSED** — B0 Request-Centric via PR #34 / `b17e03867004ed0dc51aa821cbe10e98a888aebb`; B1 Cache-Aware via PR #36 / `d0742284de450b86ae98db4f52ea993e90d5f8e7`; B2 Session-Affinity via PR #38 / `b2a13e3bc372449fc5cd3bc8e5b925f7983d991e`; B3 State-Aware via PR #40 / `1ce103ab0805fa81a4da4c9c4cc708475a891bd6`; B4 Continuity-Aware + paired-interface closure via PR #42 / `ffa1ebb8a2aec63221252152c65069eef653259c`
+- **Current repository validation:** 327 tests passing on Python 3.11, 3.12, and 3.13 at the exact reviewed C3.5 head `5d42dcd93842664034698180854ccd5b6877d0a6`; clean automated re-review reported no major issues before merge
+- **Next implementation milestone:** C4 — correctness evaluation over the normalized fault/workload catalogue and the closed B0–B4 policy set
 
 The repository is the canonical system of record for the project.
 
@@ -77,7 +78,7 @@ The closed C2 substrate now includes:
 - post-operation C1 fingerprints plus invariant-oracle validation at the adapter boundary;
 - authoritative C1/C2 equivalence for the canonical Attempt timeout/retry/finalization race;
 - exact immutable Evidence identity across reordered duplicate delivery;
-- causal observation-time fencing; and
+- causal observation-time fencing;
 - retry scheduling whose semantic result depends on simulated delivery order rather than host/Python setup order;
 - policy-neutral deterministic delivery/resource fault transformations and explicit cross-layer Attempt/State fault injectors;
 - FaultID → semantic/resource outcome linkage with fail-closed `INVARIANT_VIOLATION` precedence;
@@ -85,18 +86,36 @@ The closed C2 substrate now includes:
 - an independent `FaultTrustOracle` with strict FaultRecord JSON/JSONL validation, adversarial malformed/tampered metadata coverage, transformation-graph checks, runtime/resource observation checks, C1 invariant integration, and campaign-consistency validation;
 - an exact 24-entry representability registry for W1–W10 plus normalized FTR1–FTR14 under stable semantic scenario names;
 - canonical schedule and executed-trace fingerprints with exact same-seed replay checks;
-- explicit normalized FTR→C1 semantic provenance, including the pre-normalization C1 test-number mapping; and
+- explicit normalized FTR→C1 semantic provenance, including the pre-normalization C1 test-number mapping;
 - C1↔C2 authoritative-equivalence assertions for the adapter-supported FTR1–FTR3 execution traces, without adding a second State/Binding semantic implementation.
 
-C2 is closed. Baseline policy implementation and comparison begin at C3.
+## C3 baseline-policy reference
+
+The closed C3 policy layer now includes:
+
+- machine-readable information contracts for B0–B4 under `cadi.policy-information-contract.v2`;
+- B0 deterministic normalized-load routing;
+- B1 candidate-key-scoped cache locality with exact B0 fallback ordering;
+- B2 SessionID-scoped preferred-location affinity with exact B1 fallback ordering;
+- B3 exact StateID/location awareness without Continuation ancestry, producer-Attempt authority, Binding/Evidence authority, or reconciliation semantics;
+- B4 Program/Session/Continuation/LogicalRequest/Attempt/State/Binding/Evidence/Reconciliation visibility through the declared contract;
+- read-only C1 delegation for authoritative current-Attempt checks and State compatibility;
+- attempt fencing before physical placement;
+- compatible-State locality only after `MATCHED` reconciliation and C1 compatibility;
+- deterministic lifecycle-aware retention classes over ACTIVE / WAITING / SPECULATIVE / TERMINAL;
+- fail-closed migration eligibility while actual migration commit remains C1-authoritative;
+- one paired B0–B4 placement harness over the same immutable `PolicyObservation`, with independent per-policy projection and policy-ID registration validation;
+- explicit regression coverage for wrong-sibling State, stale Attempt observations, candidate-only locality, positional contract compatibility, and malformed paired-policy registration.
+
+C1, C2, and C3 are closed. Correctness evaluation begins at C4 without redefining their merged semantic, simulator, or policy boundaries.
 
 ## Repository layout
 
 ```text
 spec/               canonical research specification, coverage registry, milestone records
 continuity/         deterministic semantic kernel, serialization, replay
-simulator/          deterministic C2 event/resource/semantic-adapter substrate
-tests/              invariant, failure-trace, replay, simulator, and adversarial tests
+simulator/          deterministic C2 event/resource/semantic-adapter and C3 policy substrate
+tests/              invariant, failure-trace, replay, simulator, policy, and adversarial tests
 .github/workflows/  reproducibility / CI
 ```
 
@@ -107,7 +126,7 @@ python -m pip install pytest
 python -m pytest
 ```
 
-C1 deliberately excludes queueing, networking, accelerator timing, public-trace ingestion, and performance simulation. Those concerns enter at C2 and later milestones without redefining the merged C1 semantics. C2 itself still does not provide calibrated accelerator cost evidence; performance calibration remains a later milestone.
+C1 deliberately excludes queueing, networking, accelerator timing, public-trace ingestion, and performance simulation. Those concerns enter at C2 and later milestones without redefining the merged C1 semantics. C2 and C3 still do not provide calibrated accelerator cost evidence; performance calibration remains a later milestone.
 
 ## Research discipline
 
