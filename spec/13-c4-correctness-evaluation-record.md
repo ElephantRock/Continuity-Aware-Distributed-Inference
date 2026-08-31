@@ -1,34 +1,19 @@
 # 13 — C4 Correctness Evaluation
-## Implementation Record
+## C4.1 Implementation Record
 
 **Project:** Continuity-Aware Distributed Inference  
 **Milestone:** C4 — Correctness Evaluation / Gate G1  
 **Prerequisite:** C3 CLOSED at `950dbb2303a49482e27ee09468717102eec8b0f0`  
-**Tracking:** #44 / C4.1 #45  
-**Status:** IN PROGRESS — C4.1 correctness-evaluation contract candidate
+**Tracking:** #44 / #45 / PR #46  
+**Status:** IN PROGRESS — C4.1 final review candidate
 
 ---
 
-# 1. C4 purpose
+# 1. Purpose and non-negotiable boundary
 
-C4 evaluates whether the closed C1/C2/C3 system exhibits the correctness distinction required by Gate G1. It uses systematic adversarial fault injection over the already-representable workload/failure corpus without redefining semantic authority, fault semantics, or baseline information privileges.
+C4 evaluates the closed C1/C2/C3 stack. It does not redefine semantic authority, fault semantics, or policy information privileges.
 
-The measurement boundary preserves:
-
-```text
-ground truth != policy-visible observation
-explicit non-success != silent semantic error
-```
-
-The primary safety question is whether Continuity prevents silent incorrect outcomes while making availability costs explicit.
-
----
-
-# 2. Independent experimental ground truth
-
-The Experimental Plan requires an oracle containing at minimum the true Program, Session, Continuation graph, active Attempt, State origin and compatibility, physical replicas, Binding epoch, injected fault, and semantic outcome.
-
-For every evaluated policy decision the harness must preserve:
+The Experimental Plan requires four distinct views for evaluated policy behavior:
 
 ```text
 ground_truth
@@ -37,21 +22,24 @@ policy_decision
 semantic_result
 ```
 
-The policy under test does not automatically receive `ground_truth`.
+The first is an independent experimental oracle. It is not automatically exposed to the policy under test.
 
-C4.1 fixes the aggregation unit more narrowly than an individual scheduling call: one `CorrectnessEvaluationRecord` represents one complete correctness-sensitive **operation** under one policy. If that operation requires multiple decisions, such as:
+C4 preserves two distinctions throughout:
 
 ```text
-WAIT -> RETRY -> COMMIT
+ground truth != policy-visible observation
+explicit non-success != silent semantic error
 ```
 
-those decisions are stored as an ordered trace inside `policy_decision`. They are not emitted as separate correctness rows, because the Failure Model denominator is `TotalFaultedOperations`, not total scheduler/reconciliation decisions.
+This is measurement infrastructure. It must not manufacture a correctness advantage for B4 by changing baseline capabilities, opportunity sets, denominator units, or evidence labels.
 
 ---
 
-# 3. Paired cohort identity
+# 2. Denominator unit: one complete operation
 
-Every operation record carries:
+The Failure Model defines aggregate correctness rates over `TotalFaultedOperations`.
+
+Therefore one `CorrectnessEvaluationRecord` represents one complete correctness-sensitive **operation** under one policy, identified by:
 
 ```text
 cohort_id
@@ -60,20 +48,41 @@ operation_id
 policy_id
 ```
 
-`cohort_id + trial_id + operation_id` is the policy-independent denominator identity. For a paired comparison, the same operation identity must exist for every policy included in the summary.
+A multi-step recovery path such as:
 
-Across policies for the same operation, the following are required to match exactly:
+```text
+WAIT -> RETRY -> COMMIT
+```
+
+is one operation. Its ordered decision sequence belongs inside the `policy_decision` trace. It must not be emitted as three correctness rows.
+
+Duplicate:
+
+```text
+(policy_id, cohort_id, trial_id, operation_id)
+```
+
+identities are rejected before aggregation.
+
+This prevents scheduler/reconciliation decision count from inflating the faulted-operation denominator.
+
+---
+
+# 3. Paired cohort integrity
+
+For any multi-policy summary, every policy included in the comparison must have exactly the same operation keys.
+
+For the same `cohort_id + trial_id + operation_id`, the following are policy-independent and must match:
 
 ```text
 scenario_id
-fault_id / fault_class
-validation_level
-evidence_provenance
+fault_id
+fault_class
 ground_truth
 metric_opportunities
 ```
 
-The following may differ because they are policy-specific observations/outcomes:
+The following are policy-specific and may differ:
 
 ```text
 observed_evidence
@@ -82,23 +91,24 @@ semantic_result
 metric_violations
 ```
 
-A paired summary rejects:
+A summary rejects:
 
-- a policy-specific subset of operations;
-- mismatched scenario/fault identity;
-- mismatched ground truth;
-- mismatched metric opportunities;
-- duplicate `(policy_id, cohort_id, trial_id, operation_id)` rows.
+- policy-specific operation subsets;
+- mismatched scenario or fault identity;
+- mismatched independent ground truth;
+- mismatched metric opportunity sets.
 
-This prevents a policy from receiving an easier/narrower correctness cohort while still being displayed as directly comparable.
+A single-policy summary remains valid for implementation checks or pilot evidence, but it is not itself a paired B0–B4 comparison.
 
-A single-policy summary remains valid for implementation checks or pilot analysis, but it is not itself a paired B0–B4 comparison.
+This makes the opportunity denominator an invariant of the experiment cohort rather than a property a policy can select after the fact.
 
 ---
 
-# 4. Evaluation evidence terminology
+# 4. Evidence terminology
 
-Gate G0 required methodological validation levels to be distinct from runtime `Evidence` semantics. The normalized validation hierarchy is represented as:
+Gate G0 normalized methodological validation levels separately from runtime semantic `Evidence`.
+
+C4.1 represents the validation hierarchy as:
 
 ```text
 EV0  deterministic semantics
@@ -108,7 +118,7 @@ EV3  calibrated simulation
 EV4  optional accelerator measurement
 ```
 
-The Research Thesis separately requires concrete result provenance:
+The Research Thesis separately requires result provenance labels:
 
 ```text
 MEASURED
@@ -119,18 +129,22 @@ ANALYTICALLY_DERIVED
 ESTIMATED
 ```
 
-C4.1 models these as two orthogonal fields:
+The machine-readable record therefore has two independent fields:
 
 ```text
 validation_level
 evidence_provenance
 ```
 
-They must not be collapsed. Runtime `Evidence` authority/status/freshness remains the closed C1 semantic concept and is not reused as methodological evidence terminology.
+A `CorrectnessSummary` is restricted to exactly one `(validation_level, evidence_provenance)` stratum and serializes both fields into the summary artifact and fingerprint.
+
+Mixed strata are rejected rather than silently pooled. Thus an EV1/MEASURED result cannot become indistinguishable from an EV3/ESTIMATED result with the same numeric counts.
+
+Runtime C1 `Evidence` authority/status/freshness is a different semantic concept and is not renamed or reused here.
 
 ---
 
-# 5. Failure outcome classification
+# 5. Failure outcome classes
 
 The Failure Model requires every faulted operation to be classified as:
 
@@ -160,30 +174,32 @@ reported success + correct + no recovery action
 reported success + correct + RETRY/RECOMPUTE/MIGRATION/REPAIR
     -> O2
 
-WAIT/FAIL/AMBIGUOUS/REJECT without authoritative commit
+WAIT/FAIL/AMBIGUOUS/REJECT with no authoritative commit
     -> O3
 
 reported success + incorrect authoritative commit
     -> O4
 ```
 
-An explicit non-success cannot simultaneously commit authoritative semantic state. A claimed silent semantic violation must include an authoritative commit.
+An explicit non-success cannot simultaneously commit authoritative semantic state.
 
-O1–O4 are **fault outcome classes**, so summary counts are computed over faulted operations only. Controls remain visible in `operation_count` but do not contribute to O1–O4 counts.
+A claimed silent semantic violation must include an authoritative commit.
+
+O1–O4 counts are computed over **faulted operations only**. Controls remain visible in total `operation_count` but do not enter failure-outcome counts.
 
 ---
 
-# 6. Gate G1 correctness metrics
+# 6. Correctness metrics and explicit opportunity denominators
 
-The six Gate G1 safety metrics are:
+Gate G1 uses six safety rates:
 
 ```text
-Stale Attempt Acceptance Rate
-Wrong-Branch Reuse Rate
-Wrong-State Consumption Rate
-Silent Binding Divergence Rate
-Ambiguous Commit Rate
-Duplicate Finalization Rate
+Stale Attempt Acceptance Rate      (SAAR)
+Wrong-Branch Reuse Rate            (WBRR)
+Wrong-State Consumption Rate       (WSCR)
+Silent Binding Divergence Rate     (SBDR)
+Ambiguous Commit Rate              (ACR)
+Duplicate Finalization Rate        (DFR)
 ```
 
 C4.1 also derives:
@@ -194,13 +210,9 @@ Explicit Non-Success Rate
 Recovery Rate
 ```
 
-For B4, Gate G1 ultimately requires the six safety rates to be zero for covered modeled failure classes. C4.1 produces no favorable or unfavorable research result; it fixes how later results are counted.
+Each Gate metric has an explicit `metric_opportunities` denominator.
 
----
-
-# 7. Denominator semantics
-
-Each Gate G1 metric records an explicit opportunity denominator. If no opportunity has been evaluated:
+If no opportunity was evaluated:
 
 ```text
 numerator   = 0
@@ -210,9 +222,12 @@ rate        = null
 
 not `rate = 0`.
 
-Gate-metric opportunities require a faulted operation.
+A Gate metric violation must:
 
-The three Failure Model aggregate rates use faulted operations only:
+1. have a matching declared opportunity; and
+2. correspond to an O4 silent semantic violation.
+
+The Failure Model aggregate rates use faulted operations only:
 
 ```text
 SSER = O4 / TotalFaultedOperations
@@ -220,41 +235,9 @@ ExplicitNonSuccessRate = O3 / TotalFaultedOperations
 RecoveryRate = (O1 + O2) / TotalFaultedOperations
 ```
 
-Because each record is one complete operation and duplicate operation identities are rejected, a multi-decision recovery sequence cannot inflate `TotalFaultedOperations`.
-
 ---
 
-# 8. Canonical record and reproducibility
-
-`CorrectnessEvaluationRecord` is immutable and contains:
-
-```text
-cohort_id
-trial_id
-operation_id
-policy_id
-scenario_id
-fault_id / fault_class
-validation_level
-evidence_provenance
-ground_truth
-observed_evidence
-policy_decision
-semantic_result
-outcome_class
-metric_opportunities
-metric_violations
-```
-
-The experimental views are copied into canonical JSON at record construction. Consequences:
-
-- later mutation of caller-owned dictionaries cannot rewrite recorded ground truth;
-- mapping insertion order cannot change a fingerprint;
-- non-finite numeric values are rejected;
-- duplicate metric entries are rejected;
-- a violation cannot be counted without a matching opportunity;
-- record JSON round-trips through a schema check;
-- serialized `outcome_class` must agree with the semantic result.
+# 7. Fail-closed serialization
 
 Schema:
 
@@ -262,15 +245,46 @@ Schema:
 cadi.correctness-evaluation.v1
 ```
 
-Records and summaries expose stable SHA-256 fingerprints over canonical JSON.
+The canonical serializer always emits the complete record field set.
+
+The deserializer therefore requires the exact v1 field set. Missing or misspelled safety fields are rejected; they are never defaulted to a safe value.
+
+In particular, omission of:
+
+```text
+metric_violations
+```
+
+cannot silently become:
+
+```text
+metric_violations = []
+```
+
+Likewise, `SemanticResult` deserialization requires its complete canonical field set.
+
+The record additionally:
+
+- snapshots ground truth / observed evidence / policy decision into canonical JSON;
+- rejects non-finite numeric data;
+- validates serialized `outcome_class` against `semantic_result`;
+- rejects duplicate metric entries;
+- produces a stable SHA-256 fingerprint over canonical JSON.
 
 ---
 
-# 9. Deterministic aggregation
+# 8. Deterministic aggregation
 
-`summarize_correctness(...)` validates denominator identity and paired cohort integrity before computing rates.
+`summarize_correctness(...)` performs checks in this order:
 
-For every present policy it emits:
+1. require at least one operation record;
+2. reject non-record inputs;
+3. reject duplicate policy/operation identities;
+4. require one evidence stratum;
+5. validate paired operation coverage and invariant metadata;
+6. aggregate each policy in canonical B0→B4 order.
+
+Each policy summary reports:
 
 ```text
 operation_count
@@ -281,38 +295,37 @@ metric denominator
 metric rate
 ```
 
-Policies are emitted in canonical B0→B4 order. Input ordering cannot change the summary fingerprint.
-
-The aggregator is policy-neutral. It does not infer that B4 is correct, does not penalize weaker policies by construction, and does not convert a placement decision into an authoritative semantic result.
-
----
-
-# 10. Baseline fairness and C3 boundary
-
-The C3 information contract remains closed. C4.1 does not:
+The top-level summary records:
 
 ```text
-add fields to B0-B3
-remove ordinary correctness mechanisms from baselines
-change B4 behavior
-change C1 commit semantics
-change C2 scenario/fault semantics
+validation_level
+evidence_provenance
 ```
 
-In particular:
-
-> placement admission is not equivalent to authoritative result acceptance.
-
-S1 must evaluate stale-Attempt authoritative acceptance using an explicit semantic-result experiment rather than counting a B0–B3 placement as a stale finalization.
-
-If competent simpler baselines independently provide equivalent result fencing, H1 must be narrowed rather than weakened baselines being manufactured.
+so the summary fingerprint is evidence-sensitive.
 
 ---
 
-# 11. Planned C4 slices
+# 9. Baseline fairness and H1 boundary
+
+C4.1 does not change the closed C3 information contract and does not remove ordinary correctness mechanisms from B0–B3.
+
+A critical S1 rule is:
+
+> placement admission is not authoritative result acceptance.
+
+S1 must measure whether a stale Attempt can authoritatively finalize or otherwise be accepted as the current LogicalRequest result. It must not count a weaker baseline merely scheduling stale physical work as stale authoritative acceptance.
+
+If competent simpler baselines independently fence stale result acceptance through ordinary correctness mechanisms allowed by their abstraction, H1 must be narrowed rather than those mechanisms being disabled.
+
+Negative or null results remain valid research outcomes.
+
+---
+
+# 10. C4 safety slices
 
 ```text
-C4.1  correctness-evaluation contract / independent oracle records
+C4.1  measurement contract / independent oracle records
 C4.2  S1 Attempt Fencing
 C4.3  S2 State-Lineage Safety
 C4.4  S3 Binding Safety
@@ -320,7 +333,7 @@ C4.5  S4 Evidence Safety
 C4.6  S5 Idempotence / Ordering + Gate G1 closure
 ```
 
-The series maps to:
+Canonical metric mapping:
 
 ```text
 S1 -> SAAR, DFR
@@ -332,53 +345,61 @@ S5 -> DFR, invariant violations, semantic-state equivalence
 
 ---
 
-# 12. C4.1 bounded-review findings
+# 11. Bounded-review findings resolved before merge
 
-Four substantive measurement-contract defects were found before merge:
+Six substantive measurement-integrity findings were found during C4.1 review:
 
-1. **Evaluation evidence conflation.** The first candidate collapsed EV0–EV4 validation level and result provenance into one enum and omitted `ESTIMATED`. The repaired contract models the two dimensions independently.
-2. **Decision rows could inflate operation denominators.** The first candidate counted every record carrying a fault ID as one faulted operation even though an operation can require multiple policy decisions. The repaired contract introduces explicit `operation_id` and defines one record as one complete operation; multi-step decision sequences stay inside `policy_decision`.
-3. **Policy cohorts could be mismatched.** The first candidate allowed B4 to be summarized over a narrower/easier set of trials or different ground truth/opportunities than comparison policies. The repaired aggregator validates exact paired operation coverage and invariant metadata across policies.
-4. **Controls contaminated O1–O4 counts.** The first candidate counted controls in failure-outcome classes. The repaired summary computes O1–O4 over faulted operations only and requires the counts to sum to `faulted_operation_count`.
+1. **Validation/provenance conflation.** The first candidate collapsed EV0–EV4 validation level and result provenance into one enum and omitted `ESTIMATED`. Fixed by orthogonal machine-readable fields.
+2. **Decision rows could inflate faulted-operation denominators.** Fixed by explicit operation identity and one record per complete operation.
+3. **Paired policy cohorts could differ.** Fixed by exact operation coverage plus invariant scenario/fault/ground-truth/opportunity checks across compared policies.
+4. **Controls contaminated O1–O4 counts.** Fixed by restricting O-class counts to faulted operations.
+5. **Summary artifacts could hide mixed evidence strata.** Fixed by rejecting mixed `(validation_level, evidence_provenance)` summaries and serializing the stratum into the summary/fingerprint.
+6. **Missing violation arrays could default to safe.** Fixed by exact-schema deserialization; absent or misspelled `metric_violations` is rejected.
 
-All findings require regression coverage before C4.1 can close.
+The final candidate must retain regression coverage for all six findings.
 
 ---
 
-# 13. C4.1 test obligations
+# 12. C4.1 test obligations
 
-C4.1 tests must prove at minimum:
+The C4.1 tests require at minimum:
 
 ```text
-O1/O2/O3/O4 classification is deterministic
-explicit non-success is not counted as SSER
+O1/O2/O3/O4 deterministic classification
+explicit non-success is not SSER
 Gate metrics use explicit opportunity denominators
-zero-opportunity rates remain null
-controls do not inflate fault denominators or O1-O4 counts
-EV0-EV4 validation levels are complete
-result provenance includes measured/simulated/trace-derived/synthetic/analytic/estimated
+zero opportunity => null rate, not zero
+controls do not inflate fault denominators or O counts
+EV0-EV4 vocabulary is complete
+result provenance includes MEASURED/SIMULATED/TRACE_DERIVED/SYNTHETICALLY_GENERATED/ANALYTICALLY_DERIVED/ESTIMATED
 validation level and provenance serialize independently
 one operation cannot be split into multiple denominator rows
 paired cohorts reject policy-specific operation subsets
 paired cohorts reject mismatched ground truth/opportunities
-canonical fingerprints ignore mapping insertion order
-record construction snapshots mutable caller input
-record JSON round-trips with schema checking
+mixed validation levels are rejected in one summary
+mixed result provenance is rejected in one summary
+summary serialization/fingerprint preserves evidence stratum
+missing metric_violations is rejected
+misspelled metric_violations is rejected
+Gate violations require O4
+canonical record fingerprints ignore mapping insertion order
+record construction snapshots caller-owned mappings
+record JSON round-trips with strict schema checking
 tampered outcome classification is rejected
-metric violations require matching opportunities
-Gate metric opportunities require a faulted operation
+violations require matching opportunities
+Gate opportunities require a faulted operation
 non-finite record data is rejected
 single-policy pilot summaries remain possible
-paired policy summaries are emitted in canonical B0-B4 order
+paired summaries use canonical policy order
 ```
 
 All pre-existing C1/C2/C3 tests remain regression obligations.
 
 ---
 
-# 14. Gate G1 boundary
+# 13. Gate G1 boundary
 
-For B4 under covered modeled failures:
+For B4 under covered modeled failures, Gate G1 targets:
 
 ```text
 SAAR = 0
@@ -398,23 +419,24 @@ Recomputation Rate = 0
 
 Safety and availability remain separate.
 
-C4 is not closed merely because B4 reaches zero. The research gate also requires a defensible correctness distinction from simpler competent baselines. If simpler baselines independently supply equivalent mechanisms, the corresponding novelty claim must be narrowed rather than hidden.
+C4 does not close merely because B4 reaches zero. The gate also requires a defensible correctness distinction from simpler competent abstractions. If the distinction is absent for a claimed failure class, the claim must be narrowed.
 
 ---
 
-# 15. C4.1 exit criterion
+# 14. C4.1 exit criterion
 
-C4.1 may close when:
+C4.1 closes only when:
 
-1. the machine-readable evaluation schema is merged;
-2. ground truth and policy-visible observations remain separate records;
-3. validation hierarchy and result provenance remain separate evidence dimensions;
-4. each aggregate row has explicit cohort/trial/operation identity;
-5. paired policy cohorts are integrity-checked before comparison;
+1. `cadi.correctness-evaluation.v1` is merged;
+2. independent ground truth remains distinct from policy-visible observation;
+3. denominator units are complete operations, not decision rows;
+4. paired policy cohorts are integrity-checked before comparison;
+5. evidence strata are explicit and cannot be silently mixed;
 6. O1–O4 and all Gate G1 metrics are represented;
-7. denominator semantics distinguish zero violations from zero coverage and decisions from operations;
-8. deterministic serialization/fingerprints are regression-tested;
-9. existing C1/C2/C3 tests remain green on Python 3.11, 3.12, and 3.13;
-10. bounded review finds no remaining measurement rule that can manufacture a correctness advantage.
+7. zero coverage is distinguishable from zero violations;
+8. persisted safety fields fail closed on omission/corruption;
+9. deterministic serialization/fingerprints are regression-tested;
+10. the full repository suite passes on Python 3.11, 3.12, and 3.13;
+11. a final exact-head bounded review finds no remaining rule capable of manufacturing a correctness advantage.
 
-After C4.1 closes, C4.2 may implement S1 Attempt Fencing experiments against this fixed measurement contract.
+After C4.1 closes, C4.2 may begin S1 Attempt Fencing against this fixed measurement contract.
