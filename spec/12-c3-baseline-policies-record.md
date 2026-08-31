@@ -188,13 +188,7 @@ observed Attempt authority == CURRENT
 C1 attempt_current(LogicalRequestID, AttemptID) == true
 ```
 
-Otherwise the policy returns:
-
-```text
-ATTEMPT_FENCED
-```
-
-with no worker ranking.
+Otherwise the policy returns `ATTEMPT_FENCED` with no worker ranking.
 
 This prevents a stale observation that still claims `CURRENT` from overriding C1 authority after a retry has superseded that Attempt.
 
@@ -212,15 +206,7 @@ C1 state_compatible(...) == true
 at least one declared State location is available
 ```
 
-Then B4 ranks:
-
-```text
-compatible exact-State-local workers
-        before
-remote workers
-```
-
-with the shared B0 load key inside each class.
+Then B4 ranks compatible exact-State-local workers before remote workers, with the shared B0 load key inside each class.
 
 If reconciliation is not matched or C1 reports incompatibility, B4 fails closed to load/recomputation routing rather than consuming the attractive State. This creates the intended executable B3↔B4 distinction for later H2 evaluation.
 
@@ -257,35 +243,28 @@ Actual migration commit, epoch fencing, Evidence sufficiency, old-binding supers
 
 `build_baseline_policies(...)` constructs exactly B0–B4.
 
-`decide_paired_placements(...)` requires exactly those five policies and executes them in canonical B0→B4 order against the **same immutable `PolicyObservation`**. Each policy independently receives its own `PolicyView` projection.
+`decide_paired_placements(...)` requires exactly those five keys, verifies that each mapped policy's own `policy_id` matches its key, and executes the policies in canonical B0→B4 order against the **same immutable `PolicyObservation`**. Each policy independently receives its own `PolicyView` projection.
 
-This is the C3 paired-interface boundary intended for C4/C6 experiments.
+This prevents duplicate or misregistered policy instances from silently invalidating a paired comparison.
 
 ---
 
 # 5. C3.5 bounded review findings
 
-Three substantive issues were found before finalizing C3.5:
+Four substantive issues were found before finalizing C3.5:
 
 1. **Incomplete B4 information contract.** Schema v1 omitted `program_id`, `state_lifecycle`, and `reconciliation`, despite those concepts being explicitly required by the canonical B4 definition. Schema v2 adds exactly those B4 inputs without expanding B0–B3 privileges.
 2. **Attempt-fencing weakness and ordering.** The first B4 candidate trusted the observed `attempt_authority` and checked worker availability before fencing. B4 now cross-checks the request/Attempt against C1 `attempt_current`, and fencing precedes physical availability.
 3. **PolicyObservation positional compatibility.** The first v2 draft inserted new fields into existing dataclass positions. The fields are now appended at the tail and a regression test proves v1 positional slots retain their original meaning.
+4. **Paired-policy registration integrity.** The first paired harness checked only that mapping keys were B0–B4. It now also verifies every mapped policy exposes the matching `PolicyID`, preventing duplicate or wrong-policy registration from corrupting paired results.
 
-The behavior-bearing candidate after these fixes is:
-
-```text
-cae12c30b4592cfe768803045aa852ca95b111f9
-```
-
-It passed the full repository suite with:
+The final behavior-bearing candidate before documentation synchronization is:
 
 ```text
-326 passed on Python 3.11
-326 passed on Python 3.12
-326 passed on Python 3.13
+50f5653e8a39549bbdac828b8677afea28356db7
 ```
 
-Any later commit in PR #42 is documentation-only and must pass the same three-version matrix before merge.
+The exact final PR head above this behavior-bearing candidate must pass the full Python 3.11 / 3.12 / 3.13 matrix before merge.
 
 ---
 
@@ -309,7 +288,8 @@ lifecycle priority is deterministic across ACTIVE/WAITING/SPECULATIVE/TERMINAL
 migration eligibility requires reconciled declared Binding context
 B4 placement/retention/migration queries do not mutate C1
 paired interface executes exactly B0–B4 over one observation
-equal paired observations produce equal paired decisions
+wrong-ID policy registration is rejected
+identical paired observations produce identical paired decisions
 ```
 
 Existing B0–B3 suites remain regression obligations.
@@ -330,7 +310,7 @@ machine-readable B0–B4 information contracts fixed before evaluation
 B0–B3 privileges unchanged by C3.5 repair
 C1 remains semantic authority
 C2 remains policy-neutral
-paired B0–B4 placement interface exists
+paired B0–B4 placement interface exists and validates policy identity
 full repository tests pass on Python 3.11
 full repository tests pass on Python 3.12
 full repository tests pass on Python 3.13
