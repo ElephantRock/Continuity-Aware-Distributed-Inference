@@ -8,11 +8,12 @@ from experiments.correctness import (
     CORRECTNESS_EVALUATION_SCHEMA,
     CorrectnessEvaluationRecord,
     CorrectnessMetric,
-    EvidenceClass,
     ExplicitNonSuccess,
     OutcomeClass,
     RecoveryAction,
+    ResultEvidenceProvenance,
     SemanticResult,
+    ValidationEvidenceLevel,
     summarize_correctness,
 )
 from simulator.policies import PolicyID
@@ -26,12 +27,15 @@ def _record(
     opportunities: tuple[CorrectnessMetric, ...] = (),
     violations: tuple[CorrectnessMetric, ...] = (),
     faulted: bool = True,
+    validation_level: ValidationEvidenceLevel = ValidationEvidenceLevel.EV0_DETERMINISTIC_SEMANTICS,
+    evidence_provenance: ResultEvidenceProvenance = ResultEvidenceProvenance.SYNTHETICALLY_GENERATED,
 ) -> CorrectnessEvaluationRecord:
     return CorrectnessEvaluationRecord.create(
         trial_id=trial_id,
         policy_id=policy_id,
         scenario_id="FTR1" if faulted else "W1",
-        evidence_class=EvidenceClass.DETERMINISTIC,
+        validation_level=validation_level,
+        evidence_provenance=evidence_provenance,
         ground_truth={
             "active_attempt_id": "a2",
             "state_compatibility": {"x1": False},
@@ -150,13 +154,36 @@ def test_control_trial_does_not_inflate_faulted_outcome_denominators():
     ).denominator == 1
 
 
+def test_validation_level_and_result_provenance_are_orthogonal_and_complete():
+    assert {item.value for item in ValidationEvidenceLevel} == {
+        "EV0", "EV1", "EV2", "EV3", "EV4"
+    }
+    assert {item.value for item in ResultEvidenceProvenance} == {
+        "MEASURED",
+        "SIMULATED",
+        "TRACE_DERIVED",
+        "SYNTHETICALLY_GENERATED",
+        "ANALYTICALLY_DERIVED",
+        "ESTIMATED",
+    }
+
+    record = _record(
+        validation_level=ValidationEvidenceLevel.EV3_CALIBRATED_SIMULATION,
+        evidence_provenance=ResultEvidenceProvenance.ESTIMATED,
+    )
+    payload = record.to_dict()
+    assert payload["validation_level"] == "EV3"
+    assert payload["evidence_provenance"] == "ESTIMATED"
+
+
 def test_canonical_mapping_snapshot_is_detached_and_fingerprint_order_independent():
     ground_truth = {"z": [3, 2, 1], "a": {"epoch": 4}}
     first = CorrectnessEvaluationRecord.create(
         trial_id="trial",
         policy_id=PolicyID.B4,
         scenario_id="FTR9",
-        evidence_class=EvidenceClass.DETERMINISTIC,
+        validation_level=ValidationEvidenceLevel.EV0_DETERMINISTIC_SEMANTICS,
+        evidence_provenance=ResultEvidenceProvenance.SYNTHETICALLY_GENERATED,
         ground_truth=ground_truth,
         observed_evidence={"b": 2, "a": 1},
         policy_decision={"decision": "WAIT"},
@@ -170,7 +197,8 @@ def test_canonical_mapping_snapshot_is_detached_and_fingerprint_order_independen
         trial_id="trial",
         policy_id=PolicyID.B4,
         scenario_id="FTR9",
-        evidence_class=EvidenceClass.DETERMINISTIC,
+        validation_level=ValidationEvidenceLevel.EV0_DETERMINISTIC_SEMANTICS,
+        evidence_provenance=ResultEvidenceProvenance.SYNTHETICALLY_GENERATED,
         ground_truth={"a": {"epoch": 4}, "z": [3, 2, 1]},
         observed_evidence={"a": 1, "b": 2},
         policy_decision={"decision": "WAIT"},
@@ -184,7 +212,7 @@ def test_canonical_mapping_snapshot_is_detached_and_fingerprint_order_independen
     assert first.fingerprint == second.fingerprint
 
 
-def test_evaluation_record_round_trip_preserves_all_four_required_views():
+def test_evaluation_record_round_trip_preserves_all_required_views_and_evidence_dimensions():
     record = _record(
         opportunities=(CorrectnessMetric.DUPLICATE_FINALIZATION_RATE,),
     )
@@ -195,6 +223,8 @@ def test_evaluation_record_round_trip_preserves_all_four_required_views():
     assert restored.observed_evidence == record.observed_evidence
     assert restored.policy_decision == record.policy_decision
     assert restored.semantic_result == record.semantic_result
+    assert restored.validation_level is record.validation_level
+    assert restored.evidence_provenance is record.evidence_provenance
     assert restored.to_dict()["schema"] == CORRECTNESS_EVALUATION_SCHEMA
 
 
@@ -228,7 +258,8 @@ def test_nonfinite_ground_truth_is_rejected_before_serialization():
             trial_id="trial",
             policy_id=PolicyID.B4,
             scenario_id="FTR1",
-            evidence_class=EvidenceClass.DETERMINISTIC,
+            validation_level=ValidationEvidenceLevel.EV0_DETERMINISTIC_SEMANTICS,
+            evidence_provenance=ResultEvidenceProvenance.SYNTHETICALLY_GENERATED,
             ground_truth={"value": float("nan")},
             observed_evidence={},
             policy_decision={},

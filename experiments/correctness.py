@@ -13,14 +13,25 @@ from simulator.policies import PolicyID
 CORRECTNESS_EVALUATION_SCHEMA = "cadi.correctness-evaluation.v1"
 
 
-class EvidenceClass(str, Enum):
-    DETERMINISTIC = "DETERMINISTIC"
-    MEASURED_CPU = "MEASURED_CPU"
-    TRACE_DERIVED = "TRACE_DERIVED"
+class ValidationEvidenceLevel(str, Enum):
+    """Methodological validation hierarchy, normalized by Gate G0."""
+
+    EV0_DETERMINISTIC_SEMANTICS = "EV0"
+    EV1_MEASURED_CPU_DISTRIBUTED = "EV1"
+    EV2_TRACE_DERIVED = "EV2"
+    EV3_CALIBRATED_SIMULATION = "EV3"
+    EV4_OPTIONAL_ACCELERATOR_MEASUREMENT = "EV4"
+
+
+class ResultEvidenceProvenance(str, Enum):
+    """How a concrete result was produced; orthogonal to validation level."""
+
+    MEASURED = "MEASURED"
     SIMULATED = "SIMULATED"
-    SYNTHETIC = "SYNTHETIC"
+    TRACE_DERIVED = "TRACE_DERIVED"
+    SYNTHETICALLY_GENERATED = "SYNTHETICALLY_GENERATED"
     ANALYTICALLY_DERIVED = "ANALYTICALLY_DERIVED"
-    OPTIONAL_GPU_MEASURED = "OPTIONAL_GPU_MEASURED"
+    ESTIMATED = "ESTIMATED"
 
 
 class OutcomeClass(str, Enum):
@@ -81,7 +92,7 @@ def _validate_json_value(value: Any, path: str = "$") -> None:
         if not math.isfinite(value):
             raise ValueError(f"{path} contains a non-finite float")
         return
-    if isinstance(value, list) or isinstance(value, tuple):
+    if isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
             _validate_json_value(item, f"{path}[{index}]")
         return
@@ -216,7 +227,8 @@ class CorrectnessEvaluationRecord:
     trial_id: str
     policy_id: PolicyID
     scenario_id: str
-    evidence_class: EvidenceClass
+    validation_level: ValidationEvidenceLevel
+    evidence_provenance: ResultEvidenceProvenance
     ground_truth_json: str
     observed_evidence_json: str
     policy_decision_json: str
@@ -231,8 +243,10 @@ class CorrectnessEvaluationRecord:
         if not isinstance(self.policy_id, PolicyID):
             raise TypeError("policy_id must be PolicyID")
         _require_id(self.scenario_id, "scenario_id")
-        if not isinstance(self.evidence_class, EvidenceClass):
-            raise TypeError("evidence_class must be EvidenceClass")
+        if not isinstance(self.validation_level, ValidationEvidenceLevel):
+            raise TypeError("validation_level must be ValidationEvidenceLevel")
+        if not isinstance(self.evidence_provenance, ResultEvidenceProvenance):
+            raise TypeError("evidence_provenance must be ResultEvidenceProvenance")
         for value, name in (
             (self.ground_truth_json, "ground_truth_json"),
             (self.observed_evidence_json, "observed_evidence_json"),
@@ -282,7 +296,8 @@ class CorrectnessEvaluationRecord:
         trial_id: str,
         policy_id: PolicyID,
         scenario_id: str,
-        evidence_class: EvidenceClass,
+        validation_level: ValidationEvidenceLevel,
+        evidence_provenance: ResultEvidenceProvenance,
         ground_truth: Mapping[str, Any],
         observed_evidence: Mapping[str, Any],
         policy_decision: Mapping[str, Any],
@@ -296,7 +311,8 @@ class CorrectnessEvaluationRecord:
             trial_id=trial_id,
             policy_id=policy_id,
             scenario_id=scenario_id,
-            evidence_class=evidence_class,
+            validation_level=validation_level,
+            evidence_provenance=evidence_provenance,
             ground_truth_json=_canonical_mapping_json(ground_truth, "ground_truth"),
             observed_evidence_json=_canonical_mapping_json(
                 observed_evidence, "observed_evidence"
@@ -339,7 +355,8 @@ class CorrectnessEvaluationRecord:
             "scenario_id": self.scenario_id,
             "fault_id": self.fault_id,
             "fault_class": self.fault_class,
-            "evidence_class": self.evidence_class.value,
+            "validation_level": self.validation_level.value,
+            "evidence_provenance": self.evidence_provenance.value,
             "ground_truth": self.ground_truth,
             "observed_evidence": self.observed_evidence,
             "policy_decision": self.policy_decision,
@@ -363,7 +380,10 @@ class CorrectnessEvaluationRecord:
             trial_id=value.get("trial_id"),
             policy_id=PolicyID(value.get("policy_id")),
             scenario_id=value.get("scenario_id"),
-            evidence_class=EvidenceClass(value.get("evidence_class")),
+            validation_level=ValidationEvidenceLevel(value.get("validation_level")),
+            evidence_provenance=ResultEvidenceProvenance(
+                value.get("evidence_provenance")
+            ),
             ground_truth=value.get("ground_truth", {}),
             observed_evidence=value.get("observed_evidence", {}),
             policy_decision=value.get("policy_decision", {}),

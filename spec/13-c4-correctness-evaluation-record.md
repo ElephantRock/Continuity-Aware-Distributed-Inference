@@ -11,33 +11,24 @@
 
 # 1. C4 purpose
 
-C4 evaluates whether the closed C1/C2/C3 system exhibits the correctness distinction required by Gate G1.
+C4 evaluates whether the closed C1/C2/C3 system exhibits the correctness distinction required by Gate G1. It uses systematic adversarial fault injection over the already-representable workload/failure corpus without redefining semantic authority, fault semantics, or baseline information privileges.
 
-The canonical C4 objective is systematic adversarial fault injection over the already-representable workload/failure corpus. C4 does not redefine semantic authority, fault semantics, or baseline information privileges.
-
-The primary safety question is whether Continuity prevents **silent incorrect outcomes** while making availability costs explicit.
-
-The C4 measurement boundary therefore preserves:
+The measurement boundary preserves:
 
 ```text
-ground truth
-        !=
-policy-visible observation
+ground truth != policy-visible observation
+explicit non-success != silent semantic error
 ```
 
-and:
-
-```text
-explicit non-success
-        !=
-silent semantic error
-```
+The primary safety question is whether Continuity prevents silent incorrect outcomes while making availability costs explicit.
 
 ---
 
-# 2. Source-backed evaluation contract
+# 2. Independent experimental ground truth
 
-The Experimental Plan requires independent experimental ground truth and, for every evaluated policy decision, records:
+The Experimental Plan requires the harness to maintain an oracle containing at minimum the true Program, Session, Continuation graph, active Attempt, State origin and compatibility, physical replicas, Binding epoch, injected fault, and semantic outcome.
+
+For every evaluated policy decision C4 records four separate views:
 
 ```text
 ground_truth
@@ -46,7 +37,49 @@ policy_decision
 semantic_result
 ```
 
-The Failure Model classifies every faulted operation as:
+The policy under test does not automatically receive the `ground_truth` record. C4.1 provides the immutable record contract; later C4 slices are responsible for populating it from independent experiment/oracle logic rather than from policy-visible fields.
+
+---
+
+# 3. Evaluation evidence terminology
+
+Gate G0 required methodological validation levels to be distinct from the runtime `Evidence` vocabulary. The normalized validation hierarchy is therefore represented separately as:
+
+```text
+EV0  deterministic semantics
+EV1  measured CPU distributed
+EV2  trace-derived
+EV3  calibrated simulation
+EV4  optional accelerator measurement
+```
+
+The Research Thesis separately requires each concrete result to identify how its evidence was produced:
+
+```text
+MEASURED
+SIMULATED
+TRACE_DERIVED
+SYNTHETICALLY_GENERATED
+ANALYTICALLY_DERIVED
+ESTIMATED
+```
+
+C4.1 models these as two orthogonal fields:
+
+```text
+validation_level
+evidence_provenance
+```
+
+They must not be collapsed into one enum. For example, a result can belong to EV3 while its reported quantity is explicitly ESTIMATED or SIMULATED; the record preserves both claims rather than silently upgrading one into the other.
+
+This terminology is methodological. Runtime `Evidence` authority/status/freshness remains the closed C1 semantic concept and is not renamed or reused here.
+
+---
+
+# 4. Failure outcome classification
+
+The Failure Model requires every faulted operation to be classified as:
 
 ```text
 O1  Correct transparent recovery
@@ -55,35 +88,7 @@ O3  Explicit non-success
 O4  Silent semantic violation
 ```
 
-C4.1 implements these concepts as an immutable, serializable experiment record.
-
-No result is inferred from physical locality alone and no policy receives the `ground_truth` record merely because the harness records it.
-
----
-
-# 3. Evidence classes
-
-C4.1 preserves the Experimental Plan result-evidence vocabulary:
-
-```text
-DETERMINISTIC
-MEASURED_CPU
-TRACE_DERIVED
-SIMULATED
-SYNTHETIC
-ANALYTICALLY_DERIVED
-OPTIONAL_GPU_MEASURED
-```
-
-C4 correctness slices begin with deterministic E0 evidence.
-
-Later milestones may reuse the record format for other evidence classes without upgrading the evidentiary strength of a result.
-
----
-
-# 4. Semantic-result classification
-
-`SemanticResult` separates:
+`SemanticResult` records:
 
 ```text
 reported_success
@@ -109,13 +114,11 @@ reported success + incorrect authoritative commit
     -> O4
 ```
 
-An explicit non-success cannot simultaneously commit authoritative semantic state.
-
-A claimed silent semantic violation must include an authoritative commit; otherwise the record is rejected as internally inconsistent.
+An explicit non-success cannot simultaneously commit authoritative semantic state. A claimed silent semantic violation must include an authoritative commit; otherwise the record is internally inconsistent and rejected.
 
 ---
 
-# 5. Gate G1 metrics
+# 5. Gate G1 correctness metrics
 
 The six Gate G1 safety metrics are:
 
@@ -136,17 +139,13 @@ Explicit Non-Success Rate
 Recovery Rate
 ```
 
-For B4, Gate G1 ultimately requires the six safety rates to be zero for the covered modeled failure classes.
-
-C4.1 itself produces no favorable or unfavorable research result. It only fixes how those results are counted.
+For B4, Gate G1 ultimately requires the six safety rates to be zero for the covered modeled failure classes. C4.1 itself produces no favorable or unfavorable research result; it fixes how later results are counted.
 
 ---
 
 # 6. Denominator semantics
 
-C4 must not silently turn missing coverage into a perfect score.
-
-Each Gate G1 metric therefore records an explicit **opportunity** denominator.
+C4 must not silently turn missing coverage into a perfect score. Each Gate G1 metric therefore records an explicit opportunity denominator.
 
 Example:
 
@@ -165,29 +164,19 @@ denominator = 0
 rate        = null
 ```
 
-not:
+not `rate = 0`.
 
-```text
-rate = 0
-```
+This distinguishes zero observed violations from no experiment capable of observing the violation. Gate-metric opportunities require a faulted trial.
 
-This distinguishes zero observed violations from no experiment capable of observing the violation.
-
-Gate-metric opportunities require a faulted trial.
-
-The three Failure Model aggregate rates use **faulted operations only** as their denominator:
+The three Failure Model aggregate rates use faulted operations only:
 
 ```text
 SSER = O4 / TotalFaultedOperations
-
-ExplicitNonSuccessRate
-     = O3 / TotalFaultedOperations
-
-RecoveryRate
-     = (O1 + O2) / TotalFaultedOperations
+ExplicitNonSuccessRate = O3 / TotalFaultedOperations
+RecoveryRate = (O1 + O2) / TotalFaultedOperations
 ```
 
-Control trials remain visible in total trial counts but cannot dilute these fault denominators.
+Control trials remain visible in total trial counts but cannot dilute these denominators.
 
 ---
 
@@ -200,7 +189,8 @@ trial_id
 policy_id
 scenario_id
 fault_id / fault_class
-evidence_class
+validation_level
+evidence_provenance
 ground_truth
 observed_evidence
 policy_decision
@@ -210,9 +200,7 @@ metric_opportunities
 metric_violations
 ```
 
-The four experimental views are copied into canonical JSON at record construction.
-
-Consequences:
+The four experimental views are copied into canonical JSON at record construction. Consequences:
 
 - later mutation of caller-owned dictionaries cannot rewrite recorded ground truth;
 - mapping insertion order cannot change a record fingerprint;
@@ -220,7 +208,7 @@ Consequences:
 - duplicate metric entries are rejected;
 - a violation cannot be counted without a matching opportunity;
 - record JSON round-trips through a schema check;
-- a serialized `outcome_class` must agree with the semantic result.
+- serialized `outcome_class` must agree with the semantic result.
 
 Schema:
 
@@ -234,9 +222,7 @@ Records and summaries expose stable SHA-256 fingerprints over canonical JSON.
 
 # 8. Deterministic aggregation
 
-`summarize_correctness(...)` groups records in canonical B0->B4 order.
-
-For every present policy it emits:
+`summarize_correctness(...)` groups records in canonical B0→B4 order. For every present policy it emits:
 
 ```text
 trial_count
@@ -257,9 +243,7 @@ The aggregator is policy-neutral. It does not infer that B4 is correct, does not
 
 # 9. Baseline fairness and C3 boundary
 
-The C3 information contract remains closed.
-
-C4.1 does not:
+The C3 information contract remains closed. C4.1 does not:
 
 ```text
 add fields to B0-B3
@@ -273,15 +257,13 @@ In particular:
 
 > placement admission is not equivalent to authoritative result acceptance.
 
-S1 must therefore evaluate stale-Attempt **authoritative acceptance** using an explicit semantic-result experiment rather than counting a B0-B3 placement as a stale finalization.
+S1 must evaluate stale-Attempt authoritative acceptance using an explicit semantic-result experiment rather than counting a B0–B3 placement as a stale finalization.
 
-This prevents C4 from manufacturing H1 support by measuring the wrong operation.
+If competent simpler baselines independently provide equivalent result fencing, H1 must be narrowed rather than weakened baselines being manufactured.
 
 ---
 
 # 10. Planned C4 slices
-
-The canonical safety series is staged as:
 
 ```text
 C4.1  correctness-evaluation contract / independent oracle records
@@ -304,7 +286,15 @@ S5 -> DFR, invariant violations, semantic-state equivalence
 
 ---
 
-# 11. C4.1 test obligations
+# 11. C4.1 bounded-review finding
+
+The first C4.1 candidate incorrectly collapsed methodological validation level and result provenance into a single `EvidenceClass` enum. That contradicted the Gate G0 terminology normalization and omitted the Thesis-required `estimated` provenance category.
+
+The repaired contract now uses independent `ValidationEvidenceLevel` and `ResultEvidenceProvenance` enums and regression-tests the complete vocabularies plus independent serialization.
+
+---
+
+# 12. C4.1 test obligations
 
 C4.1 tests must prove at minimum:
 
@@ -314,6 +304,9 @@ explicit non-success is not counted as SSER
 Gate metrics use explicit opportunity denominators
 zero-opportunity rates remain null
 control trials do not inflate faulted-operation denominators
+EV0-EV4 validation levels are complete
+result provenance includes measured/simulated/trace-derived/synthetic/analytic/estimated
+validation level and provenance serialize independently
 canonical record fingerprints ignore mapping insertion order
 record construction snapshots mutable caller input
 record JSON round-trips with schema checking
@@ -325,11 +318,11 @@ duplicate policy/trial identities cannot be double-counted
 policy summaries are emitted in canonical B0-B4 order
 ```
 
-All existing 327 tests remain regression obligations.
+All pre-existing C1/C2/C3 tests remain regression obligations.
 
 ---
 
-# 12. Gate G1 boundary
+# 13. Gate G1 boundary
 
 The Failure Model requires B4, for covered modeled failures, to target:
 
@@ -342,7 +335,7 @@ ACR = 0
 DFR = 0
 ```
 
-Gate G1 does **not** require:
+Gate G1 does not require:
 
 ```text
 Explicit Failure Rate = 0
@@ -355,16 +348,17 @@ C4 is not closed merely because B4 reaches zero. The research gate also requires
 
 ---
 
-# 13. C4.1 exit criterion
+# 14. C4.1 exit criterion
 
 C4.1 may close when:
 
 1. the machine-readable evaluation schema is merged;
 2. ground truth and policy-visible observations remain separate records;
-3. O1-O4 and all Gate G1 metrics are represented;
-4. denominator semantics distinguish zero violations from zero coverage;
-5. deterministic serialization/fingerprints are regression-tested;
-6. existing C1/C2/C3 tests remain green on Python 3.11, 3.12, and 3.13;
-7. bounded review finds no measurement rule that can manufacture a correctness advantage.
+3. validation hierarchy and result provenance remain separate evidence dimensions;
+4. O1–O4 and all Gate G1 metrics are represented;
+5. denominator semantics distinguish zero violations from zero coverage;
+6. deterministic serialization/fingerprints are regression-tested;
+7. existing C1/C2/C3 tests remain green on Python 3.11, 3.12, and 3.13;
+8. bounded review finds no measurement rule that can manufacture a correctness advantage.
 
 After C4.1 closes, C4.2 may implement S1 Attempt Fencing experiments against this fixed measurement contract.
