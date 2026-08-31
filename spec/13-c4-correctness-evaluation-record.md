@@ -115,12 +115,13 @@ C4.1 also distinguishes Gate denominator events by causal source.
 
 ## 4.1 Exogenous paired Gate opportunities
 
-These opportunities are fixed by the experiment input and must therefore carry the same stable event identities across paired policies:
+These opportunities are fixed by the experiment/oracle and must therefore carry the same stable event identities across paired policies:
 
 ```text
 SAAR  stale Attempt result presentations
 WBRR  incompatible branch-reuse opportunities
 SBDR  Binding-sensitive operations
+ACR   ambiguous correctness-sensitive decisions
 ```
 
 Machine scope:
@@ -129,7 +130,15 @@ Machine scope:
 EXOGENOUS_PAIRED
 ```
 
-Equal metric counts are insufficient. If B0 is evaluated on stale result `a1` and B4 on stale result `a2`, the cohort is rejected even though both have one SAAR opportunity.
+Equal metric counts are insufficient. If B0 is evaluated on stale result `a1` and B4 on stale result `a2`, the cohort is rejected even though both have one SAAR opportunity. The same rule applies to ambiguity: if the oracle classifies a correctness-sensitive decision as ambiguous, every paired policy is evaluated against that same ambiguity event even if a simpler policy does not explicitly represent ambiguity internally.
+
+This is required by the canonical ACR denominator:
+
+```text
+ambiguous correctness-sensitive decisions
+```
+
+A policy cannot erase an ACR opportunity merely by failing to detect or encode the ambiguity.
 
 ## 4.2 Policy-derived Gate opportunities
 
@@ -137,7 +146,6 @@ These denominators arise from actual policy execution and may legitimately diffe
 
 ```text
 WSCR  actual State consumptions
-ACR   actual ambiguous correctness-sensitive decisions
 DFR   completed LogicalRequests
 ```
 
@@ -160,7 +168,7 @@ Thus paired fairness is:
 
 ```text
 same exogenous workload/fault/ground truth
-+ same stable identities for exogenous Gate opportunities
++ same stable identities for exogenous Gate opportunities, including ambiguity
 + policy-specific execution behavior
 + policy-specific behavior-derived denominator events
 ```
@@ -369,7 +377,7 @@ S5 -> DFR, invariant violations, semantic-state equivalence
 
 # 12. Bounded-review findings repaired before final review
 
-Eleven substantive measurement-integrity findings have been repaired:
+Twelve substantive measurement-integrity findings have been repaired:
 
 1. **Validation/provenance conflation.** EV0–EV4 and result provenance were collapsed and `ESTIMATED` omitted. Fixed by orthogonal fields.
 2. **Decision rows could inflate faulted-operation denominators.** Fixed by one record per complete operation.
@@ -382,8 +390,9 @@ Eleven substantive measurement-integrity findings have been repaired:
 9. **Behavior-dependent Gate opportunities were incorrectly forced equal across paired policies.** Fixed by separating exogenous paired events from policy-derived events.
 10. **Equal opportunity counts could hide different paired events.** Fixed by stable event identities and exact paired validation for exogenous Gate opportunities.
 11. **Duplicate JSON object members could erase safety evidence.** Fixed by recursive duplicate-member rejection before deserialization.
+12. **ACR ambiguity opportunities were misclassified as policy-derived.** Fixed by treating oracle-classified ambiguous correctness-sensitive decisions as paired exogenous events so a policy cannot suppress its ACR denominator by failing to recognize ambiguity.
 
-The final candidate must retain regression coverage for all eleven findings.
+The final candidate must retain regression coverage for all twelve findings.
 
 ---
 
@@ -406,6 +415,8 @@ one operation cannot be split into multiple denominator rows
 paired cohorts reject policy-specific exogenous operation subsets
 paired cohorts reject mismatched scenario/fault/ground truth
 same metric/count with different exogenous event IDs is rejected
+ACR ambiguity events are paired exogenous events
+paired ACR events with different identities are rejected
 canonical Gate metric scope is enforced
 policy-derived opportunity sets may differ across paired policies
 B0 WSCR 1/1 versus B4 WSCR 0/0 is representable
@@ -431,14 +442,14 @@ All pre-existing C1/C2/C3 tests remain regression obligations.
 
 Behavior-bearing candidate before this documentation synchronization:
 
-`d8e829ed8e5d58f21f76a2f86cacf89e164cf8f2`
+`5b7c6e09aab5209eb88ab27c44cc4976a65f7be6`
 
 Exact candidate matrix:
 
 ```text
-Python 3.11  358 passed
-Python 3.12  358 passed
-Python 3.13  358 passed
+Python 3.11  359 passed
+Python 3.12  359 passed
+Python 3.13  359 passed
 ```
 
 The documentation-synchronized exact PR head must pass the same full matrix before final review/merge.
