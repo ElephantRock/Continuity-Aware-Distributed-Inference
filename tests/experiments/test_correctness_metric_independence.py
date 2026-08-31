@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from experiments.correctness import (
     CorrectnessEvaluationRecord,
     CorrectnessMetric,
@@ -16,6 +18,30 @@ from simulator.policies import PolicyID
 def _rate(summary, metric: CorrectnessMetric):
     policy_summary = summary.policy_summaries[0]
     return next(rate for rate in policy_summary.rates if rate.metric is metric)
+
+
+def _record_with_metric_events(
+    *,
+    opportunities: tuple[CorrectnessMetric, ...],
+    violations: tuple[CorrectnessMetric, ...],
+) -> CorrectnessEvaluationRecord:
+    return CorrectnessEvaluationRecord.create(
+        cohort_id="cohort",
+        trial_id="event-cardinality",
+        operation_id="operation",
+        policy_id=PolicyID.B4,
+        scenario_id="S1-attempt-fencing",
+        validation_level=ValidationEvidenceLevel.EV0_DETERMINISTIC_SEMANTICS,
+        evidence_provenance=ResultEvidenceProvenance.SYNTHETICALLY_GENERATED,
+        ground_truth={"current_attempt": "a2"},
+        observed_evidence={"late_attempt": "a1"},
+        policy_decision={"trace": [{"action": "EVALUATE"}]},
+        semantic_result=SemanticResult(True, True, True),
+        metric_opportunities=opportunities,
+        metric_violations=violations,
+        fault_id="fault",
+        fault_class="LATE_SUPERSEDED_ATTEMPT",
+    )
 
 
 def test_gate_metric_violation_is_independent_from_o4_outcome_class():
@@ -90,3 +116,57 @@ def test_o4_can_exist_without_attributing_a_specific_gate_metric():
     ):
         rate = _rate(summary, metric)
         assert (rate.numerator, rate.denominator, rate.rate) == (0, 0, None)
+
+
+def test_gate_event_multiset_preserves_multiple_events_within_one_operation():
+    metric = CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE
+    record = _record_with_metric_events(
+        opportunities=(metric, metric, metric),
+        violations=(metric, metric),
+    )
+
+    assert record.metric_opportunities == (metric, metric, metric)
+    assert record.metric_violations == (metric, metric)
+
+    rate = _rate(summarize_correctness((record,)), metric)
+    assert (rate.numerator, rate.denominator, rate.rate) == (2, 3, 2 / 3)
+
+
+def test_gate_violation_event_count_cannot_exceed_matching_opportunity_count():
+    metric = CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE
+    with pytest.raises(ValueError, match="event counts"):
+        _record_with_metric_events(
+            opportunities=(metric,),
+            violations=(metric, metric),
+        )
+
+
+def test_paired_cohort_compares_gate_opportunity_multiplicity_not_just_presence():
+    metric = CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE
+    common = dict(
+        cohort_id="cohort",
+        trial_id="paired-cardinality",
+        operation_id="operation",
+        scenario_id="S1-attempt-fencing",
+        validation_level=ValidationEvidenceLevel.EV0_DETERMINISTIC_SEMANTICS,
+        evidence_provenance=ResultEvidenceProvenance.SYNTHETICALLY_GENERATED,
+        ground_truth={"current_attempt": "a2"},
+        observed_evidence={"late_attempt": "a1"},
+        policy_decision={"trace": [{"action": "EVALUATE"}]},
+        semantic_result=SemanticResult(True, True, True),
+        fault_id="fault",
+        fault_class="LATE_SUPERSEDED_ATTEMPT",
+    )
+    b0 = CorrectnessEvaluationRecord.create(
+        policy_id=PolicyID.B0,
+        metric_opportunities=(metric, metric),
+        **common,
+    )
+    b4 = CorrectnessEvaluationRecord.create(
+        policy_id=PolicyID.B4,
+        metric_opportunities=(metric,),
+        **common,
+    )
+
+    with pytest.raises(ValueError, match="metadata mismatch"):
+        summarize_correctness((b0, b4))

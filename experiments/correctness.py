@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
@@ -118,7 +118,9 @@ def _require_id(value: Any, name: str) -> str:
     return value
 
 
-def _require_exact_keys(value: Mapping[str, Any], expected: frozenset[str], name: str) -> None:
+def _require_exact_keys(
+    value: Mapping[str, Any], expected: frozenset[str], name: str
+) -> None:
     actual = set(value)
     if actual != expected:
         missing = sorted(expected - actual)
@@ -173,9 +175,7 @@ def _canonical_json(value: Any) -> str:
 
 
 def _enum_tuple(
-    values: Iterable[Any],
-    enum_type: type[Enum],
-    name: str,
+    values: Iterable[Any], enum_type: type[Enum], name: str
 ) -> tuple[Any, ...]:
     if isinstance(values, (str, bytes)):
         raise TypeError(f"{name} must be an iterable of {enum_type.__name__}")
@@ -184,6 +184,22 @@ def _enum_tuple(
         raise TypeError(f"{name} must contain only {enum_type.__name__}")
     if len(result) != len(set(result)):
         raise ValueError(f"{name} must not contain duplicates")
+    return tuple(sorted(result, key=lambda value: value.value))
+
+
+def _metric_multiset(values: Iterable[Any], name: str) -> tuple[CorrectnessMetric, ...]:
+    """Canonical multiset of Gate-metric events.
+
+    Repeated entries preserve event cardinality within one complete operation.
+    """
+
+    if isinstance(values, (str, bytes)):
+        raise TypeError(f"{name} must be an iterable of CorrectnessMetric")
+    result = tuple(values)
+    if not all(isinstance(value, CorrectnessMetric) for value in result):
+        raise TypeError(f"{name} must contain only CorrectnessMetric")
+    if not set(result) <= GATE_G1_METRICS:
+        raise ValueError(f"{name} may contain only Gate G1 metrics")
     return tuple(sorted(result, key=lambda value: value.value))
 
 
@@ -268,8 +284,9 @@ class CorrectnessEvaluationRecord:
     """One complete correctness-sensitive operation under one policy.
 
     Multi-step decisions such as WAIT -> RETRY -> COMMIT belong in the ordered
-    ``policy_decision`` trace of one record. They must not become multiple rows,
-    because correctness denominators are operation-based.
+    ``policy_decision`` trace of one record. Gate-event arrays are multisets:
+    repeated entries preserve multiple denominator/numerator events inside that
+    single operation.
     """
 
     cohort_id: str
@@ -313,28 +330,33 @@ class CorrectnessEvaluationRecord:
                 raise ValueError(f"{name} must be canonical JSON")
         if not isinstance(self.semantic_result, SemanticResult):
             raise TypeError("semantic_result must be SemanticResult")
+
         object.__setattr__(
             self,
             "metric_opportunities",
-            _enum_tuple(self.metric_opportunities, CorrectnessMetric, "metric_opportunities"),
+            _metric_multiset(self.metric_opportunities, "metric_opportunities"),
         )
         object.__setattr__(
             self,
             "metric_violations",
-            _enum_tuple(self.metric_violations, CorrectnessMetric, "metric_violations"),
+            _metric_multiset(self.metric_violations, "metric_violations"),
         )
-        opportunities = set(self.metric_opportunities)
-        violations = set(self.metric_violations)
-        if not opportunities <= GATE_G1_METRICS:
-            raise ValueError("metric_opportunities may contain only Gate G1 metrics")
-        if not violations <= opportunities:
-            raise ValueError("metric_violations must be a subset of metric_opportunities")
+        opportunity_counts = Counter(self.metric_opportunities)
+        violation_counts = Counter(self.metric_violations)
+        if any(
+            violation_counts[metric] > opportunity_counts[metric]
+            for metric in GATE_G1_METRICS
+        ):
+            raise ValueError(
+                "metric_violations event counts must not exceed matching metric_opportunities"
+            )
+
         if (self.fault_id is None) != (self.fault_class is None):
             raise ValueError("fault_id and fault_class must either both be set or both be None")
         if self.fault_id is not None:
             _require_id(self.fault_id, "fault_id")
             _require_id(self.fault_class, "fault_class")
-        elif opportunities:
+        elif self.metric_opportunities:
             raise ValueError("Gate G1 metric opportunities require a faulted operation")
 
     @classmethod
@@ -443,8 +465,12 @@ class CorrectnessEvaluationRecord:
             observed_evidence=value["observed_evidence"],
             policy_decision=value["policy_decision"],
             semantic_result=semantic_result,
-            metric_opportunities=tuple(CorrectnessMetric(item) for item in value["metric_opportunities"]),
-            metric_violations=tuple(CorrectnessMetric(item) for item in value["metric_violations"]),
+            metric_opportunities=tuple(
+                CorrectnessMetric(item) for item in value["metric_opportunities"]
+            ),
+            metric_violations=tuple(
+                CorrectnessMetric(item) for item in value["metric_violations"]
+            ),
             fault_id=value["fault_id"],
             fault_class=value["fault_class"],
         )
@@ -477,7 +503,10 @@ class RateCount:
     def __post_init__(self) -> None:
         if not isinstance(self.metric, CorrectnessMetric):
             raise TypeError("metric must be CorrectnessMetric")
-        for value, name in ((self.numerator, "numerator"), (self.denominator, "denominator")):
+        for value, name in (
+            (self.numerator, "numerator"),
+            (self.denominator, "denominator"),
+        ):
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
         if self.numerator > self.denominator:
@@ -509,7 +538,11 @@ class PolicyCorrectnessSummary:
     def __post_init__(self) -> None:
         if not isinstance(self.policy_id, PolicyID):
             raise TypeError("policy_id must be PolicyID")
-        if not isinstance(self.operation_count, int) or isinstance(self.operation_count, bool) or self.operation_count < 0:
+        if (
+            not isinstance(self.operation_count, int)
+            or isinstance(self.operation_count, bool)
+            or self.operation_count < 0
+        ):
             raise ValueError("operation_count must be a non-negative integer")
         if (
             not isinstance(self.faulted_operation_count, int)
@@ -530,7 +563,9 @@ class PolicyCorrectnessSummary:
             "policy_id": self.policy_id.value,
             "operation_count": self.operation_count,
             "faulted_operation_count": self.faulted_operation_count,
-            "outcome_counts": {outcome.value: count for outcome, count in self.outcome_counts},
+            "outcome_counts": {
+                outcome.value: count for outcome, count in self.outcome_counts
+            },
             "rates": [rate.to_dict() for rate in self.rates],
         }
 
@@ -547,7 +582,8 @@ class CorrectnessSummary:
         if not isinstance(self.evidence_provenance, ResultEvidenceProvenance):
             raise TypeError("evidence_provenance must be ResultEvidenceProvenance")
         if not isinstance(self.policy_summaries, tuple) or not all(
-            isinstance(summary, PolicyCorrectnessSummary) for summary in self.policy_summaries
+            isinstance(summary, PolicyCorrectnessSummary)
+            for summary in self.policy_summaries
         ):
             raise TypeError("policy_summaries must be tuple[PolicyCorrectnessSummary, ...]")
         policy_ids = tuple(summary.policy_id for summary in self.policy_summaries)
@@ -588,7 +624,9 @@ def _validate_evidence_stratum(
 ) -> tuple[ValidationEvidenceLevel, ResultEvidenceProvenance]:
     strata = {(record.validation_level, record.evidence_provenance) for record in records}
     if len(strata) != 1:
-        rendered = sorted((level.value, provenance.value) for level, provenance in strata)
+        rendered = sorted(
+            (level.value, provenance.value) for level, provenance in strata
+        )
         raise ValueError(
             "correctness summary must contain exactly one evidence stratum; "
             f"got {rendered}"
@@ -600,7 +638,9 @@ def _validate_paired_cohorts(
     records: tuple[CorrectnessEvaluationRecord, ...],
 ) -> tuple[PolicyID, ...]:
     policy_ids = tuple(
-        policy_id for policy_id in PolicyID if any(record.policy_id is policy_id for record in records)
+        policy_id
+        for policy_id in PolicyID
+        if any(record.policy_id is policy_id for record in records)
     )
     groups: dict[tuple[str, str, str], list[CorrectnessEvaluationRecord]] = defaultdict(list)
     for record in records:
@@ -608,7 +648,9 @@ def _validate_paired_cohorts(
 
     for operation_key, group in groups.items():
         group_policy_ids = tuple(
-            policy_id for policy_id in PolicyID if any(record.policy_id is policy_id for record in group)
+            policy_id
+            for policy_id in PolicyID
+            if any(record.policy_id is policy_id for record in group)
         )
         if group_policy_ids != policy_ids:
             raise ValueError(
@@ -651,7 +693,9 @@ def summarize_correctness(
                 key=lambda record: record.operation_key,
             )
         )
-        faulted_records = tuple(record for record in policy_records if record.fault_id is not None)
+        faulted_records = tuple(
+            record for record in policy_records if record.fault_id is not None
+        )
         outcome_counts = tuple(
             (
                 outcome,
@@ -662,11 +706,12 @@ def summarize_correctness(
         rates: list[RateCount] = []
         for metric in CorrectnessMetric:
             if metric in GATE_G1_METRICS:
-                applicable = [
-                    record for record in policy_records if metric in record.metric_opportunities
-                ]
-                numerator = sum(metric in record.metric_violations for record in applicable)
-                denominator = len(applicable)
+                numerator = sum(
+                    record.metric_violations.count(metric) for record in policy_records
+                )
+                denominator = sum(
+                    record.metric_opportunities.count(metric) for record in policy_records
+                )
             elif metric is CorrectnessMetric.SILENT_SEMANTIC_ERROR_RATE:
                 numerator = sum(
                     record.outcome_class is OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
