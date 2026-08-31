@@ -312,7 +312,7 @@ def test_round_trip_rejects_tampered_outcome_class():
 
 
 def test_metric_violation_must_have_matching_opportunity():
-    with pytest.raises(ValueError, match="subset"):
+    with pytest.raises(ValueError, match="event counts"):
         _record(
             violations=(CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE,),
         )
