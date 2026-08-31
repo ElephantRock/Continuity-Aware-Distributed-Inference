@@ -329,8 +329,6 @@ class CorrectnessEvaluationRecord:
             raise ValueError("metric_opportunities may contain only Gate G1 metrics")
         if not violations <= opportunities:
             raise ValueError("metric_violations must be a subset of metric_opportunities")
-        if violations and self.semantic_result.outcome_class is not OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION:
-            raise ValueError("Gate G1 metric violations require an O4 silent semantic violation")
         if (self.fault_id is None) != (self.fault_class is None):
             raise ValueError("fault_id and fault_class must either both be set or both be None")
         if self.fault_id is not None:

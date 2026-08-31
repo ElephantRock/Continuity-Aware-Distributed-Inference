@@ -222,10 +222,19 @@ rate        = null
 
 not `rate = 0`.
 
-A Gate metric violation must:
+A Gate metric violation must have a matching declared opportunity. Gate-specific violations are deliberately **independent of the O1–O4 terminal outcome class**.
 
-1. have a matching declared opportunity; and
-2. correspond to an O4 silent semantic violation.
+The Experimental Plan defines O4 narrowly as a semantically incorrect committed success, while the six safety metrics count specific unsafe events. Therefore an operation may, for example:
+
+```text
+consume incompatible State
+then detect the problem
+then recompute successfully
+```
+
+and be classified O2 while still contributing one WSCR violation. Conversely, an O4 semantic violation may occur without being attributable to one of the six named Gate metrics.
+
+This separation prevents SSER from being silently substituted for the six specific safety rates or vice versa.
 
 The Failure Model aggregate rates use faulted operations only:
 
@@ -347,7 +356,7 @@ S5 -> DFR, invariant violations, semantic-state equivalence
 
 # 11. Bounded-review findings resolved before merge
 
-Six substantive measurement-integrity findings were found during C4.1 review:
+Seven substantive measurement-integrity findings were found during C4.1 review:
 
 1. **Validation/provenance conflation.** The first candidate collapsed EV0–EV4 validation level and result provenance into one enum and omitted `ESTIMATED`. Fixed by orthogonal machine-readable fields.
 2. **Decision rows could inflate faulted-operation denominators.** Fixed by explicit operation identity and one record per complete operation.
@@ -355,8 +364,9 @@ Six substantive measurement-integrity findings were found during C4.1 review:
 4. **Controls contaminated O1–O4 counts.** Fixed by restricting O-class counts to faulted operations.
 5. **Summary artifacts could hide mixed evidence strata.** Fixed by rejecting mixed `(validation_level, evidence_provenance)` summaries and serializing the stratum into the summary/fingerprint.
 6. **Missing violation arrays could default to safe.** Fixed by exact-schema deserialization; absent or misspelled `metric_violations` is rejected.
+7. **Gate-specific violations were incorrectly forced into O4.** The Experimental Plan defines O4 as a semantically incorrect committed success, while SAAR/WBRR/WSCR/SBDR/ACR/DFR are independent event rates. Fixed by allowing Gate violations to coexist with O1/O2/O3/O4 as the scenario semantics require, while preserving the opportunity-subset rule.
 
-The final candidate must retain regression coverage for all six findings.
+The final candidate must retain regression coverage for all seven findings.
 
 ---
 
@@ -381,7 +391,9 @@ mixed result provenance is rejected in one summary
 summary serialization/fingerprint preserves evidence stratum
 missing metric_violations is rejected
 misspelled metric_violations is rejected
-Gate violations require O4
+Gate metric violations require matching opportunities but do not imply O4
+O2 recovered operations can carry a Gate metric violation while SSER remains zero
+O4 can exist without attribution to a specific Gate metric
 canonical record fingerprints ignore mapping insertion order
 record construction snapshots caller-owned mappings
 record JSON round-trips with strict schema checking
@@ -432,7 +444,7 @@ C4.1 closes only when:
 3. denominator units are complete operations, not decision rows;
 4. paired policy cohorts are integrity-checked before comparison;
 5. evidence strata are explicit and cannot be silently mixed;
-6. O1–O4 and all Gate G1 metrics are represented;
+6. O1–O4 and all Gate G1 metrics are represented without conflating their semantics;
 7. zero coverage is distinguishable from zero violations;
 8. persisted safety fields fail closed on omission/corruption;
 9. deterministic serialization/fingerprints are regression-tested;
