@@ -7,6 +7,7 @@ import pytest
 from experiments.correctness import (
     CorrectnessEvaluationRecord,
     CorrectnessMetric,
+    MetricOpportunityScope,
     ResultEvidenceProvenance,
     SemanticResult,
     ValidationEvidenceLevel,
@@ -21,6 +22,7 @@ def _record(
     validation_level: ValidationEvidenceLevel = ValidationEvidenceLevel.EV0_DETERMINISTIC_SEMANTICS,
     evidence_provenance: ResultEvidenceProvenance = ResultEvidenceProvenance.SYNTHETICALLY_GENERATED,
 ) -> CorrectnessEvaluationRecord:
+    metric = CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE
     return CorrectnessEvaluationRecord.create(
         cohort_id="cohort",
         trial_id=trial_id,
@@ -33,7 +35,9 @@ def _record(
         observed_evidence={"attempt": "a1"},
         policy_decision={"trace": [{"action": "REJECT"}]},
         semantic_result=SemanticResult(True, True, True),
-        metric_opportunities=(CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE,),
+        metric_opportunities=(metric,),
+        metric_opportunity_event_ids=(f"stale-result:{trial_id}",),
+        metric_opportunity_scopes=(MetricOpportunityScope.EXOGENOUS_PAIRED,),
         fault_id=f"fault-{trial_id}",
         fault_class="LATE_SUPERSEDED_ATTEMPT",
     )
@@ -92,3 +96,31 @@ def test_deserializer_rejects_misspelled_safety_field_instead_of_defaulting_safe
 
     with pytest.raises(ValueError, match="unexpected=.*metric_violation"):
         CorrectnessEvaluationRecord.from_dict(payload)
+
+
+def test_deserializer_rejects_duplicate_top_level_json_members_before_last_value_wins():
+    record = _record(trial_id="duplicate-top")
+    payload = record.to_json()
+    needle = '"metric_violations":[]'
+    tampered = payload.replace(
+        needle,
+        '"metric_violations":["Stale Attempt Acceptance Rate"],' + needle,
+        1,
+    )
+
+    with pytest.raises(ValueError, match="duplicate JSON member: metric_violations"):
+        CorrectnessEvaluationRecord.from_json(tampered)
+
+
+def test_deserializer_rejects_duplicate_nested_json_members():
+    record = _record(trial_id="duplicate-nested")
+    payload = record.to_json()
+    needle = '"ground_truth":{"current_attempt":"a2"}'
+    tampered = payload.replace(
+        needle,
+        '"ground_truth":{"current_attempt":"a1","current_attempt":"a2"}',
+        1,
+    )
+
+    with pytest.raises(ValueError, match="duplicate JSON member: current_attempt"):
+        CorrectnessEvaluationRecord.from_json(tampered)
