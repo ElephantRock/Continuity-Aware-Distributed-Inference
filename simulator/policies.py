@@ -271,31 +271,59 @@ class RequestCentricPolicy:
     policy_id = PolicyID.B0
 
     def decide(self, view: PolicyView) -> PlacementDecision:
-        if not isinstance(view, PolicyView):
-            raise TypeError("view must be PolicyView")
-        if view.policy_id is not self.policy_id:
-            raise ValueError("PolicyView does not match RequestCentricPolicy")
-        workers = view.value(InformationField.RESOURCE_LOAD)
-        if not isinstance(workers, tuple) or not all(
-            isinstance(worker, WorkerObservation) for worker in workers
-        ):
-            raise TypeError("resource_load observation must be tuple[WorkerObservation, ...]")
-        available = [worker for worker in workers if worker.available]
+        _require_policy_view(view, self.policy_id, "RequestCentricPolicy")
+        workers = _workers_from_view(view)
+        available = _available_workers(workers)
         if not available:
             return PlacementDecision(self.policy_id, None, (), "NO_AVAILABLE_WORKER")
-        ranked = tuple(
-            worker.worker_id
-            for worker in sorted(
-                available,
-                key=lambda worker: (
-                    worker.normalized_load,
-                    worker.queued_tasks,
-                    worker.active_tasks,
-                    worker.worker_id,
-                ),
-            )
-        )
+        ranked = _rank_worker_ids_by_load(available)
         return PlacementDecision(self.policy_id, ranked[0], ranked, "LEAST_NORMALIZED_LOAD")
+
+
+class CacheAwarePolicy:
+    policy_id = PolicyID.B1
+
+    def decide(self, view: PolicyView) -> PlacementDecision:
+        _require_policy_view(view, self.policy_id, "CacheAwarePolicy")
+        workers = _workers_from_view(view)
+        available = _available_workers(workers)
+        if not available:
+            return PlacementDecision(self.policy_id, None, (), "NO_AVAILABLE_WORKER")
+
+        candidate_key = view.value(InformationField.STATE_CANDIDATE_KEY)
+        locations = view.value(InformationField.STATE_LOCATION)
+        if candidate_key is not None and not isinstance(candidate_key, str):
+            raise TypeError("state_candidate_key observation must be string or None")
+        if not isinstance(locations, tuple) or not all(
+            isinstance(location, str) and location for location in locations
+        ):
+            raise TypeError("state_location observation must be tuple[str, ...]")
+
+        local_ids = frozenset(locations) if candidate_key is not None else frozenset()
+        has_available_locality = any(worker.worker_id in local_ids for worker in available)
+        if not has_available_locality:
+            ranked = _rank_worker_ids_by_load(available)
+            return PlacementDecision(
+                self.policy_id,
+                ranked[0],
+                ranked,
+                "CACHE_AWARE_LOAD_FALLBACK",
+            )
+
+        ranked_workers = sorted(
+            available,
+            key=lambda worker: (
+                0 if worker.worker_id in local_ids else 1,
+                *_worker_load_key(worker),
+            ),
+        )
+        ranked = tuple(worker.worker_id for worker in ranked_workers)
+        return PlacementDecision(
+            self.policy_id,
+            ranked[0],
+            ranked,
+            "CACHE_LOCALITY_THEN_LOAD",
+        )
 
 
 def observe_resources(resources: ResourceModel) -> tuple[WorkerObservation, ...]:
@@ -360,6 +388,39 @@ def decide_placement(policy: PlacementPolicy, observation: PolicyObservation) ->
     if decision.policy_id is not policy_id:
         raise ValueError("policy decision identifies a different policy")
     return decision
+
+
+def _require_policy_view(view: PolicyView, policy_id: PolicyID, policy_name: str) -> None:
+    if not isinstance(view, PolicyView):
+        raise TypeError("view must be PolicyView")
+    if view.policy_id is not policy_id:
+        raise ValueError(f"PolicyView does not match {policy_name}")
+
+
+def _workers_from_view(view: PolicyView) -> tuple[WorkerObservation, ...]:
+    workers = view.value(InformationField.RESOURCE_LOAD)
+    if not isinstance(workers, tuple) or not all(
+        isinstance(worker, WorkerObservation) for worker in workers
+    ):
+        raise TypeError("resource_load observation must be tuple[WorkerObservation, ...]")
+    return workers
+
+
+def _available_workers(workers: tuple[WorkerObservation, ...]) -> tuple[WorkerObservation, ...]:
+    return tuple(worker for worker in workers if worker.available)
+
+
+def _worker_load_key(worker: WorkerObservation) -> tuple[float, int, int, str]:
+    return (
+        worker.normalized_load,
+        worker.queued_tasks,
+        worker.active_tasks,
+        worker.worker_id,
+    )
+
+
+def _rank_worker_ids_by_load(workers: tuple[WorkerObservation, ...]) -> tuple[str, ...]:
+    return tuple(worker.worker_id for worker in sorted(workers, key=_worker_load_key))
 
 
 def _require_id(value: str, name: str) -> str:
