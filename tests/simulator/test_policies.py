@@ -55,6 +55,20 @@ def test_information_contract_registry_cannot_be_mutated_after_import():
         INFORMATION_CONTRACTS[PolicyID.B0] = INFORMATION_CONTRACTS[PolicyID.B4]
 
 
+def test_set_like_policy_observations_require_canonical_ordering():
+    workers = (WorkerObservation("w1", True, 1, 0, 0),)
+    with pytest.raises(ValueError, match="continuation_ancestry must be unique and sorted"):
+        PolicyObservation("r", workers, continuation_ancestry=("c1", "c0"))
+    with pytest.raises(ValueError, match="state_locations must be unique and sorted"):
+        PolicyObservation("r", workers, state_locations=("w2", "w1"))
+    with pytest.raises(ValueError, match="state_provenance must have unique keys"):
+        PolicyObservation(
+            "r",
+            workers,
+            state_provenance=(("origin", "c1"), ("origin", "c2")),
+        )
+
+
 def test_b0_projection_structurally_hides_privileged_fields():
     workers = (WorkerObservation("w1", True, 1, 0, 0),)
     view = project_observation(full_observation(workers), PolicyID.B0)
