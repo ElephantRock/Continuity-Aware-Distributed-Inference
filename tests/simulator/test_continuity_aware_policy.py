@@ -280,6 +280,15 @@ def test_paired_interface_executes_exactly_b0_through_b4_over_one_observation():
     assert decisions[-1].reason == "COMPATIBLE_STATE_LOCALITY_THEN_LOAD"
 
 
+def test_paired_interface_rejects_policy_registered_under_wrong_id():
+    core = compatible_core()
+    policies = dict(build_baseline_policies(CoreContinuityAuthority(core)))
+    policies[PolicyID.B0] = policies[PolicyID.B1]
+
+    with pytest.raises(ValueError, match="B0 must expose matching policy_id"):
+        decide_paired_placements(policies, observation())
+
+
 def test_paired_interface_is_deterministic_for_equal_observations():
     core = compatible_core()
     policies = build_baseline_policies(CoreContinuityAuthority(core))
