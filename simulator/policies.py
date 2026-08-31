@@ -339,6 +339,51 @@ class SessionAffinityPolicy:
         )
 
 
+class StateAwarePolicy:
+    policy_id = PolicyID.B3
+
+    def decide(self, view: PolicyView) -> PlacementDecision:
+        _require_policy_view(view, self.policy_id, "StateAwarePolicy")
+        available = _available_workers(_workers_from_view(view))
+        if not available:
+            return PlacementDecision(self.policy_id, None, (), "NO_AVAILABLE_WORKER")
+
+        exact_state_id = view.value(InformationField.EXACT_STATE_ID)
+        if exact_state_id is not None and not isinstance(exact_state_id, str):
+            raise TypeError("exact_state_id observation must be string or None")
+        locations = _state_locations_from_view(view)
+        exact_local_ids = frozenset(locations) if exact_state_id is not None else frozenset()
+        exact_locality_used = any(
+            worker.worker_id in exact_local_ids for worker in available
+        )
+        if exact_locality_used:
+            ranked_workers = tuple(
+                sorted(
+                    available,
+                    key=lambda worker: (
+                        0 if worker.worker_id in exact_local_ids else 1,
+                        *_worker_load_key(worker),
+                    ),
+                )
+            )
+            ranked = tuple(worker.worker_id for worker in ranked_workers)
+            return PlacementDecision(
+                self.policy_id,
+                ranked[0],
+                ranked,
+                "EXACT_STATE_LOCALITY_THEN_LOAD",
+            )
+
+        b1_ranked, locality_used = _rank_workers_cache_aware(view, available)
+        ranked = tuple(worker.worker_id for worker in b1_ranked)
+        reason = (
+            "STATE_AWARE_CANDIDATE_FALLBACK"
+            if locality_used
+            else "STATE_AWARE_LOAD_FALLBACK"
+        )
+        return PlacementDecision(self.policy_id, ranked[0], ranked, reason)
+
+
 def observe_resources(resources: ResourceModel) -> tuple[WorkerObservation, ...]:
     if not isinstance(resources, ResourceModel):
         raise TypeError("resources must be ResourceModel")
@@ -423,15 +468,20 @@ def _available_workers(workers: tuple[WorkerObservation, ...]) -> tuple[WorkerOb
     return tuple(worker for worker in workers if worker.available)
 
 
-def _candidate_local_ids(view: PolicyView) -> frozenset[str]:
-    candidate_key = view.value(InformationField.STATE_CANDIDATE_KEY)
+def _state_locations_from_view(view: PolicyView) -> tuple[str, ...]:
     locations = view.value(InformationField.STATE_LOCATION)
-    if candidate_key is not None and not isinstance(candidate_key, str):
-        raise TypeError("state_candidate_key observation must be string or None")
     if not isinstance(locations, tuple) or not all(
         isinstance(location, str) and location for location in locations
     ):
         raise TypeError("state_location observation must be tuple[str, ...]")
+    return locations
+
+
+def _candidate_local_ids(view: PolicyView) -> frozenset[str]:
+    candidate_key = view.value(InformationField.STATE_CANDIDATE_KEY)
+    if candidate_key is not None and not isinstance(candidate_key, str):
+        raise TypeError("state_candidate_key observation must be string or None")
+    locations = _state_locations_from_view(view)
     return frozenset(locations) if candidate_key is not None else frozenset()
 
 
