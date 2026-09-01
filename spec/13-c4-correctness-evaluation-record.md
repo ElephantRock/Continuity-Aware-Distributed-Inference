@@ -301,12 +301,25 @@ cadi.correctness-evaluation.v1
 
 Canonical serialization emits the complete record field set. Deserialization requires that exact field set; missing or misspelled safety fields are rejected rather than defaulted.
 
-Safety-relevant JSON parsing is fail-closed in two additional ways:
+Safety-relevant JSON parsing is fail-closed in three additional ways:
 
 1. non-finite JSON constants are rejected;
-2. duplicate object member names are rejected recursively before last-value-wins semantics can erase evidence.
+2. duplicate object member names are rejected recursively before last-value-wins semantics can erase evidence;
+3. serialized repeated fields must be actual JSON arrays before conversion, so strings such as `""` cannot collapse safety evidence into empty tuples.
 
-For example, persisted JSON containing both a non-empty and a later empty `metric_violations` member is invalid rather than silently becoming safe.
+The strict array rule applies to all five Gate event fields:
+
+```text
+metric_opportunities
+metric_opportunity_event_ids
+metric_opportunity_scopes
+metric_violations
+metric_violation_event_ids
+```
+
+and to `semantic_result.recovery_actions`.
+
+For example, persisted JSON containing both a non-empty and a later empty `metric_violations` member is invalid rather than silently becoming safe. Likewise, replacing a real ACR event array with an empty string is invalid rather than becoming `0 / 0 = null`.
 
 The record also snapshots caller-owned mappings into canonical JSON, validates serialized `outcome_class` against `semantic_result`, preserves explicit Gate event identities, and produces a stable SHA-256 fingerprint.
 
@@ -377,7 +390,7 @@ S5 -> DFR, invariant violations, semantic-state equivalence
 
 # 12. Bounded-review findings repaired before final review
 
-Twelve substantive measurement-integrity findings have been repaired:
+Thirteen substantive measurement-integrity findings have been repaired:
 
 1. **Validation/provenance conflation.** EV0–EV4 and result provenance were collapsed and `ESTIMATED` omitted. Fixed by orthogonal fields.
 2. **Decision rows could inflate faulted-operation denominators.** Fixed by one record per complete operation.
@@ -391,8 +404,9 @@ Twelve substantive measurement-integrity findings have been repaired:
 10. **Equal opportunity counts could hide different paired events.** Fixed by stable event identities and exact paired validation for exogenous Gate opportunities.
 11. **Duplicate JSON object members could erase safety evidence.** Fixed by recursive duplicate-member rejection before deserialization.
 12. **ACR ambiguity opportunities were misclassified as policy-derived.** Fixed by treating oracle-classified ambiguous correctness-sensitive decisions as paired exogenous events so a policy cannot suppress its ACR denominator by failing to recognize ambiguity.
+13. **Malformed strings could masquerade as empty repeated fields.** Fixed by requiring serialized Gate event fields and recovery actions to be JSON arrays before any tuple/enum conversion.
 
-The final candidate must retain regression coverage for all twelve findings.
+The final candidate must retain regression coverage for all thirteen findings.
 
 ---
 
@@ -423,6 +437,8 @@ B0 WSCR 1/1 versus B4 WSCR 0/0 is representable
 mixed evidence strata are rejected
 summary fingerprint preserves evidence stratum
 missing or misspelled safety fields are rejected
+non-array Gate event fields are rejected
+non-array recovery_actions is rejected
 duplicate top-level JSON members are rejected
 duplicate nested JSON members are rejected
 Gate metric violations do not imply O4
@@ -442,14 +458,14 @@ All pre-existing C1/C2/C3 tests remain regression obligations.
 
 Behavior-bearing candidate before this documentation synchronization:
 
-`5b7c6e09aab5209eb88ab27c44cc4976a65f7be6`
+`1fa0b1df99c6b4001c9eb2f50a8c0ac921e51930`
 
 Exact candidate matrix:
 
 ```text
-Python 3.11  359 passed
-Python 3.12  359 passed
-Python 3.13  359 passed
+Python 3.11  365 passed
+Python 3.12  365 passed
+Python 3.13  365 passed
 ```
 
 The documentation-synchronized exact PR head must pass the same full matrix before final review/merge.
@@ -488,7 +504,7 @@ C4.1 closes only when:
 7. evidence strata are explicit and cannot be silently mixed;
 8. O1–O4 and Gate metrics remain semantically independent;
 9. zero coverage is distinguishable from zero violations;
-10. persisted safety fields fail closed on omission, duplicate members, malformed schema, and non-finite data;
+10. persisted safety fields fail closed on omission, duplicate members, malformed schema, malformed repeated-field types, and non-finite data;
 11. deterministic serialization/fingerprints are regression-tested;
 12. the full repository suite passes on Python 3.11, 3.12, and 3.13;
 13. a final exact-head bounded review finds no remaining rule capable of manufacturing a correctness advantage.
