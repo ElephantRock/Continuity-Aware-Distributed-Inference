@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from experiments.attempt_fencing import (
     S1_E0_SCENARIOS,
+    _classify_stale_authority_acceptance,
     run_s1_e0_paired,
     run_s1_e0_trial,
 )
@@ -95,6 +96,7 @@ def test_late_superseded_attempt_ground_truth_validates_required_injector_condit
         evidence = trial.evaluation.observed_evidence
         supersession = evidence["supersession_checks"]
         late = evidence["late_completion_checks"]
+        preconditions = evidence["stale_authority_preconditions"]
         presentations = evidence["stale_authority_presentations"]
 
         assert len(supersession) == 1
@@ -110,12 +112,45 @@ def test_late_superseded_attempt_ground_truth_validates_required_injector_condit
         assert late[0]["stale_at_delivery"] is True
         assert late[0]["time"] > late[0]["superseded_at"]
 
+        assert len(preconditions) == 1
+        assert preconditions[0]["attempt_id"] == "a1"
+        assert preconditions[0]["attempt_authority_before"] == "SUPERSEDED"
+        assert preconditions[0]["attempt_execution_before"] == "SUCCEEDED"
+        assert preconditions[0]["request_committed_attempt_id_before"] == "a2"
+
         assert len(presentations) == 1
         assert presentations[0]["attempt_id"] == "a1"
-        assert presentations[0]["attempt_authority"] == "SUPERSEDED"
-        assert presentations[0]["attempt_execution_status"] == "SUCCEEDED"
+        assert presentations[0]["attempt_authority_after"] == "SUPERSEDED"
+        assert presentations[0]["attempt_execution_after"] == "SUCCEEDED"
         assert presentations[0]["accepted_authoritatively"] is False
         assert presentations[0]["request_committed_attempt_id_after"] == "a2"
+
+
+def test_saar_classifier_permits_post_finalization_committed_stale_attempt():
+    accepted = _classify_stale_authority_acceptance(
+        attempt_id="a1",
+        attempt_authority_before="SUPERSEDED",
+        attempt_execution_before="SUCCEEDED",
+        committed_attempt_id_after="a1",
+        attempt_authority_after="COMMITTED",
+    )
+
+    assert accepted is True
+
+
+def test_saar_classifier_rejects_nonstale_precondition_instead_of_relabeling_it():
+    try:
+        _classify_stale_authority_acceptance(
+            attempt_id="a1",
+            attempt_authority_before="CURRENT",
+            attempt_execution_before="SUCCEEDED",
+            committed_attempt_id_after="a1",
+            attempt_authority_after="COMMITTED",
+        )
+    except AssertionError as exc:
+        assert "SUPERSEDED" in str(exc)
+    else:
+        raise AssertionError("nonstale authority presentation must be rejected")
 
 
 def test_saar_opportunities_are_actual_stale_authority_presentations():
