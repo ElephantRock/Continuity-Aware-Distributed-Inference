@@ -1,3 +1,11 @@
+from .attempt_fencing import (
+    S1_E0_COHORT_ID,
+    S1_E0_SCENARIOS,
+    AttemptFencingEvaluation,
+    AttemptFencingTrial,
+    run_s1_e0_paired,
+    run_s1_e0_trial,
+)
 from .correctness import (
     CORRECTNESS_EVALUATION_SCHEMA,
     CorrectnessEvaluationRecord,
@@ -19,6 +27,12 @@ from .correctness import (
 )
 
 __all__ = [
+    "S1_E0_COHORT_ID",
+    "S1_E0_SCENARIOS",
+    "AttemptFencingEvaluation",
+    "AttemptFencingTrial",
+    "run_s1_e0_paired",
+    "run_s1_e0_trial",
     "CORRECTNESS_EVALUATION_SCHEMA",
     "CorrectnessEvaluationRecord",
     "CorrectnessMetric",
