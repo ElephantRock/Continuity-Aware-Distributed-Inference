@@ -98,6 +98,35 @@ def test_deserializer_rejects_misspelled_safety_field_instead_of_defaulting_safe
         CorrectnessEvaluationRecord.from_dict(payload)
 
 
+@pytest.mark.parametrize(
+    "field",
+    (
+        "metric_opportunities",
+        "metric_opportunity_event_ids",
+        "metric_opportunity_scopes",
+        "metric_violations",
+        "metric_violation_event_ids",
+    ),
+)
+def test_deserializer_rejects_non_array_gate_event_fields(field: str):
+    payload = json.loads(_record(trial_id=f"non-array-{field}").to_json())
+    payload[field] = ""
+
+    with pytest.raises(TypeError, match=rf"{field} must be a JSON array"):
+        CorrectnessEvaluationRecord.from_dict(payload)
+
+
+def test_deserializer_rejects_non_array_recovery_actions():
+    payload = json.loads(_record(trial_id="non-array-recovery").to_json())
+    payload["semantic_result"]["recovery_actions"] = ""
+
+    with pytest.raises(
+        TypeError,
+        match=r"semantic_result\.recovery_actions must be a JSON array",
+    ):
+        CorrectnessEvaluationRecord.from_dict(payload)
+
+
 def test_deserializer_rejects_duplicate_top_level_json_members_before_last_value_wins():
     record = _record(trial_id="duplicate-top")
     payload = record.to_json()
