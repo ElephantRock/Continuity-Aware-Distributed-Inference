@@ -65,7 +65,8 @@ def _validated_manifest(
                     )
                 payload["observed_at"] = repr(original_at)
             else:
-                first_observation_time.setdefault(identity, action.at)
+                original_observed_at = float(payload.get("observed_at", action.at))
+                first_observation_time.setdefault(identity, original_observed_at)
 
         actions.append(
             SequenceAction(
@@ -351,6 +352,7 @@ def run_s1_sequence_trial(
     if not isinstance(manifest, AttemptFencingSequenceManifest):
         raise TypeError("manifest must be AttemptFencingSequenceManifest")
 
+    manifest = _validated_manifest(manifest)
     replay = _replay_validated_manifest(policy_id, manifest)
     core = replay.core
     adapter = replay.adapter
@@ -502,9 +504,12 @@ def run_s1_sequence_trial(
 def run_s1_sequence_paired(
     manifests: Sequence[AttemptFencingSequenceManifest] = S1_SEQUENCE_MANIFESTS,
 ) -> AttemptFencingSequenceEvaluation:
-    manifest_tuple = tuple(manifests)
-    if not manifest_tuple:
+    raw_manifests = tuple(manifests)
+    if not raw_manifests:
         raise ValueError("manifests must not be empty")
+    if not all(isinstance(item, AttemptFencingSequenceManifest) for item in raw_manifests):
+        raise TypeError("manifests must contain AttemptFencingSequenceManifest values")
+    manifest_tuple = tuple(_validated_manifest(item) for item in raw_manifests)
     if len({item.case_id for item in manifest_tuple}) != len(manifest_tuple):
         raise ValueError("manifest case IDs must be unique")
     trials = tuple(
