@@ -94,7 +94,8 @@ def test_late_superseded_attempt_ground_truth_validates_required_injector_condit
         trial = run_s1_e0_trial(PolicyID.B4, scenario_id)
         evidence = trial.evaluation.observed_evidence
         supersession = evidence["supersession_checks"]
-        stale = evidence["stale_result_presentations"]
+        late = evidence["late_completion_checks"]
+        presentations = evidence["stale_authority_presentations"]
 
         assert len(supersession) == 1
         assert supersession[0]["superseded_execution_status"] == "RUNNING"
@@ -102,12 +103,63 @@ def test_late_superseded_attempt_ground_truth_validates_required_injector_condit
         assert supersession[0]["retry_authority_status"] == "CURRENT"
         assert supersession[0]["request_current_attempt_id"] == "a2"
 
-        assert len(stale) == 1
-        assert stale[0]["attempt_id"] == "a1"
-        assert stale[0]["attempt_authority"] == "SUPERSEDED"
-        assert stale[0]["attempt_execution_status"] == "SUCCEEDED"
-        assert stale[0]["stale_at_delivery"] is True
-        assert stale[0]["time"] > stale[0]["superseded_at"]
+        assert len(late) == 1
+        assert late[0]["attempt_id"] == "a1"
+        assert late[0]["attempt_authority"] == "SUPERSEDED"
+        assert late[0]["attempt_execution_status"] == "SUCCEEDED"
+        assert late[0]["stale_at_delivery"] is True
+        assert late[0]["time"] > late[0]["superseded_at"]
+
+        assert len(presentations) == 1
+        assert presentations[0]["attempt_id"] == "a1"
+        assert presentations[0]["attempt_authority"] == "SUPERSEDED"
+        assert presentations[0]["attempt_execution_status"] == "SUCCEEDED"
+        assert presentations[0]["accepted_authoritatively"] is False
+        assert presentations[0]["request_committed_attempt_id_after"] == "a2"
+
+
+def test_saar_opportunities_are_actual_stale_authority_presentations():
+    for scenario_id, expected_source in (
+        ("FTR1", "C4_SUPPLEMENTAL_PRESENTATION"),
+        ("FTR3", "CANONICAL_SCENARIO"),
+    ):
+        trial = run_s1_e0_trial(PolicyID.B4, scenario_id)
+        ground_truth = trial.evaluation.ground_truth
+        presentations = ground_truth["stale_authority_presentations"]
+        physical_late_ids = {
+            item["event_id"] for item in ground_truth["physical_late_result_events"]
+        }
+        saar_ids = tuple(
+            event_id
+            for metric, event_id in zip(
+                trial.evaluation.metric_opportunities,
+                trial.evaluation.metric_opportunity_event_ids,
+                strict=True,
+            )
+            if metric is CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE
+        )
+        finalization_ids = {
+            item["event_id"]
+            for item in trial.evaluation.observed_evidence["finalization_records"]
+        }
+
+        assert len(presentations) == 1
+        assert presentations[0]["source"] == expected_source
+        assert saar_ids == (presentations[0]["event_id"],)
+        assert saar_ids[0] not in physical_late_ids
+        assert saar_ids[0] in finalization_ids
+
+
+def test_ftr1_supplemental_authority_presentation_does_not_mutate_c2_catalogue():
+    trial = run_s1_e0_trial(PolicyID.B4, "FTR1")
+    ground_truth = trial.evaluation.ground_truth
+    presentation = ground_truth["stale_authority_presentations"][0]
+
+    assert presentation["event_id"] == "c4.2a:FTR1:stale-authority-presentation:a1"
+    assert presentation["source"] == "C4_SUPPLEMENTAL_PRESENTATION"
+    assert presentation["event_id"] not in {
+        item["event_id"] for item in ground_truth["physical_late_result_events"]
+    }
 
 
 def test_duplicate_result_has_one_semantic_finalization_and_zero_dfr():
