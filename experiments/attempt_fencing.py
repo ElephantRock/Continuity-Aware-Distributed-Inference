@@ -242,6 +242,30 @@ def _authority_presentations(
     return tuple(presentations)
 
 
+def _classify_stale_authority_acceptance(
+    *,
+    attempt_id: str,
+    attempt_authority_before: str,
+    attempt_execution_before: str,
+    committed_attempt_id_after: str | None,
+    attempt_authority_after: str,
+) -> bool:
+    if attempt_authority_before != AttemptAuthority.SUPERSEDED.name:
+        raise AssertionError(
+            "SAAR opportunity must present a semantically SUPERSEDED Attempt"
+        )
+    if attempt_execution_before != ExecutionStatus.SUCCEEDED.name:
+        raise AssertionError(
+            "SAAR authority presentation requires delivered physical success"
+        )
+    accepted = committed_attempt_id_after == attempt_id
+    if accepted and attempt_authority_after != AttemptAuthority.COMMITTED.name:
+        raise AssertionError(
+            "authoritatively accepted stale Attempt must become COMMITTED"
+        )
+    return accepted
+
+
 def _run_semantic_trace(
     policy_id: PolicyID,
     scenario_id: str,
@@ -252,22 +276,61 @@ def _run_semantic_trace(
     tuple[dict[str, Any], ...],
     tuple[dict[str, Any], ...],
     tuple[dict[str, Any], ...],
+    tuple[dict[str, Any], ...],
     tuple[PlacementDecision, ...],
 ]:
     definition = scenario_definition(scenario_id)
     schedule = definition.build(seed=0)
     sim = DiscreteEventSimulator(seed=0)
     core = _scaffold_core()
-    adapter = ContinuityAdapter(sim, core)
-    policies = build_baseline_policies(CoreContinuityAuthority(core))
-    policy = policies[policy_id]
 
     supersession_checks: list[dict[str, Any]] = []
     late_completion_checks: list[dict[str, Any]] = []
+    authority_preconditions: dict[str, dict[str, Any]] = {}
     authority_presentation_checks: list[dict[str, Any]] = []
     admission_decisions: list[PlacementDecision] = []
     supersession_times: dict[str, float] = {}
     presentation_by_event = {item.event_id: item for item in presentations}
+
+    def on_authority_precondition(
+        _sim: DiscreteEventSimulator,
+        event: Any,
+    ) -> None:
+        presentation = presentation_by_event.get(event.event_id)
+        if presentation is None:
+            return
+        attempt = core.attempts[presentation.attempt_id]
+        request = core.requests[presentation.request_id]
+        if attempt.authority_status is not AttemptAuthority.SUPERSEDED:
+            raise AssertionError(
+                "SAAR opportunity must be stale before authoritative finalization"
+            )
+        if attempt.execution_status is not ExecutionStatus.SUCCEEDED:
+            raise AssertionError(
+                "SAAR opportunity requires delivered physical success before finalization"
+            )
+        authority_preconditions[event.event_id] = {
+            "event_id": event.event_id,
+            "time": sim.now,
+            "request_id": presentation.request_id,
+            "attempt_id": presentation.attempt_id,
+            "source": presentation.source,
+            "attempt_authority_before": attempt.authority_status.name,
+            "attempt_execution_before": attempt.execution_status.name,
+            "request_current_attempt_id_before": request.current_attempt_id,
+            "request_committed_attempt_id_before": request.committed_attempt_id,
+        }
+
+    # This handler must run before ContinuityAdapter's observation handler so a
+    # failing implementation that accepts stale authority can still be measured
+    # instead of changing SUPERSEDED -> COMMITTED before the stale precondition
+    # is captured.
+    sim.register_handler(EventKind.OBSERVATION_CREATED, on_authority_precondition)
+    sim.register_handler(EventKind.OBSERVATION_DUPLICATED, on_authority_precondition)
+
+    adapter = ContinuityAdapter(sim, core)
+    policies = build_baseline_policies(CoreContinuityAuthority(core))
+    policy = policies[policy_id]
 
     def on_retry_started(_sim: DiscreteEventSimulator, event: Any) -> None:
         data = _payload(event)
@@ -348,16 +411,20 @@ def _run_semantic_trace(
         presentation = presentation_by_event.get(event.event_id)
         if presentation is None:
             return
+        precondition = authority_preconditions.get(event.event_id)
+        if precondition is None:
+            raise AssertionError(
+                "stale authority precondition was not captured before finalization"
+            )
         attempt = core.attempts[presentation.attempt_id]
         request = core.requests[presentation.request_id]
-        if attempt.authority_status is not AttemptAuthority.SUPERSEDED:
-            raise AssertionError(
-                "SAAR opportunity must present a semantically SUPERSEDED Attempt"
-            )
-        if attempt.execution_status is not ExecutionStatus.SUCCEEDED:
-            raise AssertionError(
-                "SAAR authority presentation requires delivered physical success"
-            )
+        accepted = _classify_stale_authority_acceptance(
+            attempt_id=presentation.attempt_id,
+            attempt_authority_before=precondition["attempt_authority_before"],
+            attempt_execution_before=precondition["attempt_execution_before"],
+            committed_attempt_id_after=request.committed_attempt_id,
+            attempt_authority_after=attempt.authority_status.name,
+        )
         authority_presentation_checks.append(
             {
                 "event_id": event.event_id,
@@ -365,16 +432,17 @@ def _run_semantic_trace(
                 "request_id": presentation.request_id,
                 "attempt_id": presentation.attempt_id,
                 "source": presentation.source,
-                "attempt_authority": attempt.authority_status.name,
-                "attempt_execution_status": attempt.execution_status.name,
-                "request_current_attempt_id": request.current_attempt_id,
+                "attempt_authority_after": attempt.authority_status.name,
+                "attempt_execution_after": attempt.execution_status.name,
+                "request_current_attempt_id_after": request.current_attempt_id,
                 "request_committed_attempt_id_after": request.committed_attempt_id,
-                "accepted_authoritatively": (
-                    request.committed_attempt_id == presentation.attempt_id
-                ),
+                "accepted_authoritatively": accepted,
             }
         )
 
+    # These measurement handlers intentionally run after ContinuityAdapter so
+    # they observe the semantic effects of retry, late completion, and
+    # authoritative finalization.
     sim.register_handler(EventKind.RETRY_STARTED, on_retry_started)
     sim.register_handler(EventKind.LATE_RESULT, on_late_result)
     sim.register_handler(EventKind.OBSERVATION_CREATED, on_authority_presentation)
@@ -407,17 +475,28 @@ def _run_semantic_trace(
                 "mandatory S1 retry scenario did not deliver a stale physical Attempt result"
             )
         expected_ids = tuple(item.event_id for item in presentations)
+        pre_ids = tuple(
+            event_id for event_id in expected_ids if event_id in authority_preconditions
+        )
         observed_ids = tuple(item["event_id"] for item in authority_presentation_checks)
+        if pre_ids != expected_ids:
+            raise AssertionError(
+                "every stale authority presentation must capture its stale precondition"
+            )
         if observed_ids != expected_ids:
             raise AssertionError(
                 "runtime stale authority presentations must exactly match the exogenous S1 manifest"
             )
 
+    ordered_preconditions = tuple(
+        authority_preconditions[item.event_id] for item in presentations
+    )
     return (
         core,
         adapter,
         tuple(supersession_checks),
         tuple(late_completion_checks),
+        ordered_preconditions,
         tuple(authority_presentation_checks),
         tuple(admission_decisions),
     )
@@ -442,6 +521,7 @@ def run_s1_e0_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingTria
         adapter,
         supersession_checks,
         late_completion_checks,
+        authority_preconditions,
         authority_presentation_checks,
         admission_decisions,
     ) = _run_semantic_trace(policy_id, scenario_id, presentations)
@@ -527,6 +607,7 @@ def run_s1_e0_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingTria
     observed_evidence = {
         "supersession_checks": list(supersession_checks),
         "late_completion_checks": list(late_completion_checks),
+        "stale_authority_preconditions": list(authority_preconditions),
         "stale_authority_presentations": list(authority_presentation_checks),
         "finalization_records": [
             {
