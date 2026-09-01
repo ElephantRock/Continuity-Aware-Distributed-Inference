@@ -54,6 +54,17 @@ _RETRY_SCENARIOS = frozenset({"FTR1", "FTR3"})
 
 
 @dataclass(frozen=True, slots=True)
+class _AuthorityPresentation:
+    event_id: str
+    request_id: str
+    attempt_id: str
+    evidence_id: str
+    output_id: str
+    at: float
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
 class AttemptFencingTrial:
     policy_id: PolicyID
     scenario_id: str
@@ -81,8 +92,12 @@ class AttemptFencingTrial:
             self.finalization_applied_count, bool
         ) or self.finalization_applied_count < 0:
             raise ValueError("finalization_applied_count must be a non-negative integer")
-        if not all(isinstance(item, PlacementDecision) for item in self.stale_admission_decisions):
-            raise TypeError("stale_admission_decisions must contain PlacementDecision values")
+        if not all(
+            isinstance(item, PlacementDecision) for item in self.stale_admission_decisions
+        ):
+            raise TypeError(
+                "stale_admission_decisions must contain PlacementDecision values"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +116,9 @@ class AttemptFencingEvaluation:
             for scenario_id in S1_E0_SCENARIOS
             for policy_id in PolicyID
         )
-        actual_order = tuple((trial.scenario_id, trial.policy_id) for trial in self.trials)
+        actual_order = tuple(
+            (trial.scenario_id, trial.policy_id) for trial in self.trials
+        )
         if actual_order != expected_order:
             raise ValueError("S1 E0 trials must use canonical scenario then B0-B4 ordering")
         if not isinstance(self.summary, CorrectnessSummary):
@@ -154,8 +171,8 @@ def _attempt_admission_observation(
     )
 
 
-def _expected_stale_result_inputs(schedule: Any) -> tuple[tuple[str, str], ...]:
-    expected: list[tuple[str, str]] = []
+def _physical_late_inputs(schedule: Any) -> tuple[tuple[str, str], ...]:
+    inputs: list[tuple[str, str]] = []
     for event in schedule.events:
         if event.kind is not EventKind.LATE_RESULT:
             continue
@@ -163,16 +180,76 @@ def _expected_stale_result_inputs(schedule: Any) -> tuple[tuple[str, str], ...]:
         attempt_id = data.get("attempt_id")
         if not isinstance(attempt_id, str) or not attempt_id:
             raise AssertionError("canonical S1 LATE_RESULT event requires AttemptID")
-        expected.append((event.event_id, attempt_id))
-    return tuple(expected)
+        inputs.append((event.event_id, attempt_id))
+    return tuple(inputs)
+
+
+def _authority_presentations(
+    schedule: Any,
+    scenario_id: str,
+) -> tuple[_AuthorityPresentation, ...]:
+    late_attempt_ids = {attempt_id for _, attempt_id in _physical_late_inputs(schedule)}
+    presentations: list[_AuthorityPresentation] = []
+
+    for event in schedule.events:
+        if event.kind not in {
+            EventKind.OBSERVATION_CREATED,
+            EventKind.OBSERVATION_DUPLICATED,
+        }:
+            continue
+        data = dict(event.payload)
+        attempt_id = data.get("attempt_id")
+        if attempt_id not in late_attempt_ids:
+            continue
+        request_id = data.get("request_id")
+        evidence_id = data.get("evidence_id")
+        output_id = data.get("output_id")
+        if not all(
+            isinstance(value, str) and value
+            for value in (request_id, attempt_id, evidence_id, output_id)
+        ):
+            raise AssertionError(
+                "canonical S1 stale authority presentation requires request/attempt/evidence/output IDs"
+            )
+        presentations.append(
+            _AuthorityPresentation(
+                event_id=event.event_id,
+                request_id=request_id,
+                attempt_id=attempt_id,
+                evidence_id=evidence_id,
+                output_id=output_id,
+                at=event.time,
+                source="CANONICAL_SCENARIO",
+            )
+        )
+
+    if scenario_id == "FTR1":
+        if len(late_attempt_ids) != 1:
+            raise AssertionError("FTR1 must contain exactly one physical late Attempt result")
+        last_time = max(event.time for event in schedule.events)
+        presentations.append(
+            _AuthorityPresentation(
+                event_id="c4.2a:FTR1:stale-authority-presentation:a1",
+                request_id="r",
+                attempt_id=next(iter(late_attempt_ids)),
+                evidence_id="c4.2a:FTR1:e1-stale",
+                output_id="c4.2a:FTR1:o1-stale",
+                at=last_time + 1.0,
+                source="C4_SUPPLEMENTAL_PRESENTATION",
+            )
+        )
+
+    return tuple(presentations)
 
 
 def _run_semantic_trace(
     policy_id: PolicyID,
     scenario_id: str,
+    presentations: tuple[_AuthorityPresentation, ...],
 ) -> tuple[
     ContinuityCore,
     ContinuityAdapter,
+    tuple[dict[str, Any], ...],
     tuple[dict[str, Any], ...],
     tuple[dict[str, Any], ...],
     tuple[PlacementDecision, ...],
@@ -186,9 +263,11 @@ def _run_semantic_trace(
     policy = policies[policy_id]
 
     supersession_checks: list[dict[str, Any]] = []
-    stale_presentations: list[dict[str, Any]] = []
+    late_completion_checks: list[dict[str, Any]] = []
+    authority_presentation_checks: list[dict[str, Any]] = []
     admission_decisions: list[PlacementDecision] = []
     supersession_times: dict[str, float] = {}
+    presentation_by_event = {item.event_id: item for item in presentations}
 
     def on_retry_started(_sim: DiscreteEventSimulator, event: Any) -> None:
         data = _payload(event)
@@ -237,20 +316,20 @@ def _run_semantic_trace(
         if attempt.execution_status is not ExecutionStatus.SUCCEEDED:
             raise AssertionError("late physical success must be delivered as SUCCEEDED execution")
 
-        stale = {
-            "event_id": event.event_id,
-            "time": sim.now,
-            "request_id": attempt.request_id,
-            "attempt_id": attempt_id,
-            "attempt_authority": attempt.authority_status.name,
-            "attempt_execution_status": attempt.execution_status.name,
-            "request_current_attempt_id": request.current_attempt_id,
-            "request_committed_attempt_id": request.committed_attempt_id,
-            "superseded_at": superseded_at,
-            "stale_at_delivery": True,
-        }
-        stale_presentations.append(stale)
-
+        late_completion_checks.append(
+            {
+                "event_id": event.event_id,
+                "time": sim.now,
+                "request_id": attempt.request_id,
+                "attempt_id": attempt_id,
+                "attempt_authority": attempt.authority_status.name,
+                "attempt_execution_status": attempt.execution_status.name,
+                "request_current_attempt_id": request.current_attempt_id,
+                "request_committed_attempt_id": request.committed_attempt_id,
+                "superseded_at": superseded_at,
+                "stale_at_delivery": True,
+            }
+        )
         admission_decisions.append(
             decide_placement(
                 policy,
@@ -262,22 +341,84 @@ def _run_semantic_trace(
             )
         )
 
+    def on_authority_presentation(
+        _sim: DiscreteEventSimulator,
+        event: Any,
+    ) -> None:
+        presentation = presentation_by_event.get(event.event_id)
+        if presentation is None:
+            return
+        attempt = core.attempts[presentation.attempt_id]
+        request = core.requests[presentation.request_id]
+        if attempt.authority_status is not AttemptAuthority.SUPERSEDED:
+            raise AssertionError(
+                "SAAR opportunity must present a semantically SUPERSEDED Attempt"
+            )
+        if attempt.execution_status is not ExecutionStatus.SUCCEEDED:
+            raise AssertionError(
+                "SAAR authority presentation requires delivered physical success"
+            )
+        authority_presentation_checks.append(
+            {
+                "event_id": event.event_id,
+                "time": sim.now,
+                "request_id": presentation.request_id,
+                "attempt_id": presentation.attempt_id,
+                "source": presentation.source,
+                "attempt_authority": attempt.authority_status.name,
+                "attempt_execution_status": attempt.execution_status.name,
+                "request_current_attempt_id": request.current_attempt_id,
+                "request_committed_attempt_id_after": request.committed_attempt_id,
+                "accepted_authoritatively": (
+                    request.committed_attempt_id == presentation.attempt_id
+                ),
+            }
+        )
+
     sim.register_handler(EventKind.RETRY_STARTED, on_retry_started)
     sim.register_handler(EventKind.LATE_RESULT, on_late_result)
+    sim.register_handler(EventKind.OBSERVATION_CREATED, on_authority_presentation)
+    sim.register_handler(EventKind.OBSERVATION_DUPLICATED, on_authority_presentation)
+
     schedule.apply(sim)
+
+    for presentation in presentations:
+        if presentation.source != "C4_SUPPLEMENTAL_PRESENTATION":
+            continue
+        adapter.schedule_observation(
+            presentation.request_id,
+            presentation.attempt_id,
+            presentation.evidence_id,
+            presentation.output_id,
+            at=presentation.at,
+            observed_at=presentation.at,
+            event_id=presentation.event_id,
+        )
+
     sim.run()
 
     if scenario_id in _RETRY_SCENARIOS:
         if not supersession_checks:
-            raise AssertionError("mandatory S1 retry scenario did not produce supersession evidence")
-        if not stale_presentations:
-            raise AssertionError("mandatory S1 retry scenario did not present a stale Attempt result")
+            raise AssertionError(
+                "mandatory S1 retry scenario did not produce supersession evidence"
+            )
+        if not late_completion_checks:
+            raise AssertionError(
+                "mandatory S1 retry scenario did not deliver a stale physical Attempt result"
+            )
+        expected_ids = tuple(item.event_id for item in presentations)
+        observed_ids = tuple(item["event_id"] for item in authority_presentation_checks)
+        if observed_ids != expected_ids:
+            raise AssertionError(
+                "runtime stale authority presentations must exactly match the exogenous S1 manifest"
+            )
 
     return (
         core,
         adapter,
         tuple(supersession_checks),
-        tuple(stale_presentations),
+        tuple(late_completion_checks),
+        tuple(authority_presentation_checks),
         tuple(admission_decisions),
     )
 
@@ -291,40 +432,48 @@ def run_s1_e0_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingTria
     definition = scenario_definition(scenario_id)
     schedule = definition.build(seed=0)
     expected_attempt_id = _EXPECTED_COMMITTED_ATTEMPT[scenario_id]
-    expected_stale_inputs = _expected_stale_result_inputs(schedule)
-    expected_stale_event_ids = tuple(event_id for event_id, _ in expected_stale_inputs)
-    expected_stale_attempt_ids = tuple(sorted({attempt_id for _, attempt_id in expected_stale_inputs}))
+    physical_late_inputs = _physical_late_inputs(schedule)
+    presentations = _authority_presentations(schedule, scenario_id)
+    stale_event_ids = tuple(item.event_id for item in presentations)
+    stale_attempt_ids = tuple(sorted({item.attempt_id for item in presentations}))
 
-    core, adapter, supersession_checks, stale_presentations, admission_decisions = (
-        _run_semantic_trace(policy_id, scenario_id)
-    )
+    (
+        core,
+        adapter,
+        supersession_checks,
+        late_completion_checks,
+        authority_presentation_checks,
+        admission_decisions,
+    ) = _run_semantic_trace(policy_id, scenario_id, presentations)
+
     outcome = authoritative_outcome(core, "r")
-
     if core.requests["r"].status is not RequestStatus.COMPLETED:
         raise AssertionError(f"{scenario_id} must end in a completed LogicalRequest")
     if outcome.authoritative_output_id is None:
         raise AssertionError(f"{scenario_id} must produce one authoritative output")
 
-    observed_stale_inputs = tuple(
-        (item["event_id"], item["attempt_id"]) for item in stale_presentations
-    )
-    if observed_stale_inputs != expected_stale_inputs:
-        raise AssertionError(
-            "runtime stale-result observations must exactly match canonical scenario opportunities"
-        )
-    if len(admission_decisions) != len(expected_stale_inputs):
-        raise AssertionError("every canonical stale-result event requires one admission diagnostic")
-
-    stale_accepted = outcome.committed_attempt_id in set(expected_stale_attempt_ids)
-
     finalization_records = tuple(
         record for record in adapter.records if record.operation == "finalize_request"
+    )
+    finalization_by_event = {
+        record.event_id: record
+        for record in finalization_records
+        if record.event_id in set(stale_event_ids)
+    }
+    if set(finalization_by_event) != set(stale_event_ids):
+        raise AssertionError(
+            "every SAAR opportunity must reach one terminal finalization attempt"
+        )
+
+    accepted_event_ids = tuple(
+        item["event_id"]
+        for item in authority_presentation_checks
+        if item["accepted_authoritatively"]
     )
     finalization_applied_count = sum(
         record.outcome is AdapterOutcome.APPLIED for record in finalization_records
     )
     duplicate_finalization = finalization_applied_count > 1
-
     semantic_correct = outcome.committed_attempt_id == expected_attempt_id
     recovery_actions = (
         (RecoveryAction.RETRY,) if scenario_id in _RETRY_SCENARIOS else ()
@@ -336,11 +485,11 @@ def run_s1_e0_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingTria
     violations: list[CorrectnessMetric] = []
     violation_event_ids: list[str] = []
 
-    for event_id in expected_stale_event_ids:
+    for event_id in stale_event_ids:
         opportunities.append(CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE)
         opportunity_event_ids.append(event_id)
         opportunity_scopes.append(MetricOpportunityScope.EXOGENOUS_PAIRED)
-        if stale_accepted:
+        if event_id in accepted_event_ids:
             violations.append(CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE)
             violation_event_ids.append(event_id)
 
@@ -358,12 +507,27 @@ def run_s1_e0_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingTria
         "scenario_fingerprint": schedule.fingerprint,
         "request_id": "r",
         "expected_committed_attempt_id": expected_attempt_id,
-        "stale_attempt_ids": list(expected_stale_attempt_ids),
-        "stale_result_event_ids": list(expected_stale_event_ids),
+        "physical_late_result_events": [
+            {"event_id": event_id, "attempt_id": attempt_id}
+            for event_id, attempt_id in physical_late_inputs
+        ],
+        "stale_authority_presentations": [
+            {
+                "event_id": item.event_id,
+                "request_id": item.request_id,
+                "attempt_id": item.attempt_id,
+                "evidence_id": item.evidence_id,
+                "output_id": item.output_id,
+                "at": item.at,
+                "source": item.source,
+            }
+            for item in presentations
+        ],
     }
     observed_evidence = {
         "supersession_checks": list(supersession_checks),
-        "stale_result_presentations": list(stale_presentations),
+        "late_completion_checks": list(late_completion_checks),
+        "stale_authority_presentations": list(authority_presentation_checks),
         "finalization_records": [
             {
                 "event_id": record.event_id,
@@ -385,11 +549,11 @@ def run_s1_e0_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingTria
         "stale_attempt_admission_probe_is_gate_metric": False,
         "stale_attempt_admission_decisions": [
             {
-                "event_id": stale_event_id,
+                "event_id": event_id,
                 **_placement_to_dict(decision),
             }
-            for stale_event_id, decision in zip(
-                expected_stale_event_ids, admission_decisions, strict=True
+            for (event_id, _), decision in zip(
+                physical_late_inputs, admission_decisions, strict=True
             )
         ],
     }
@@ -425,8 +589,8 @@ def run_s1_e0_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingTria
         scenario_id=scenario_id,
         evaluation=evaluation,
         authoritative_outcome=outcome,
-        stale_result_event_ids=expected_stale_event_ids,
-        stale_attempt_ids=expected_stale_attempt_ids,
+        stale_result_event_ids=stale_event_ids,
+        stale_attempt_ids=stale_attempt_ids,
         finalization_applied_count=finalization_applied_count,
         stale_admission_decisions=admission_decisions,
     )
