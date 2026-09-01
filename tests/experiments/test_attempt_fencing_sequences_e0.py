@@ -4,6 +4,7 @@ from experiments.attempt_fencing_sequences import (
     S1_SEQUENCE_MANIFESTS,
     AttemptFencingSequenceManifest,
     SequenceActionKind,
+    _classify_sequence_stale_acceptance,
     run_s1_sequence_paired,
     run_s1_sequence_trial,
 )
@@ -162,6 +163,48 @@ def test_duplicate_delivery_cases_remain_semantically_idempotent_not_dfr_failure
         ))
         assert trial.finalization_applied_count == 1
         assert trial.authoritative_outcome.committed_attempt_id == trial.manifest.expected_committed_attempt_id
+
+
+def test_duplicate_observations_preserve_original_identity_and_observation_time():
+    for case_id in (
+        "D-duplicate-stale-presentation",
+        "E-three-generations-stale-after-commit-duplicates",
+    ):
+        manifest = next(item for item in S1_SEQUENCE_MANIFESTS if item.case_id == case_id)
+        originals = [
+            item for item in manifest.actions if item.kind is SequenceActionKind.OBSERVE
+        ]
+        duplicates = [
+            item
+            for item in manifest.actions
+            if item.kind is SequenceActionKind.OBSERVE_DUPLICATE
+        ]
+        assert duplicates
+        for duplicate in duplicates:
+            payload = duplicate.payload_dict
+            original = next(
+                item
+                for item in originals
+                if all(
+                    item.payload_dict[key] == payload[key]
+                    for key in ("request_id", "attempt_id", "evidence_id", "output_id")
+                )
+            )
+            assert float(payload["observed_at"]) == original.at
+            assert original.at < duplicate.at
+
+
+def test_repeated_stale_acceptance_can_be_counted_after_prior_bad_commit():
+    accepted = _classify_sequence_stale_acceptance(
+        attempt_id="a1",
+        attempt_authority_before="COMMITTED",
+        attempt_execution_before="SUCCEEDED",
+        committed_attempt_id_before="a1",
+        committed_attempt_id_after="a1",
+        attempt_authority_after="COMMITTED",
+    )
+
+    assert accepted is True
 
 
 def test_three_generation_cases_commit_a3_and_retain_all_stale_presentations():
