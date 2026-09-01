@@ -154,6 +154,19 @@ def _attempt_admission_observation(
     )
 
 
+def _expected_stale_result_inputs(schedule: Any) -> tuple[tuple[str, str], ...]:
+    expected: list[tuple[str, str]] = []
+    for event in schedule.events:
+        if event.kind is not EventKind.LATE_RESULT:
+            continue
+        data = dict(event.payload)
+        attempt_id = data.get("attempt_id")
+        if not isinstance(attempt_id, str) or not attempt_id:
+            raise AssertionError("canonical S1 LATE_RESULT event requires AttemptID")
+        expected.append((event.event_id, attempt_id))
+    return tuple(expected)
+
+
 def _run_semantic_trace(
     policy_id: PolicyID,
     scenario_id: str,
@@ -278,6 +291,10 @@ def run_s1_e0_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingTria
     definition = scenario_definition(scenario_id)
     schedule = definition.build(seed=0)
     expected_attempt_id = _EXPECTED_COMMITTED_ATTEMPT[scenario_id]
+    expected_stale_inputs = _expected_stale_result_inputs(schedule)
+    expected_stale_event_ids = tuple(event_id for event_id, _ in expected_stale_inputs)
+    expected_stale_attempt_ids = tuple(sorted({attempt_id for _, attempt_id in expected_stale_inputs}))
+
     core, adapter, supersession_checks, stale_presentations, admission_decisions = (
         _run_semantic_trace(policy_id, scenario_id)
     )
@@ -288,9 +305,17 @@ def run_s1_e0_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingTria
     if outcome.authoritative_output_id is None:
         raise AssertionError(f"{scenario_id} must produce one authoritative output")
 
-    stale_attempt_ids = tuple(sorted({item["attempt_id"] for item in stale_presentations}))
-    stale_event_ids = tuple(item["event_id"] for item in stale_presentations)
-    stale_accepted = outcome.committed_attempt_id in set(stale_attempt_ids)
+    observed_stale_inputs = tuple(
+        (item["event_id"], item["attempt_id"]) for item in stale_presentations
+    )
+    if observed_stale_inputs != expected_stale_inputs:
+        raise AssertionError(
+            "runtime stale-result observations must exactly match canonical scenario opportunities"
+        )
+    if len(admission_decisions) != len(expected_stale_inputs):
+        raise AssertionError("every canonical stale-result event requires one admission diagnostic")
+
+    stale_accepted = outcome.committed_attempt_id in set(expected_stale_attempt_ids)
 
     finalization_records = tuple(
         record for record in adapter.records if record.operation == "finalize_request"
@@ -311,7 +336,7 @@ def run_s1_e0_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingTria
     violations: list[CorrectnessMetric] = []
     violation_event_ids: list[str] = []
 
-    for event_id in stale_event_ids:
+    for event_id in expected_stale_event_ids:
         opportunities.append(CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE)
         opportunity_event_ids.append(event_id)
         opportunity_scopes.append(MetricOpportunityScope.EXOGENOUS_PAIRED)
@@ -333,8 +358,8 @@ def run_s1_e0_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingTria
         "scenario_fingerprint": schedule.fingerprint,
         "request_id": "r",
         "expected_committed_attempt_id": expected_attempt_id,
-        "stale_attempt_ids": list(stale_attempt_ids),
-        "stale_result_event_ids": list(stale_event_ids),
+        "stale_attempt_ids": list(expected_stale_attempt_ids),
+        "stale_result_event_ids": list(expected_stale_event_ids),
     }
     observed_evidence = {
         "supersession_checks": list(supersession_checks),
@@ -364,7 +389,7 @@ def run_s1_e0_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingTria
                 **_placement_to_dict(decision),
             }
             for stale_event_id, decision in zip(
-                stale_event_ids, admission_decisions, strict=True
+                expected_stale_event_ids, admission_decisions, strict=True
             )
         ],
     }
@@ -400,8 +425,8 @@ def run_s1_e0_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingTria
         scenario_id=scenario_id,
         evaluation=evaluation,
         authoritative_outcome=outcome,
-        stale_result_event_ids=stale_event_ids,
-        stale_attempt_ids=stale_attempt_ids,
+        stale_result_event_ids=expected_stale_event_ids,
+        stale_attempt_ids=expected_stale_attempt_ids,
         finalization_applied_count=finalization_applied_count,
         stale_admission_decisions=admission_decisions,
     )
