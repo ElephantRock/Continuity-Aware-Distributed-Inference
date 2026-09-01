@@ -152,6 +152,12 @@ def _require_exact_keys(
         )
 
 
+def _require_json_array(value: Any, name: str) -> list[Any]:
+    if not isinstance(value, list):
+        raise TypeError(f"{name} must be a JSON array")
+    return value
+
+
 def _reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -397,7 +403,10 @@ class SemanticResult:
                 else ExplicitNonSuccess(value["explicit_non_success"])
             ),
             recovery_actions=tuple(
-                RecoveryAction(item) for item in value["recovery_actions"]
+                RecoveryAction(item)
+                for item in _require_json_array(
+                    value["recovery_actions"], "semantic_result.recovery_actions"
+                )
             ),
         )
 
@@ -613,16 +622,35 @@ class CorrectnessEvaluationRecord:
             policy_decision=value["policy_decision"],
             semantic_result=semantic_result,
             metric_opportunities=tuple(
-                CorrectnessMetric(item) for item in value["metric_opportunities"]
+                CorrectnessMetric(item)
+                for item in _require_json_array(
+                    value["metric_opportunities"], "metric_opportunities"
+                )
             ),
-            metric_opportunity_event_ids=tuple(value["metric_opportunity_event_ids"]),
+            metric_opportunity_event_ids=tuple(
+                _require_json_array(
+                    value["metric_opportunity_event_ids"],
+                    "metric_opportunity_event_ids",
+                )
+            ),
             metric_opportunity_scopes=tuple(
-                MetricOpportunityScope(item) for item in value["metric_opportunity_scopes"]
+                MetricOpportunityScope(item)
+                for item in _require_json_array(
+                    value["metric_opportunity_scopes"], "metric_opportunity_scopes"
+                )
             ),
             metric_violations=tuple(
-                CorrectnessMetric(item) for item in value["metric_violations"]
+                CorrectnessMetric(item)
+                for item in _require_json_array(
+                    value["metric_violations"], "metric_violations"
+                )
             ),
-            metric_violation_event_ids=tuple(value["metric_violation_event_ids"]),
+            metric_violation_event_ids=tuple(
+                _require_json_array(
+                    value["metric_violation_event_ids"],
+                    "metric_violation_event_ids",
+                )
+            ),
             fault_id=value["fault_id"],
             fault_class=value["fault_class"],
         )
