@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from experiments import attempt_fencing_sequences_base as sequence_base
 from experiments.attempt_fencing_sequences import (
     S1_SEQUENCE_MANIFESTS,
     AttemptFencingSequenceManifest,
+    SequenceAction,
     SequenceActionKind,
     _classify_sequence_stale_acceptance,
+    _validated_manifest,
     run_s1_sequence_paired,
     run_s1_sequence_trial,
 )
@@ -190,8 +193,105 @@ def test_duplicate_observations_preserve_original_identity_and_observation_time(
                     for key in ("request_id", "attempt_id", "evidence_id", "output_id")
                 )
             )
-            assert float(payload["observed_at"]) == original.at
+            assert float(payload["observed_at"]) == float(
+                original.payload_dict.get("observed_at", original.at)
+            )
             assert original.at < duplicate.at
+
+
+def test_public_trial_and_paired_entry_points_normalize_generated_style_manifests():
+    raw = next(
+        item
+        for item in sequence_base.S1_SEQUENCE_MANIFESTS
+        if item.case_id == "D-duplicate-stale-presentation"
+    )
+    expected = next(
+        item
+        for item in S1_SEQUENCE_MANIFESTS
+        if item.case_id == raw.case_id
+    )
+
+    direct = run_s1_sequence_trial(PolicyID.B4, raw)
+    paired = run_s1_sequence_paired((raw,))
+
+    assert direct.manifest == expected
+    assert paired.manifests == (expected,)
+    assert tuple(trial.manifest for trial in paired.trials) == tuple(
+        expected for _ in PolicyID
+    )
+    assert all(
+        trial.evaluation.ground_truth_json == direct.evaluation.ground_truth_json
+        for trial in paired.trials
+        if trial.policy_id is PolicyID.B4
+    )
+
+
+def test_normalization_preserves_an_original_explicit_observed_at_for_duplicate_delivery():
+    raw = next(
+        item
+        for item in sequence_base.S1_SEQUENCE_MANIFESTS
+        if item.case_id == "D-duplicate-stale-presentation"
+    )
+    duplicate = next(
+        item for item in raw.actions if item.kind is SequenceActionKind.OBSERVE_DUPLICATE
+    )
+    duplicate_identity = tuple(
+        duplicate.payload_dict[key]
+        for key in ("request_id", "attempt_id", "evidence_id", "output_id")
+    )
+    explicit_observed_at = duplicate.at - 1.25
+    actions = []
+    for action in raw.actions:
+        payload = action.payload_dict
+        identity = tuple(
+            payload.get(key)
+            for key in ("request_id", "attempt_id", "evidence_id", "output_id")
+        )
+        if action.kind is SequenceActionKind.OBSERVE and identity == duplicate_identity:
+            payload["observed_at"] = repr(explicit_observed_at)
+        actions.append(
+            SequenceAction(
+                kind=action.kind,
+                at=action.at,
+                event_id=action.event_id,
+                payload=tuple(payload.items()),
+            )
+        )
+    custom = AttemptFencingSequenceManifest(
+        case_id=raw.case_id,
+        seed=raw.seed,
+        pressure_labels=raw.pressure_labels,
+        actions=tuple(actions),
+        stale_presentation_event_ids=raw.stale_presentation_event_ids,
+        expected_committed_attempt_id=raw.expected_committed_attempt_id,
+        schema=raw.schema,
+    )
+
+    normalized = _validated_manifest(custom)
+    normalized_duplicate = next(
+        item
+        for item in normalized.actions
+        if item.kind is SequenceActionKind.OBSERVE_DUPLICATE
+    )
+    normalized_original = next(
+        item
+        for item in normalized.actions
+        if item.kind is SequenceActionKind.OBSERVE
+        and tuple(
+            item.payload_dict[key]
+            for key in ("request_id", "attempt_id", "evidence_id", "output_id")
+        ) == duplicate_identity
+    )
+
+    assert float(normalized_original.payload_dict["observed_at"]) == explicit_observed_at
+    assert float(normalized_duplicate.payload_dict["observed_at"]) == explicit_observed_at
+    trial = run_s1_sequence_trial(PolicyID.B4, custom)
+    finalization_ids = {
+        item["event_id"]
+        for item in trial.evaluation.observed_evidence["semantic_action_records"]
+        if item["operation"] == "finalize_request"
+    }
+    assert set(trial.manifest.stale_presentation_event_ids) <= finalization_ids
 
 
 def test_repeated_stale_acceptance_can_be_counted_after_prior_bad_commit():
