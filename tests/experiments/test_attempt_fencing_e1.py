@@ -81,7 +81,7 @@ def test_s1_e1_is_measured_ev1_and_uses_real_distinct_worker_processes(paired_ev
         assert observed["coordinator_pid"] == os.getpid()
         assert trial.evaluation.ground_truth["start_method"] == "spawn"
         assert trial.evaluation.ground_truth["ipc_transport"] == "multiprocessing.Pipe+Queue"
-        assert trial.evaluation.ground_truth["cpu_work"]["minimum_inflight_seconds"] == S1_E1_MIN_CPU_SECONDS
+        assert trial.evaluation.ground_truth["cpu_work"]["minimum_process_cpu_seconds"] == S1_E1_MIN_CPU_SECONDS
 
 
 def test_every_retry_is_triggered_by_a_measured_wall_clock_timeout(paired_evaluation):
@@ -115,7 +115,8 @@ def test_retry_races_have_cpu_in_flight_when_timeout_fires(paired_evaluation):
             superseded = timeout["superseded_attempt_id"]
             assert starts[superseded]["at"] <= timeout["started_at"]
             assert completions[superseded]["observed_at"] >= timeout["fired_at"]
-            assert completions[superseded]["compute_elapsed_seconds"] >= S1_E1_MIN_CPU_SECONDS
+            assert completions[superseded]["compute_cpu_seconds"] >= S1_E1_MIN_CPU_SECONDS
+            assert completions[superseded]["compute_elapsed_seconds"] >= completions[superseded]["compute_cpu_seconds"]
 
 
 def test_s1_e1_all_competent_baselines_have_zero_saar_dfr_sser(paired_evaluation):
@@ -277,6 +278,8 @@ def test_e1_stale_classifier_keeps_repeated_stale_acceptance_measurable_after_ba
         committed_attempt_id_before="a1",
         committed_attempt_id_after="a1",
         attempt_authority_after="COMMITTED",
+        authoritative_output_id_after="test:output:a1",
+        presented_output_id="test:output:a1",
     ) is True
 
 
@@ -312,6 +315,44 @@ def test_bad_stale_commit_is_classified_before_invariant_failure(monkeypatch):
     )
     assert post["accepted_authoritatively"] is True
     assert post["finalization_outcome"] == "APPLIED"
+    assert post["invariant_error_type"] is not None
+
+
+@pytest.mark.parametrize("authority_channel", ("output", "attempt"))
+def test_stale_acceptance_detects_partial_authority_corruption(monkeypatch, authority_channel):
+    core = _scaffold_core()
+    core.start_attempt("a1", "r")
+    core.set_attempt_execution("a1", ExecutionStatus.RUNNING)
+    core.complete_attempt("a1", succeeded=True)
+    core.start_attempt("a2", "r")
+    core.set_attempt_execution("a2", ExecutionStatus.RUNNING)
+    message = _presentation_message(event_id=f"test:partial:{authority_channel}", attempt_id="a1")
+
+    def defective_finalize(self: ContinuityCore, request_id: str, output_id: str, now=None):
+        del now
+        request = self.requests[request_id]
+        if authority_channel == "output":
+            self.requests[request_id] = replace(
+                request,
+                status=RequestStatus.COMPLETED,
+                committed_attempt_id="a2",
+                authoritative_output_id=output_id,
+            )
+        else:
+            self.attempts["a1"] = replace(
+                self.attempts["a1"], authority_status=AttemptAuthority.COMMITTED
+            )
+            self.requests[request_id] = replace(
+                request,
+                status=RequestStatus.COMPLETED,
+                committed_attempt_id="a2",
+            )
+
+    monkeypatch.setattr(ContinuityCore, "finalize_request", defective_finalize)
+    _, post = _apply_presentation(core, message, stale=True)
+    assert post["accepted_authoritatively"] is True
+    assert post["finalization_outcome"] == "APPLIED"
+    assert post["request_committed_attempt_id_after"] == "a2"
     assert post["invariant_error_type"] is not None
 
 
