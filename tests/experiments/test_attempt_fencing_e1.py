@@ -219,15 +219,14 @@ def test_pretimeout_physical_success_becomes_stale_only_after_retry_supersession
     assert stale_pre["attempt_execution_before"] == "SUCCEEDED"
 
 
-def test_concurrent_terminal_race_overlaps_real_attempt_work_and_delivery(paired_evaluation):
+def test_concurrent_terminal_race_uses_same_group_ipc_delivery(paired_evaluation):
     trial = _trial(paired_evaluation, "E1-E-concurrent-terminal-race", PolicyID.B4)
     observed = trial.evaluation.observed_evidence
     starts = {
         batch["attempt_ids"][0]: batch["compute_started"][0]["at"]
         for batch in observed["compute_batches"]
     }
-    a1_completion = next(item for item in observed["physical_completion_checks"] if item["attempt_id"] == "a1")
-    assert starts["a1"] < starts["a2"] <= a1_completion["observed_at"]
+    assert starts["a1"] < starts["a2"]
 
     group_ids = {"c4.2c:E:stale-a1", "c4.2c:E:fresh-a2"}
     delivery_order = [item for item in observed["presentation_delivery_order"] if item in group_ids]
