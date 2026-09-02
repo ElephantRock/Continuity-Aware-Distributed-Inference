@@ -329,6 +329,7 @@ def _worker_main(scenario_id: str, attempt_id: str, work_rounds: int, command: A
             if op == "GO":
                 started_at = time.time()
                 started_monotonic = time.monotonic()
+                started_cpu = time.process_time()
                 result_queue.put({
                     "kind": "COMPUTE_STARTED",
                     "scenario_id": scenario_id,
@@ -340,7 +341,7 @@ def _worker_main(scenario_id: str, attempt_id: str, work_rounds: int, command: A
                 for index in range(work_rounds):
                     digest = hashlib.sha256(digest + index.to_bytes(8, "little")).digest()
                 index = work_rounds
-                while time.monotonic() - started_monotonic < S1_E1_MIN_CPU_SECONDS:
+                while time.process_time() - started_cpu < S1_E1_MIN_CPU_SECONDS:
                     digest = hashlib.sha256(digest + index.to_bytes(8, "little")).digest()
                     index += 1
                 observed_at = time.time()
@@ -350,6 +351,7 @@ def _worker_main(scenario_id: str, attempt_id: str, work_rounds: int, command: A
                     "worker_pid": pid,
                     "compute_started_at": started_at,
                     "compute_elapsed_seconds": time.monotonic() - started_monotonic,
+                    "compute_cpu_seconds": time.process_time() - started_cpu,
                     "observed_at": observed_at,
                     "result_token": digest.hex(),
                     "evidence_id": f"c4.2c:{scenario_id}:evidence:{attempt_id}",
@@ -424,16 +426,23 @@ def _classify_e1_stale_acceptance(
     committed_attempt_id_before: str | None,
     committed_attempt_id_after: str | None,
     attempt_authority_after: str,
+    authoritative_output_id_after: str | None,
+    presented_output_id: str,
 ) -> bool:
-    del attempt_authority_after
+    del committed_attempt_id_before
     if attempt_execution_before != ExecutionStatus.SUCCEEDED.name:
         raise AssertionError("SAAR authority presentation requires delivered physical success")
-    if attempt_authority_before == AttemptAuthority.SUPERSEDED.name:
-        return committed_attempt_id_after == attempt_id
-    if attempt_authority_before == AttemptAuthority.COMMITTED.name and committed_attempt_id_before == attempt_id:
-        return committed_attempt_id_after == attempt_id
-    raise AssertionError(
-        "oracle-stale presentation must be SUPERSEDED, or already COMMITTED only because a prior stale presentation was accepted"
+    if attempt_authority_before not in (
+        AttemptAuthority.SUPERSEDED.name,
+        AttemptAuthority.COMMITTED.name,
+    ):
+        raise AssertionError(
+            "oracle-stale presentation must be SUPERSEDED, or already COMMITTED only because prior corruption made it authoritative"
+        )
+    return (
+        committed_attempt_id_after == attempt_id
+        or attempt_authority_after == AttemptAuthority.COMMITTED.name
+        or authoritative_output_id_after == presented_output_id
     )
 
 
@@ -499,6 +508,7 @@ def _apply_presentation(core: ContinuityCore, message: Mapping[str, Any], *, sta
         "attempt_execution_before": attempt.execution_status.name,
         "request_current_attempt_id_before": request.current_attempt_id,
         "request_committed_attempt_id_before": request.committed_attempt_id,
+        "request_authoritative_output_id_before": request.authoritative_output_id,
         "observed_at": float(message["observed_at"]),
         "delivered_at": float(message["delivered_at"]),
         "evidence_id": message["evidence_id"],
@@ -507,9 +517,13 @@ def _apply_presentation(core: ContinuityCore, message: Mapping[str, Any], *, sta
         "duplicate": bool(message["duplicate"]),
     }
     if stale:
-        already_bad_commit = attempt.authority_status is AttemptAuthority.COMMITTED and request.committed_attempt_id == attempt_id
-        if attempt.authority_status is not AttemptAuthority.SUPERSEDED and not already_bad_commit:
-            raise AssertionError("oracle-stale E1 presentation must be SUPERSEDED unless prior stale acceptance committed it")
+        already_bad_authority = (
+            attempt.authority_status is AttemptAuthority.COMMITTED
+            or request.committed_attempt_id == attempt_id
+            or request.authoritative_output_id == message["output_id"]
+        )
+        if attempt.authority_status is not AttemptAuthority.SUPERSEDED and not already_bad_authority:
+            raise AssertionError("oracle-stale E1 presentation must be SUPERSEDED unless prior corruption made it authoritative")
         if attempt.execution_status is not ExecutionStatus.SUCCEEDED:
             raise AssertionError("oracle-stale E1 presentation requires SUCCEEDED execution")
 
@@ -541,6 +555,8 @@ def _apply_presentation(core: ContinuityCore, message: Mapping[str, Any], *, sta
             committed_attempt_id_before=pre["request_committed_attempt_id_before"],
             committed_attempt_id_after=after_request.committed_attempt_id,
             attempt_authority_after=after_attempt.authority_status.name,
+            authoritative_output_id_after=after_request.authoritative_output_id,
+            presented_output_id=message["output_id"],
         )
 
     invariant_error: BaseException | None = None
@@ -556,6 +572,7 @@ def _apply_presentation(core: ContinuityCore, message: Mapping[str, Any], *, sta
         "attempt_execution_after": after_attempt.execution_status.name,
         "request_current_attempt_id_after": after_request.current_attempt_id,
         "request_committed_attempt_id_after": after_request.committed_attempt_id,
+        "request_authoritative_output_id_after": after_request.authoritative_output_id,
         "evidence_outcome": evidence_outcome,
         "output_outcome": output_outcome,
         "finalization_outcome": finalization_outcome,
@@ -646,6 +663,7 @@ def _apply_completion(core: ContinuityCore, policy: Any, message: Mapping[str, A
         "worker_pid": int(message["worker_pid"]),
         "compute_started_at": float(message["compute_started_at"]),
         "compute_elapsed_seconds": float(message["compute_elapsed_seconds"]),
+        "compute_cpu_seconds": float(message["compute_cpu_seconds"]),
         "observed_at": float(message["observed_at"]),
         "delivered_at": float(message["delivered_at"]),
         "result_token": message["result_token"],
@@ -908,7 +926,7 @@ def run_s1_e1_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingE1Tr
         "cpu_work": {
             "algorithm": "SHA-256",
             "minimum_fixed_rounds": S1_E1_WORK_ROUNDS,
-            "minimum_inflight_seconds": S1_E1_MIN_CPU_SECONDS,
+            "minimum_process_cpu_seconds": S1_E1_MIN_CPU_SECONDS,
         },
         "retry_timeout_seconds": S1_E1_RETRY_TIMEOUT_SECONDS,
         "retry_race_contract": "CPU_STARTED_BEFORE_TIMEOUT; SUPERSEDED_COMPLETION_AFTER_TIMEOUT",
