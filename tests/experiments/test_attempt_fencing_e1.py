@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import os
+import time
 
 import pytest
 
+from continuity import ContinuityCore
+from continuity.entities import AttemptAuthority, ExecutionStatus, RequestStatus
 from experiments.attempt_fencing_e1 import (
+    S1_E1_MIN_CPU_SECONDS,
+    S1_E1_RETRY_TIMEOUT_SECONDS,
     S1_E1_SCENARIOS,
     S1_E1_SCENARIO_IDS,
-    S1_E1_RETRY_TIMEOUT_SECONDS,
+    E1ScenarioMode,
+    _apply_presentation,
     _classify_e1_stale_acceptance,
+    _scaffold_core,
     run_s1_e1_paired,
 )
 from experiments.correctness import (
@@ -26,9 +34,7 @@ def paired_evaluation():
 
 
 def _rate(evaluation, policy_id: PolicyID, metric: CorrectnessMetric):
-    policy = next(
-        item for item in evaluation.summary.policy_summaries if item.policy_id is policy_id
-    )
+    policy = next(item for item in evaluation.summary.policy_summaries if item.policy_id is policy_id)
     return next(item for item in policy.rates if item.metric is metric)
 
 
@@ -38,6 +44,20 @@ def _trial(evaluation, scenario_id: str, policy_id: PolicyID):
         for trial in evaluation.trials
         if trial.scenario_id == scenario_id and trial.policy_id is policy_id
     )
+
+
+def _presentation_message(*, event_id: str, attempt_id: str, output_suffix: str = ""):
+    now = time.time()
+    return {
+        "event_id": event_id,
+        "attempt_id": attempt_id,
+        "observed_at": now,
+        "delivered_at": now,
+        "evidence_id": f"test:evidence:{attempt_id}{output_suffix}",
+        "output_id": f"test:output:{attempt_id}{output_suffix}",
+        "worker_pid": os.getpid(),
+        "duplicate": False,
+    }
 
 
 def test_s1_e1_paired_uses_canonical_scenario_then_b0_b4_order(paired_evaluation):
@@ -61,6 +81,7 @@ def test_s1_e1_is_measured_ev1_and_uses_real_distinct_worker_processes(paired_ev
         assert observed["coordinator_pid"] == os.getpid()
         assert trial.evaluation.ground_truth["start_method"] == "spawn"
         assert trial.evaluation.ground_truth["ipc_transport"] == "multiprocessing.Pipe+Queue"
+        assert trial.evaluation.ground_truth["cpu_work"]["minimum_inflight_seconds"] == S1_E1_MIN_CPU_SECONDS
 
 
 def test_every_retry_is_triggered_by_a_measured_wall_clock_timeout(paired_evaluation):
@@ -77,35 +98,39 @@ def test_every_retry_is_triggered_by_a_measured_wall_clock_timeout(paired_evalua
             assert timeout["fired_at"] >= timeout["started_at"]
 
 
+def test_retry_races_have_cpu_in_flight_when_timeout_fires(paired_evaluation):
+    for trial in paired_evaluation.trials:
+        spec = next(item for item in S1_E1_SCENARIOS if item.scenario_id == trial.scenario_id)
+        if spec.mode is not E1ScenarioMode.RETRY_RACE:
+            continue
+        observed = trial.evaluation.observed_evidence
+        starts = {
+            batch["attempt_ids"][0]: batch["compute_started"][0]
+            for batch in observed["compute_batches"]
+        }
+        completions = {
+            item["attempt_id"]: item for item in observed["physical_completion_checks"]
+        }
+        for timeout in observed["retry_timeout_checks"]:
+            superseded = timeout["superseded_attempt_id"]
+            assert starts[superseded]["at"] <= timeout["started_at"]
+            assert completions[superseded]["observed_at"] >= timeout["fired_at"]
+            assert completions[superseded]["compute_elapsed_seconds"] >= S1_E1_MIN_CPU_SECONDS
+
+
 def test_s1_e1_all_competent_baselines_have_zero_saar_dfr_sser(paired_evaluation):
-    stale_denominator = sum(
-        len(spec.stale_presentation_event_ids) for spec in S1_E1_SCENARIOS
-    )
+    stale_denominator = sum(len(spec.stale_presentation_event_ids) for spec in S1_E1_SCENARIOS)
     assert stale_denominator == 8
 
     for policy_id in PolicyID:
-        saar = _rate(
-            paired_evaluation,
-            policy_id,
-            CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE,
-        )
-        dfr = _rate(
-            paired_evaluation,
-            policy_id,
-            CorrectnessMetric.DUPLICATE_FINALIZATION_RATE,
-        )
-        sser = _rate(
-            paired_evaluation,
-            policy_id,
-            CorrectnessMetric.SILENT_SEMANTIC_ERROR_RATE,
-        )
+        saar = _rate(paired_evaluation, policy_id, CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE)
+        dfr = _rate(paired_evaluation, policy_id, CorrectnessMetric.DUPLICATE_FINALIZATION_RATE)
+        sser = _rate(paired_evaluation, policy_id, CorrectnessMetric.SILENT_SEMANTIC_ERROR_RATE)
         assert (saar.numerator, saar.denominator, saar.rate) == (0, 8, 0.0)
         assert (dfr.numerator, dfr.denominator, dfr.rate) == (0, 6, 0.0)
         assert (sser.numerator, sser.denominator, sser.rate) == (0, 6, 0.0)
 
-        policy_summary = next(
-            item for item in paired_evaluation.summary.policy_summaries if item.policy_id is policy_id
-        )
+        policy_summary = next(item for item in paired_evaluation.summary.policy_summaries if item.policy_id is policy_id)
         outcome_counts = dict(policy_summary.outcome_counts)
         assert outcome_counts[OutcomeClass.O2_CORRECT_DEGRADED_RECOVERY] == 6
         assert outcome_counts[OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION] == 0
@@ -144,6 +169,7 @@ def test_every_declared_saar_event_reaches_terminal_finalization_and_is_stale(pa
             assert preconditions[event_id]["attempt_execution_before"] == "SUCCEEDED"
             assert preconditions[event_id]["attempt_authority_before"] == "SUPERSEDED"
             assert presentations[event_id]["accepted_authoritatively"] is False
+            assert presentations[event_id]["invariant_error_type"] is None
             assert finalizations[event_id]["outcome"] == "REJECTED"
 
 
@@ -175,15 +201,9 @@ def test_duplicate_delivery_preserves_semantic_identity_and_observation_time(pai
 
 
 def test_pretimeout_physical_success_becomes_stale_only_after_retry_supersession(paired_evaluation):
-    trial = _trial(
-        paired_evaluation,
-        "E1-D-pretimeout-success-delayed-observation",
-        PolicyID.B4,
-    )
+    trial = _trial(paired_evaluation, "E1-D-pretimeout-success-delayed-observation", PolicyID.B4)
     observed = trial.evaluation.observed_evidence
-    a1_completion = next(
-        item for item in observed["physical_completion_checks"] if item["attempt_id"] == "a1"
-    )
+    a1_completion = next(item for item in observed["physical_completion_checks"] if item["attempt_id"] == "a1")
     stale_pre = next(
         item
         for item in observed["terminal_presentation_preconditions"]
@@ -199,19 +219,18 @@ def test_pretimeout_physical_success_becomes_stale_only_after_retry_supersession
     assert stale_pre["attempt_execution_before"] == "SUCCEEDED"
 
 
-def test_concurrent_race_arms_distinct_processes_before_terminal_delivery(paired_evaluation):
+def test_concurrent_terminal_race_overlaps_real_attempt_work_and_delivery(paired_evaluation):
     trial = _trial(paired_evaluation, "E1-E-concurrent-terminal-race", PolicyID.B4)
     observed = trial.evaluation.observed_evidence
-    batch = observed["compute_batches"][0]
-    assert batch["attempt_ids"] == ["a1", "a2"]
-    ready = batch["compute_ready"]
-    assert {item["attempt_id"] for item in ready} == {"a1", "a2"}
-    assert len({item["worker_pid"] for item in ready}) == 2
+    starts = {
+        batch["attempt_ids"][0]: batch["compute_started"][0]["at"]
+        for batch in observed["compute_batches"]
+    }
+    a1_completion = next(item for item in observed["physical_completion_checks"] if item["attempt_id"] == "a1")
+    assert starts["a1"] < starts["a2"] <= a1_completion["observed_at"]
 
     group_ids = {"c4.2c:E:stale-a1", "c4.2c:E:fresh-a2"}
-    delivery_order = [
-        item for item in observed["presentation_delivery_order"] if item in group_ids
-    ]
+    delivery_order = [item for item in observed["presentation_delivery_order"] if item in group_ids]
     assert set(delivery_order) == group_ids
     assert trial.authoritative_outcome.committed_attempt_id == "a2"
 
@@ -224,17 +243,21 @@ def test_three_generation_retry_race_preserves_attempt_generations_and_current_c
         ("a3", 3),
     )
     assert trial.authoritative_outcome.committed_attempt_id == "a3"
-    assert trial.stale_result_event_ids == (
-        "c4.2c:F:stale-a1",
-        "c4.2c:F:stale-a2",
-    )
+    assert trial.stale_result_event_ids == ("c4.2c:F:stale-a1", "c4.2c:F:stale-a2")
+
+    observed = trial.evaluation.observed_evidence
+    starts = {
+        batch["attempt_ids"][0]: batch["compute_started"][0]["at"]
+        for batch in observed["compute_batches"]
+    }
+    for timeout in observed["retry_timeout_checks"]:
+        assert starts[timeout["superseded_attempt_id"]] <= timeout["started_at"]
 
 
 def test_b4_stale_physical_work_fencing_remains_diagnostic_only(paired_evaluation):
     for scenario_id in S1_E1_SCENARIO_IDS:
         trials = {policy_id: _trial(paired_evaluation, scenario_id, policy_id) for policy_id in PolicyID}
-        b4_decisions = trials[PolicyID.B4].stale_admission_decisions
-        for decision in b4_decisions:
+        for decision in trials[PolicyID.B4].stale_admission_decisions:
             assert decision.worker_id is None
             assert decision.ranked_worker_ids == ()
             assert decision.reason == "ATTEMPT_FENCED"
@@ -244,11 +267,7 @@ def test_b4_stale_physical_work_fencing_remains_diagnostic_only(paired_evaluatio
                 assert decision.worker_id == "w1"
                 assert decision.ranked_worker_ids == ("w1",)
 
-        assert _rate(
-            paired_evaluation,
-            PolicyID.B4,
-            CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE,
-        ).numerator == 0
+        assert _rate(paired_evaluation, PolicyID.B4, CorrectnessMetric.STALE_ATTEMPT_ACCEPTANCE_RATE).numerator == 0
 
 
 def test_e1_stale_classifier_keeps_repeated_stale_acceptance_measurable_after_bad_commit():
@@ -260,3 +279,66 @@ def test_e1_stale_classifier_keeps_repeated_stale_acceptance_measurable_after_ba
         committed_attempt_id_after="a1",
         attempt_authority_after="COMMITTED",
     ) is True
+
+
+def test_bad_stale_commit_is_classified_before_invariant_failure(monkeypatch):
+    core = _scaffold_core()
+    core.start_attempt("a1", "r")
+    core.set_attempt_execution("a1", ExecutionStatus.RUNNING)
+    core.complete_attempt("a1", succeeded=True)
+    core.start_attempt("a2", "r")
+    core.set_attempt_execution("a2", ExecutionStatus.RUNNING)
+
+    def defective_finalize(self: ContinuityCore, request_id: str, output_id: str, now=None):
+        del now
+        output = self.outputs[output_id]
+        stale_id = output.attempt_id
+        request = self.requests[request_id]
+        self.requests[request_id] = replace(
+            request,
+            status=RequestStatus.COMPLETED,
+            committed_attempt_id=stale_id,
+            authoritative_output_id=output_id,
+        )
+        self.attempts[stale_id] = replace(
+            self.attempts[stale_id], authority_status=AttemptAuthority.COMMITTED
+        )
+        # Deliberately leave a2 CURRENT: this is structurally invalid but must be measurable.
+
+    monkeypatch.setattr(ContinuityCore, "finalize_request", defective_finalize)
+    _, post = _apply_presentation(
+        core,
+        _presentation_message(event_id="test:stale", attempt_id="a1"),
+        stale=True,
+    )
+    assert post["accepted_authoritatively"] is True
+    assert post["finalization_outcome"] == "APPLIED"
+    assert post["invariant_error_type"] is not None
+
+
+def test_completed_to_completed_semantic_mutation_counts_as_second_applied_finalization(monkeypatch):
+    core = _scaffold_core()
+    core.start_attempt("a1", "r")
+    core.set_attempt_execution("a1", ExecutionStatus.RUNNING)
+    core.complete_attempt("a1", succeeded=True)
+
+    _, first = _apply_presentation(
+        core,
+        _presentation_message(event_id="test:first", attempt_id="a1", output_suffix=":1"),
+        stale=False,
+    )
+    assert first["finalization_outcome"] == "APPLIED"
+
+    def defective_refinalize(self: ContinuityCore, request_id: str, output_id: str, now=None):
+        del now
+        request = self.requests[request_id]
+        self.requests[request_id] = replace(request, authoritative_output_id=output_id)
+
+    monkeypatch.setattr(ContinuityCore, "finalize_request", defective_refinalize)
+    _, second = _apply_presentation(
+        core,
+        _presentation_message(event_id="test:second", attempt_id="a1", output_suffix=":2"),
+        stale=False,
+    )
+    assert second["finalization_outcome"] == "APPLIED"
+    assert sum(item["finalization_outcome"] == "APPLIED" for item in (first, second)) == 2
