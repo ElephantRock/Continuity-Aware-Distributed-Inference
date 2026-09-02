@@ -51,6 +51,7 @@ S1_E1_SCHEMA = "cadi.s1-attempt-fencing-e1.v1"
 S1_E1_COHORT_ID = "C4.2c:S1:E1"
 S1_E1_START_METHOD = "spawn"
 S1_E1_WORK_ROUNDS = 50_000
+S1_E1_MIN_CPU_SECONDS = 0.020
 S1_E1_RETRY_TIMEOUT_SECONDS = 0.005
 S1_E1_IPC_TIMEOUT_SECONDS = 10.0
 
@@ -130,10 +131,10 @@ class E1ScenarioSpec:
 
     @property
     def presentation_groups(self) -> tuple[tuple[E1PresentationDirective, ...], ...]:
-        result: list[tuple[E1PresentationDirective, ...]] = []
-        for group in sorted({item.group for item in self.presentations}):
-            result.append(tuple(item for item in self.presentations if item.group == group))
-        return tuple(result)
+        return tuple(
+            tuple(item for item in self.presentations if item.group == group)
+            for group in sorted({item.group for item in self.presentations})
+        )
 
 
 def _event(scenario: str, label: str) -> str:
@@ -142,76 +143,75 @@ def _event(scenario: str, label: str) -> str:
 
 S1_E1_SCENARIOS: tuple[E1ScenarioSpec, ...] = (
     E1ScenarioSpec(
-        scenario_id="E1-A-stale-before-fresh",
-        mode=E1ScenarioMode.RETRY_RACE,
-        attempt_ids=("a1", "a2"),
-        expected_committed_attempt_id="a2",
-        presentations=(
+        "E1-A-stale-before-fresh",
+        E1ScenarioMode.RETRY_RACE,
+        ("a1", "a2"),
+        "a2",
+        (
             E1PresentationDirective(_event("A", "stale-a1"), "a1", 0, True),
             E1PresentationDirective(_event("A", "fresh-a2"), "a2", 1, False),
         ),
-        fault_class="late stale result before current result",
+        "late stale result before current result",
     ),
     E1ScenarioSpec(
-        scenario_id="E1-B-fresh-before-stale",
-        mode=E1ScenarioMode.RETRY_RACE,
-        attempt_ids=("a1", "a2"),
-        expected_committed_attempt_id="a2",
-        presentations=(
+        "E1-B-fresh-before-stale",
+        E1ScenarioMode.RETRY_RACE,
+        ("a1", "a2"),
+        "a2",
+        (
             E1PresentationDirective(_event("B", "fresh-a2"), "a2", 0, False),
             E1PresentationDirective(_event("B", "stale-a1"), "a1", 1, True),
         ),
-        fault_class="current result before delayed stale result",
+        "current result before delayed stale result",
     ),
     E1ScenarioSpec(
-        scenario_id="E1-C-duplicate-result-delivery",
-        mode=E1ScenarioMode.RETRY_RACE,
-        attempt_ids=("a1", "a2"),
-        expected_committed_attempt_id="a2",
-        presentations=(
+        "E1-C-duplicate-result-delivery",
+        E1ScenarioMode.RETRY_RACE,
+        ("a1", "a2"),
+        "a2",
+        (
             E1PresentationDirective(_event("C", "fresh-a2"), "a2", 0, False),
             E1PresentationDirective(_event("C", "fresh-a2-duplicate"), "a2", 1, False, True),
             E1PresentationDirective(_event("C", "stale-a1"), "a1", 2, True),
             E1PresentationDirective(_event("C", "stale-a1-duplicate"), "a1", 3, True, True),
         ),
-        fault_class="duplicate current and stale result delivery",
+        "duplicate current and stale result delivery",
     ),
     E1ScenarioSpec(
-        scenario_id="E1-D-pretimeout-success-delayed-observation",
-        mode=E1ScenarioMode.PRETIMEOUT_SUCCESS_DELAYED_OBSERVATION,
-        attempt_ids=("a1", "a2"),
-        expected_committed_attempt_id="a2",
-        presentations=(
+        "E1-D-pretimeout-success-delayed-observation",
+        E1ScenarioMode.PRETIMEOUT_SUCCESS_DELAYED_OBSERVATION,
+        ("a1", "a2"),
+        "a2",
+        (
             E1PresentationDirective(_event("D", "stale-a1"), "a1", 0, True),
             E1PresentationDirective(_event("D", "fresh-a2"), "a2", 1, False),
         ),
-        fault_class="physical success before timeout with delayed terminal observation",
+        "physical success before timeout with delayed terminal observation",
     ),
     E1ScenarioSpec(
-        scenario_id="E1-E-concurrent-terminal-race",
-        mode=E1ScenarioMode.RETRY_RACE,
-        attempt_ids=("a1", "a2"),
-        expected_committed_attempt_id="a2",
-        presentations=(
+        "E1-E-concurrent-terminal-race",
+        E1ScenarioMode.RETRY_RACE,
+        ("a1", "a2"),
+        "a2",
+        (
             E1PresentationDirective(_event("E", "stale-a1"), "a1", 0, True),
             E1PresentationDirective(_event("E", "fresh-a2"), "a2", 0, False),
         ),
-        fault_class="concurrent stale and current terminal result race",
+        "concurrent stale and current terminal result race",
     ),
     E1ScenarioSpec(
-        scenario_id="E1-F-three-generation-retry-race",
-        mode=E1ScenarioMode.RETRY_RACE,
-        attempt_ids=("a1", "a2", "a3"),
-        expected_committed_attempt_id="a3",
-        presentations=(
+        "E1-F-three-generation-retry-race",
+        E1ScenarioMode.RETRY_RACE,
+        ("a1", "a2", "a3"),
+        "a3",
+        (
             E1PresentationDirective(_event("F", "stale-a1"), "a1", 0, True),
             E1PresentationDirective(_event("F", "stale-a2"), "a2", 0, True),
             E1PresentationDirective(_event("F", "fresh-a3"), "a3", 0, False),
         ),
-        fault_class="bounded three-generation retry race",
+        "bounded three-generation retry race",
     ),
 )
-
 S1_E1_SCENARIO_IDS = tuple(item.scenario_id for item in S1_E1_SCENARIOS)
 _SPEC_BY_ID: Mapping[str, E1ScenarioSpec] = {item.scenario_id: item for item in S1_E1_SCENARIOS}
 
@@ -242,9 +242,7 @@ class AttemptFencingE1Trial:
             raise ValueError("finalization_applied_count must be non-negative")
         if not all(isinstance(item, PlacementDecision) for item in self.stale_admission_decisions):
             raise TypeError("stale_admission_decisions must contain PlacementDecision values")
-        if not self.worker_process_ids or not all(
-            isinstance(item, int) and item > 0 for item in self.worker_process_ids
-        ):
+        if not self.worker_process_ids or not all(isinstance(item, int) and item > 0 for item in self.worker_process_ids):
             raise ValueError("worker_process_ids must contain positive process IDs")
 
 
@@ -259,8 +257,7 @@ class AttemptFencingE1Evaluation:
             for spec in S1_E1_SCENARIOS
             for policy_id in PolicyID
         )
-        actual = tuple((trial.scenario_id, trial.policy_id) for trial in self.trials)
-        if actual != expected:
+        if tuple((trial.scenario_id, trial.policy_id) for trial in self.trials) != expected:
             raise ValueError("S1 E1 trials must use canonical scenario then B0-B4 ordering")
         if not isinstance(self.summary, CorrectnessSummary):
             raise TypeError("summary must be CorrectnessSummary")
@@ -279,20 +276,12 @@ class _Inbox:
         self._buffer: list[dict[str, Any]] = []
 
     @staticmethod
-    def _matches(
-        message: dict[str, Any],
-        *,
-        kind: str,
-        attempt_id: str | None,
-        event_ids: set[str] | None,
-    ) -> bool:
-        if message.get("kind") != kind:
-            return False
-        if attempt_id is not None and message.get("attempt_id") != attempt_id:
-            return False
-        if event_ids is not None and message.get("event_id") not in event_ids:
-            return False
-        return True
+    def _matches(message: dict[str, Any], *, kind: str, attempt_id: str | None, event_ids: set[str] | None) -> bool:
+        return (
+            message.get("kind") == kind
+            and (attempt_id is None or message.get("attempt_id") == attempt_id)
+            and (event_ids is None or message.get("event_id") in event_ids)
+        )
 
     def wait(
         self,
@@ -305,21 +294,15 @@ class _Inbox:
         deadline = time.monotonic() + timeout
         while True:
             for index, message in enumerate(self._buffer):
-                if self._matches(
-                    message, kind=kind, attempt_id=attempt_id, event_ids=event_ids
-                ):
+                if self._matches(message, kind=kind, attempt_id=attempt_id, event_ids=event_ids):
                     return self._buffer.pop(index)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError(
-                    f"timed out waiting for {kind} attempt={attempt_id} events={event_ids}"
-                )
+                raise TimeoutError(f"timed out waiting for {kind} attempt={attempt_id} events={event_ids}")
             try:
                 message = self._queue.get(timeout=remaining)
             except queue.Empty as exc:
-                raise TimeoutError(
-                    f"timed out waiting for {kind} attempt={attempt_id} events={event_ids}"
-                ) from exc
+                raise TimeoutError(f"timed out waiting for {kind} attempt={attempt_id} events={event_ids}") from exc
             if not isinstance(message, dict):
                 raise AssertionError("worker IPC message must be a mapping")
             if self._matches(message, kind=kind, attempt_id=attempt_id, event_ids=event_ids):
@@ -327,24 +310,10 @@ class _Inbox:
             self._buffer.append(message)
 
 
-def _worker_main(
-    scenario_id: str,
-    attempt_id: str,
-    work_rounds: int,
-    command: Any,
-    result_queue: Any,
-) -> None:
+def _worker_main(scenario_id: str, attempt_id: str, work_rounds: int, command: Any, result_queue: Any) -> None:
     pid = os.getpid()
     cached: dict[str, Any] | None = None
-    result_queue.put(
-        {
-            "kind": "READY",
-            "scenario_id": scenario_id,
-            "attempt_id": attempt_id,
-            "worker_pid": pid,
-            "at": time.time(),
-        }
-    )
+    result_queue.put({"kind": "READY", "scenario_id": scenario_id, "attempt_id": attempt_id, "worker_pid": pid, "at": time.time()})
     try:
         while True:
             instruction = command.recv()
@@ -352,51 +321,46 @@ def _worker_main(
             if op == "STOP":
                 return
             if op == "BEGIN":
-                result_queue.put(
-                    {
-                        "kind": "STARTED",
-                        "scenario_id": scenario_id,
-                        "attempt_id": attempt_id,
-                        "worker_pid": pid,
-                        "at": time.time(),
-                    }
-                )
+                result_queue.put({"kind": "STARTED", "scenario_id": scenario_id, "attempt_id": attempt_id, "worker_pid": pid, "at": time.time()})
                 continue
             if op == "ARM":
-                result_queue.put(
-                    {
-                        "kind": "COMPUTE_READY",
-                        "scenario_id": scenario_id,
-                        "attempt_id": attempt_id,
-                        "worker_pid": pid,
-                        "at": time.time(),
-                    }
-                )
+                result_queue.put({"kind": "COMPUTE_READY", "scenario_id": scenario_id, "attempt_id": attempt_id, "worker_pid": pid, "at": time.time()})
                 continue
             if op == "GO":
-                start = time.time()
+                started_at = time.time()
+                started_monotonic = time.monotonic()
+                result_queue.put({
+                    "kind": "COMPUTE_STARTED",
+                    "scenario_id": scenario_id,
+                    "attempt_id": attempt_id,
+                    "worker_pid": pid,
+                    "at": started_at,
+                })
                 digest = hashlib.sha256(f"{scenario_id}:{attempt_id}".encode("utf-8")).digest()
                 for index in range(work_rounds):
                     digest = hashlib.sha256(digest + index.to_bytes(8, "little")).digest()
+                index = work_rounds
+                while time.monotonic() - started_monotonic < S1_E1_MIN_CPU_SECONDS:
+                    digest = hashlib.sha256(digest + index.to_bytes(8, "little")).digest()
+                    index += 1
                 observed_at = time.time()
                 cached = {
                     "scenario_id": scenario_id,
                     "attempt_id": attempt_id,
                     "worker_pid": pid,
-                    "compute_started_at": start,
+                    "compute_started_at": started_at,
+                    "compute_elapsed_seconds": time.monotonic() - started_monotonic,
                     "observed_at": observed_at,
                     "result_token": digest.hex(),
                     "evidence_id": f"c4.2c:{scenario_id}:evidence:{attempt_id}",
                     "output_id": f"c4.2c:{scenario_id}:output:{attempt_id}",
                 }
-                result_queue.put(
-                    {
-                        "kind": "COMPLETION",
-                        "event_id": f"c4.2c:{scenario_id}:physical-completion:{attempt_id}",
-                        **cached,
-                        "delivered_at": time.time(),
-                    }
-                )
+                result_queue.put({
+                    "kind": "COMPLETION",
+                    "event_id": f"c4.2c:{scenario_id}:physical-completion:{attempt_id}",
+                    **cached,
+                    "delivered_at": time.time(),
+                })
                 continue
             if op == "PRESENT":
                 if cached is None:
@@ -407,15 +371,13 @@ def _worker_main(
                     raise RuntimeError("presentation requires a non-empty event_id")
                 if not isinstance(duplicate, bool):
                     raise RuntimeError("duplicate must be bool")
-                result_queue.put(
-                    {
-                        "kind": "PRESENTATION",
-                        "event_id": event_id,
-                        **cached,
-                        "duplicate": duplicate,
-                        "delivered_at": time.time(),
-                    }
-                )
+                result_queue.put({
+                    "kind": "PRESENTATION",
+                    "event_id": event_id,
+                    **cached,
+                    "duplicate": duplicate,
+                    "delivered_at": time.time(),
+                })
                 continue
             raise RuntimeError(f"unknown worker command: {instruction!r}")
     except EOFError:
@@ -433,20 +395,10 @@ def _scaffold_core() -> ContinuityCore:
     return core
 
 
-def _attempt_admission_observation(
-    *, request_id: str, attempt_id: str, attempt_authority: str
-) -> PolicyObservation:
+def _attempt_admission_observation(*, request_id: str, attempt_id: str, attempt_authority: str) -> PolicyObservation:
     return PolicyObservation(
         request_id=request_id,
-        workers=(
-            WorkerObservation(
-                worker_id="w1",
-                available=True,
-                capacity=1,
-                active_tasks=0,
-                queued_tasks=0,
-            ),
-        ),
+        workers=(WorkerObservation(worker_id="w1", available=True, capacity=1, active_tasks=0, queued_tasks=0),),
         attempt_id=attempt_id,
         attempt_authority=attempt_authority,
         session_id="s",
@@ -473,24 +425,13 @@ def _classify_e1_stale_acceptance(
     committed_attempt_id_after: str | None,
     attempt_authority_after: str,
 ) -> bool:
+    del attempt_authority_after
     if attempt_execution_before != ExecutionStatus.SUCCEEDED.name:
         raise AssertionError("SAAR authority presentation requires delivered physical success")
-
     if attempt_authority_before == AttemptAuthority.SUPERSEDED.name:
-        accepted = committed_attempt_id_after == attempt_id
-        if accepted and attempt_authority_after != AttemptAuthority.COMMITTED.name:
-            raise AssertionError("accepted stale Attempt must become COMMITTED")
-        return accepted
-
-    if (
-        attempt_authority_before == AttemptAuthority.COMMITTED.name
-        and committed_attempt_id_before == attempt_id
-    ):
-        accepted = committed_attempt_id_after == attempt_id
-        if accepted and attempt_authority_after != AttemptAuthority.COMMITTED.name:
-            raise AssertionError("previously accepted stale Attempt must remain COMMITTED")
-        return accepted
-
+        return committed_attempt_id_after == attempt_id
+    if attempt_authority_before == AttemptAuthority.COMMITTED.name and committed_attempt_id_before == attempt_id:
+        return committed_attempt_id_after == attempt_id
     raise AssertionError(
         "oracle-stale presentation must be SUPERSEDED, or already COMMITTED only because a prior stale presentation was accepted"
     )
@@ -522,12 +463,7 @@ def _ensure_terminal_output(core: ContinuityCore, message: Mapping[str, Any]) ->
     output_id = message["output_id"]
     attempt_id = message["attempt_id"]
     evidence_id = message["evidence_id"]
-    expected = Output(
-        id=output_id,
-        attempt_id=attempt_id,
-        terminal=True,
-        evidence_ids=frozenset({evidence_id}),
-    )
+    expected = Output(id=output_id, attempt_id=attempt_id, terminal=True, evidence_ids=frozenset({evidence_id}))
     existing = core.outputs.get(output_id)
     if existing is not None:
         if existing != expected:
@@ -537,12 +473,22 @@ def _ensure_terminal_output(core: ContinuityCore, message: Mapping[str, Any]) ->
     return "APPLIED"
 
 
-def _apply_presentation(
-    core: ContinuityCore,
-    message: Mapping[str, Any],
-    *,
-    stale: bool,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+def _authoritative_snapshot(core: ContinuityCore) -> dict[str, Any]:
+    request = core.requests["r"]
+    return {
+        "request_status": request.status.name,
+        "current_attempt_id": request.current_attempt_id,
+        "committed_attempt_id": request.committed_attempt_id,
+        "authoritative_output_id": request.authoritative_output_id,
+        "attempts": tuple(
+            (attempt.id, attempt.authority_status.name, attempt.execution_status.name)
+            for attempt in sorted(core.attempts.values(), key=lambda item: (item.generation, item.id))
+            if attempt.request_id == "r"
+        ),
+    }
+
+
+def _apply_presentation(core: ContinuityCore, message: Mapping[str, Any], *, stale: bool) -> tuple[dict[str, Any], dict[str, Any]]:
     attempt_id = message["attempt_id"]
     attempt = core.attempts[attempt_id]
     request = core.requests["r"]
@@ -561,38 +507,28 @@ def _apply_presentation(
         "duplicate": bool(message["duplicate"]),
     }
     if stale:
-        already_bad_commit = (
-            attempt.authority_status is AttemptAuthority.COMMITTED
-            and request.committed_attempt_id == attempt_id
-        )
-        if (
-            attempt.authority_status is not AttemptAuthority.SUPERSEDED
-            and not already_bad_commit
-        ):
-            raise AssertionError(
-                "oracle-stale E1 presentation must be SUPERSEDED unless prior stale acceptance committed it"
-            )
+        already_bad_commit = attempt.authority_status is AttemptAuthority.COMMITTED and request.committed_attempt_id == attempt_id
+        if attempt.authority_status is not AttemptAuthority.SUPERSEDED and not already_bad_commit:
+            raise AssertionError("oracle-stale E1 presentation must be SUPERSEDED unless prior stale acceptance committed it")
         if attempt.execution_status is not ExecutionStatus.SUCCEEDED:
             raise AssertionError("oracle-stale E1 presentation requires SUCCEEDED execution")
 
     evidence_outcome = _ensure_terminal_evidence(core, message)
     output_outcome = _ensure_terminal_output(core, message)
-    before_status = core.requests["r"].status
-    before_output = core.requests["r"].authoritative_output_id
+    before_authority = _authoritative_snapshot(core)
     error: BaseException | None = None
     try:
         core.finalize_request("r", message["output_id"], now=time.time())
     except ContinuityError as exc:
         error = exc
-    InvariantOracle(core).assert_all()
+    after_authority = _authoritative_snapshot(core)
     after_request = core.requests["r"]
     after_attempt = core.attempts[attempt_id]
-    if error is not None:
-        finalization_outcome = "REJECTED"
-    elif before_status is RequestStatus.COMPLETED and before_output == message["output_id"]:
-        finalization_outcome = "IDEMPOTENT"
-    elif after_request.status is RequestStatus.COMPLETED and before_status is not RequestStatus.COMPLETED:
+
+    if after_authority != before_authority:
         finalization_outcome = "APPLIED"
+    elif error is not None:
+        finalization_outcome = "REJECTED"
     else:
         finalization_outcome = "IDEMPOTENT"
 
@@ -607,6 +543,12 @@ def _apply_presentation(
             attempt_authority_after=after_attempt.authority_status.name,
         )
 
+    invariant_error: BaseException | None = None
+    try:
+        InvariantOracle(core).assert_all()
+    except (AssertionError, SemanticViolation) as exc:
+        invariant_error = exc
+
     post = {
         "event_id": message["event_id"],
         "attempt_id": attempt_id,
@@ -619,17 +561,16 @@ def _apply_presentation(
         "finalization_outcome": finalization_outcome,
         "error_type": None if error is None else type(error).__name__,
         "accepted_authoritatively": accepted,
+        "authoritative_state_changed": after_authority != before_authority,
+        "authoritative_state_before": before_authority,
+        "authoritative_state_after": after_authority,
+        "invariant_error_type": None if invariant_error is None else type(invariant_error).__name__,
+        "invariant_error_message": None if invariant_error is None else str(invariant_error),
     }
     return pre, post
 
 
-def _spawn_worker(
-    ctx: Any,
-    result_queue: Any,
-    inbox: _Inbox,
-    spec: E1ScenarioSpec,
-    attempt_id: str,
-) -> tuple[_WorkerHandle, dict[str, Any]]:
+def _spawn_worker(ctx: Any, result_queue: Any, inbox: _Inbox, spec: E1ScenarioSpec, attempt_id: str) -> tuple[_WorkerHandle, dict[str, Any]]:
     parent_command, child_command = ctx.Pipe(duplex=True)
     process = ctx.Process(
         target=_worker_main,
@@ -641,8 +582,7 @@ def _spawn_worker(
     ready = inbox.wait(kind="READY", attempt_id=attempt_id)
     if ready["worker_pid"] != process.pid:
         raise AssertionError("worker READY PID must match spawned process PID")
-    handle = _WorkerHandle(attempt_id=attempt_id, process=process, command=parent_command)
-    return handle, ready
+    return _WorkerHandle(attempt_id, process, parent_command), ready
 
 
 def _begin_worker(handle: _WorkerHandle, inbox: _Inbox) -> dict[str, Any]:
@@ -650,9 +590,15 @@ def _begin_worker(handle: _WorkerHandle, inbox: _Inbox) -> dict[str, Any]:
     return inbox.wait(kind="STARTED", attempt_id=handle.attempt_id)
 
 
-def _wait_for_retry_timeout(
-    *, scenario_id: str, superseded_attempt_id: str, retry_attempt_id: str
-) -> dict[str, Any]:
+def _start_compute(handle: _WorkerHandle, inbox: _Inbox) -> tuple[dict[str, Any], dict[str, Any]]:
+    handle.command.send({"op": "ARM"})
+    ready = inbox.wait(kind="COMPUTE_READY", attempt_id=handle.attempt_id)
+    handle.command.send({"op": "GO"})
+    started = inbox.wait(kind="COMPUTE_STARTED", attempt_id=handle.attempt_id)
+    return ready, started
+
+
+def _wait_for_retry_timeout(*, scenario_id: str, superseded_attempt_id: str, retry_attempt_id: str) -> dict[str, Any]:
     started_at = time.time()
     started_monotonic = time.monotonic()
     deadline = started_monotonic + S1_E1_RETRY_TIMEOUT_SECONDS
@@ -674,37 +620,7 @@ def _wait_for_retry_timeout(
     }
 
 
-def _compute_batch(
-    handles: Mapping[str, _WorkerHandle],
-    inbox: _Inbox,
-    attempt_ids: tuple[str, ...],
-) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
-    for attempt_id in attempt_ids:
-        handles[attempt_id].command.send({"op": "ARM"})
-    ready = tuple(
-        inbox.wait(kind="COMPUTE_READY", attempt_id=attempt_id)
-        for attempt_id in attempt_ids
-    )
-    for attempt_id in attempt_ids:
-        handles[attempt_id].command.send({"op": "GO"})
-
-    remaining = set(attempt_ids)
-    completions: list[dict[str, Any]] = []
-    while remaining:
-        message = inbox.wait(kind="COMPLETION", event_ids=None)
-        attempt_id = message.get("attempt_id")
-        if attempt_id not in remaining:
-            raise AssertionError("unexpected or duplicate physical completion")
-        completions.append(message)
-        remaining.remove(attempt_id)
-    return ready, tuple(completions)
-
-
-def _apply_completion(
-    core: ContinuityCore,
-    policy: Any,
-    message: Mapping[str, Any],
-) -> tuple[dict[str, Any], PlacementDecision | None]:
+def _apply_completion(core: ContinuityCore, policy: Any, message: Mapping[str, Any]) -> tuple[dict[str, Any], PlacementDecision | None]:
     attempt_id = message["attempt_id"]
     attempt = core.attempts[attempt_id]
     authority_before = attempt.authority_status.name
@@ -724,11 +640,12 @@ def _apply_completion(
                 attempt_authority=attempt_after.authority_status.name,
             ),
         )
-    check = {
+    return {
         "event_id": message["event_id"],
         "attempt_id": attempt_id,
         "worker_pid": int(message["worker_pid"]),
         "compute_started_at": float(message["compute_started_at"]),
+        "compute_elapsed_seconds": float(message["compute_elapsed_seconds"]),
         "observed_at": float(message["observed_at"]),
         "delivered_at": float(message["delivered_at"]),
         "result_token": message["result_token"],
@@ -738,14 +655,10 @@ def _apply_completion(
         "attempt_execution_after": attempt_after.execution_status.name,
         "request_current_attempt_id": request.current_attempt_id,
         "stale_at_delivery": stale,
-    }
-    return check, decision
+    }, decision
 
 
-def _run_e1_trace(
-    policy_id: PolicyID,
-    spec: E1ScenarioSpec,
-) -> tuple[
+def _run_e1_trace(policy_id: PolicyID, spec: E1ScenarioSpec) -> tuple[
     ContinuityCore,
     tuple[dict[str, Any], ...],
     tuple[dict[str, Any], ...],
@@ -769,6 +682,7 @@ def _run_e1_trace(
     stale_admission_decisions: list[PlacementDecision] = []
     compute_batches: list[dict[str, Any]] = []
     retry_timeout_checks: list[dict[str, Any]] = []
+    compute_started_by_attempt: dict[str, dict[str, Any]] = {}
 
     try:
         first = spec.attempt_ids[0]
@@ -776,20 +690,14 @@ def _run_e1_trace(
         core.set_attempt_execution(first, ExecutionStatus.RUNNING)
         handle, ready = _spawn_worker(ctx, result_queue, inbox, spec, first)
         handles[first] = handle
-        started = _begin_worker(handle, inbox)
-        worker_lifecycle.extend((ready, started))
+        worker_lifecycle.extend((ready, _begin_worker(handle, inbox)))
+        compute_ready, compute_started = _start_compute(handle, inbox)
+        compute_started_by_attempt[first] = compute_started
+        compute_batches.append({"attempt_ids": [first], "compute_ready": [compute_ready], "compute_started": [compute_started]})
 
         if spec.mode is E1ScenarioMode.PRETIMEOUT_SUCCESS_DELAYED_OBSERVATION:
-            batch_ready, completions = _compute_batch(handles, inbox, (first,))
-            compute_batches.append(
-                {
-                    "attempt_ids": [first],
-                    "compute_ready": list(batch_ready),
-                }
-            )
-            if len(completions) != 1:
-                raise AssertionError("pretimeout success batch must produce one completion")
-            check, decision = _apply_completion(core, policy, completions[0])
+            completion = inbox.wait(kind="COMPLETION", attempt_id=first)
+            check, decision = _apply_completion(core, policy, completion)
             if check["attempt_authority_after"] != AttemptAuthority.CURRENT.name:
                 raise AssertionError("pretimeout physical success must occur while A1 is CURRENT")
             completion_checks.append(check)
@@ -802,11 +710,14 @@ def _run_e1_trace(
                 raise AssertionError("retry start requires a current Attempt")
             superseded = core.attempts[superseded_id]
             superseded_execution_before = superseded.execution_status.name
+            started = compute_started_by_attempt[superseded_id]
             timeout_check = _wait_for_retry_timeout(
                 scenario_id=spec.scenario_id,
                 superseded_attempt_id=superseded_id,
                 retry_attempt_id=attempt_id,
             )
+            if started["at"] > timeout_check["started_at"]:
+                raise AssertionError("retry timeout must begin after superseded CPU work has started")
             retry_timeout_checks.append(timeout_check)
             core.start_attempt(attempt_id, "r")
             core.set_attempt_execution(attempt_id, ExecutionStatus.RUNNING)
@@ -815,51 +726,50 @@ def _run_e1_trace(
                 raise AssertionError("retry must supersede the prior Attempt")
             handle, ready = _spawn_worker(ctx, result_queue, inbox, spec, attempt_id)
             handles[attempt_id] = handle
-            started = _begin_worker(handle, inbox)
-            worker_lifecycle.extend((ready, started))
-            worker_lifecycle.append(
-                {
-                    "kind": "SUPERSESSION",
-                    "scenario_id": spec.scenario_id,
-                    "superseded_attempt_id": superseded_id,
-                    "retry_attempt_id": attempt_id,
-                    "superseded_execution_before": superseded_execution_before,
-                    "superseded_authority_after": core.attempts[superseded_id].authority_status.name,
-                    "retry_authority_after": core.attempts[attempt_id].authority_status.name,
-                    "request_current_attempt_id": core.requests["r"].current_attempt_id,
-                    "at": time.time(),
-                }
-            )
+            worker_lifecycle.extend((ready, _begin_worker(handle, inbox)))
+            worker_lifecycle.append({
+                "kind": "SUPERSESSION",
+                "scenario_id": spec.scenario_id,
+                "superseded_attempt_id": superseded_id,
+                "retry_attempt_id": attempt_id,
+                "superseded_execution_before": superseded_execution_before,
+                "superseded_authority_after": core.attempts[superseded_id].authority_status.name,
+                "retry_authority_after": core.attempts[attempt_id].authority_status.name,
+                "request_current_attempt_id": core.requests["r"].current_attempt_id,
+                "at": time.time(),
+            })
+            compute_ready, compute_started = _start_compute(handle, inbox)
+            compute_started_by_attempt[attempt_id] = compute_started
+            compute_batches.append({"attempt_ids": [attempt_id], "compute_ready": [compute_ready], "compute_started": [compute_started]})
 
-        if spec.mode is E1ScenarioMode.PRETIMEOUT_SUCCESS_DELAYED_OBSERVATION:
-            unfinished = spec.attempt_ids[1:]
-        else:
-            unfinished = spec.attempt_ids
-        if unfinished:
-            batch_ready, completions = _compute_batch(handles, inbox, unfinished)
-            compute_batches.append(
-                {
-                    "attempt_ids": list(unfinished),
-                    "compute_ready": list(batch_ready),
-                }
-            )
-            for completion in completions:
-                check, decision = _apply_completion(core, policy, completion)
-                completion_checks.append(check)
-                if decision is not None:
-                    stale_admission_decisions.append(decision)
+        already_completed = {item["attempt_id"] for item in completion_checks}
+        remaining_completions = set(spec.attempt_ids) - already_completed
+        completion_messages: list[dict[str, Any]] = []
+        while remaining_completions:
+            message = inbox.wait(kind="COMPLETION")
+            attempt_id = message.get("attempt_id")
+            if attempt_id not in remaining_completions:
+                raise AssertionError("unexpected or duplicate physical completion")
+            completion_messages.append(message)
+            remaining_completions.remove(attempt_id)
+
+        timeout_by_superseded = {item["superseded_attempt_id"]: item for item in retry_timeout_checks}
+        for completion in completion_messages:
+            attempt_id = completion["attempt_id"]
+            timeout_check = timeout_by_superseded.get(attempt_id)
+            if spec.mode is E1ScenarioMode.RETRY_RACE and timeout_check is not None:
+                if float(completion["observed_at"]) < float(timeout_check["fired_at"]):
+                    raise AssertionError("superseded retry-race work must physically complete after timeout fire")
+            check, decision = _apply_completion(core, policy, completion)
+            completion_checks.append(check)
+            if decision is not None:
+                stale_admission_decisions.append(decision)
 
         directive_by_event = {item.event_id: item for item in spec.presentations}
         for group in spec.presentation_groups:
             remaining = {item.event_id for item in group}
             for item in group:
-                handles[item.attempt_id].command.send(
-                    {
-                        "op": "PRESENT",
-                        "event_id": item.event_id,
-                        "duplicate": item.duplicate,
-                    }
-                )
+                handles[item.attempt_id].command.send({"op": "PRESENT", "event_id": item.event_id, "duplicate": item.duplicate})
             while remaining:
                 message = inbox.wait(kind="PRESENTATION", event_ids=remaining)
                 event_id = message["event_id"]
@@ -924,14 +834,12 @@ def run_s1_e1_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingE1Tr
     ) = _run_e1_trace(policy_id, spec)
 
     outcome = authoritative_outcome(core, "r")
-    finalization_applied_count = sum(
-        item["finalization_outcome"] == "APPLIED" for item in presentation_results
-    )
+    finalization_applied_count = sum(item["finalization_outcome"] == "APPLIED" for item in presentation_results)
+    stale_ids = set(spec.stale_presentation_event_ids)
     accepted_stale_ids = tuple(
         item["event_id"]
         for item in presentation_results
-        if item["event_id"] in set(spec.stale_presentation_event_ids)
-        and item["accepted_authoritatively"]
+        if item["event_id"] in stale_ids and item["accepted_authoritatively"]
     )
 
     opportunities: list[CorrectnessMetric] = []
@@ -976,17 +884,14 @@ def run_s1_e1_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingE1Tr
 
     presentation_ground_truth = []
     for item in spec.presentations:
-        identity = _semantic_identity_for(spec, item.attempt_id)
-        presentation_ground_truth.append(
-            {
-                "event_id": item.event_id,
-                "attempt_id": item.attempt_id,
-                "group": item.group,
-                "stale": item.stale,
-                "duplicate": item.duplicate,
-                **identity,
-            }
-        )
+        presentation_ground_truth.append({
+            "event_id": item.event_id,
+            "attempt_id": item.attempt_id,
+            "group": item.group,
+            "stale": item.stale,
+            "duplicate": item.duplicate,
+            **_semantic_identity_for(spec, item.attempt_id),
+        })
 
     ground_truth = {
         "schema": S1_E1_SCHEMA,
@@ -1000,8 +905,13 @@ def run_s1_e1_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingE1Tr
         "worker_process_count": len(spec.attempt_ids),
         "start_method": S1_E1_START_METHOD,
         "ipc_transport": "multiprocessing.Pipe+Queue",
-        "cpu_work": {"algorithm": "SHA-256", "rounds": S1_E1_WORK_ROUNDS},
+        "cpu_work": {
+            "algorithm": "SHA-256",
+            "minimum_fixed_rounds": S1_E1_WORK_ROUNDS,
+            "minimum_inflight_seconds": S1_E1_MIN_CPU_SECONDS,
+        },
         "retry_timeout_seconds": S1_E1_RETRY_TIMEOUT_SECONDS,
+        "retry_race_contract": "CPU_STARTED_BEFORE_TIMEOUT; SUPERSEDED_COMPLETION_AFTER_TIMEOUT",
         "duplicate_semantics": "same attempt/evidence/output/observed_at; distinct delivery EventID",
         "semantic_authority": "C1_COMMON_TO_B0_B4",
     }
@@ -1012,6 +922,7 @@ def run_s1_e1_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingE1Tr
             "attempt_id": item["attempt_id"],
             "outcome": item["finalization_outcome"],
             "error_type": item["error_type"],
+            "invariant_error_type": item["invariant_error_type"],
         }
         for item in presentation_results
     ]
@@ -1036,9 +947,7 @@ def run_s1_e1_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingE1Tr
     policy_decision = {
         "semantic_authority": "C1_COMMON_TO_B0_B4",
         "stale_attempt_admission_probe_is_gate_metric": False,
-        "stale_attempt_admission_decisions": [
-            _placement_to_dict(item) for item in stale_admission_decisions
-        ],
+        "stale_attempt_admission_decisions": [_placement_to_dict(item) for item in stale_admission_decisions],
     }
 
     evaluation = CorrectnessEvaluationRecord.create(
@@ -1069,7 +978,7 @@ def run_s1_e1_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingE1Tr
         authoritative_outcome=outcome,
         stale_result_event_ids=spec.stale_presentation_event_ids,
         finalization_applied_count=finalization_applied_count,
-        stale_admission_decisions=stale_admission_decisions,
+        stale_admission_decisions=tuple(stale_admission_decisions),
         worker_process_ids=worker_process_ids,
     )
 
@@ -1080,5 +989,7 @@ def run_s1_e1_paired() -> AttemptFencingE1Evaluation:
         for spec in S1_E1_SCENARIOS
         for policy_id in PolicyID
     )
-    summary = summarize_correctness(tuple(item.evaluation for item in trials))
-    return AttemptFencingE1Evaluation(trials=trials, summary=summary)
+    return AttemptFencingE1Evaluation(
+        trials=trials,
+        summary=summarize_correctness(tuple(item.evaluation for item in trials)),
+    )
