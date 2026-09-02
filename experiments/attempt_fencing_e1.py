@@ -51,6 +51,7 @@ S1_E1_SCHEMA = "cadi.s1-attempt-fencing-e1.v1"
 S1_E1_COHORT_ID = "C4.2c:S1:E1"
 S1_E1_START_METHOD = "spawn"
 S1_E1_WORK_ROUNDS = 50_000
+S1_E1_RETRY_TIMEOUT_SECONDS = 0.005
 S1_E1_IPC_TIMEOUT_SECONDS = 10.0
 
 
@@ -649,6 +650,30 @@ def _begin_worker(handle: _WorkerHandle, inbox: _Inbox) -> dict[str, Any]:
     return inbox.wait(kind="STARTED", attempt_id=handle.attempt_id)
 
 
+def _wait_for_retry_timeout(
+    *, scenario_id: str, superseded_attempt_id: str, retry_attempt_id: str
+) -> dict[str, Any]:
+    started_at = time.time()
+    started_monotonic = time.monotonic()
+    deadline = started_monotonic + S1_E1_RETRY_TIMEOUT_SECONDS
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(remaining)
+    fired_monotonic = time.monotonic()
+    return {
+        "kind": "RETRY_TIMEOUT",
+        "scenario_id": scenario_id,
+        "superseded_attempt_id": superseded_attempt_id,
+        "retry_attempt_id": retry_attempt_id,
+        "timeout_seconds": S1_E1_RETRY_TIMEOUT_SECONDS,
+        "elapsed_seconds": fired_monotonic - started_monotonic,
+        "started_at": started_at,
+        "fired_at": time.time(),
+    }
+
+
 def _compute_batch(
     handles: Mapping[str, _WorkerHandle],
     inbox: _Inbox,
@@ -726,6 +751,7 @@ def _run_e1_trace(
     tuple[dict[str, Any], ...],
     tuple[dict[str, Any], ...],
     tuple[dict[str, Any], ...],
+    tuple[dict[str, Any], ...],
     tuple[PlacementDecision, ...],
     tuple[int, ...],
     tuple[dict[str, Any], ...],
@@ -742,6 +768,7 @@ def _run_e1_trace(
     presentation_results: list[dict[str, Any]] = []
     stale_admission_decisions: list[PlacementDecision] = []
     compute_batches: list[dict[str, Any]] = []
+    retry_timeout_checks: list[dict[str, Any]] = []
 
     try:
         first = spec.attempt_ids[0]
@@ -775,6 +802,12 @@ def _run_e1_trace(
                 raise AssertionError("retry start requires a current Attempt")
             superseded = core.attempts[superseded_id]
             superseded_execution_before = superseded.execution_status.name
+            timeout_check = _wait_for_retry_timeout(
+                scenario_id=spec.scenario_id,
+                superseded_attempt_id=superseded_id,
+                retry_attempt_id=attempt_id,
+            )
+            retry_timeout_checks.append(timeout_check)
             core.start_attempt(attempt_id, "r")
             core.set_attempt_execution(attempt_id, ExecutionStatus.RUNNING)
             InvariantOracle(core).assert_all()
@@ -839,6 +872,7 @@ def _run_e1_trace(
         return (
             core,
             tuple(worker_lifecycle),
+            tuple(retry_timeout_checks),
             tuple(completion_checks),
             tuple(presentation_preconditions),
             tuple(presentation_results),
@@ -880,6 +914,7 @@ def run_s1_e1_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingE1Tr
     (
         core,
         worker_lifecycle,
+        retry_timeout_checks,
         completion_checks,
         presentation_preconditions,
         presentation_results,
@@ -966,6 +1001,7 @@ def run_s1_e1_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingE1Tr
         "start_method": S1_E1_START_METHOD,
         "ipc_transport": "multiprocessing.Pipe+Queue",
         "cpu_work": {"algorithm": "SHA-256", "rounds": S1_E1_WORK_ROUNDS},
+        "retry_timeout_seconds": S1_E1_RETRY_TIMEOUT_SECONDS,
         "duplicate_semantics": "same attempt/evidence/output/observed_at; distinct delivery EventID",
         "semantic_authority": "C1_COMMON_TO_B0_B4",
     }
@@ -983,6 +1019,7 @@ def run_s1_e1_trial(policy_id: PolicyID, scenario_id: str) -> AttemptFencingE1Tr
         "coordinator_pid": os.getpid(),
         "worker_process_ids": list(worker_process_ids),
         "worker_lifecycle": list(worker_lifecycle),
+        "retry_timeout_checks": list(retry_timeout_checks),
         "compute_batches": list(compute_batches),
         "physical_completion_checks": list(completion_checks),
         "terminal_presentation_preconditions": list(presentation_preconditions),
