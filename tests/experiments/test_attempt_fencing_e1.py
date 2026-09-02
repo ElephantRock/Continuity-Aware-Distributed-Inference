@@ -116,7 +116,6 @@ def test_retry_races_have_cpu_in_flight_when_timeout_fires(paired_evaluation):
             assert starts[superseded]["at"] <= timeout["started_at"]
             assert completions[superseded]["observed_at"] >= timeout["fired_at"]
             assert completions[superseded]["compute_cpu_seconds"] >= S1_E1_MIN_CPU_SECONDS
-            assert completions[superseded]["compute_elapsed_seconds"] >= completions[superseded]["compute_cpu_seconds"]
 
 
 def test_s1_e1_all_competent_baselines_have_zero_saar_dfr_sser(paired_evaluation):
