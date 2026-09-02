@@ -7,6 +7,7 @@ import pytest
 from experiments.attempt_fencing_e1 import (
     S1_E1_SCENARIOS,
     S1_E1_SCENARIO_IDS,
+    S1_E1_RETRY_TIMEOUT_SECONDS,
     _classify_e1_stale_acceptance,
     run_s1_e1_paired,
 )
@@ -60,6 +61,20 @@ def test_s1_e1_is_measured_ev1_and_uses_real_distinct_worker_processes(paired_ev
         assert observed["coordinator_pid"] == os.getpid()
         assert trial.evaluation.ground_truth["start_method"] == "spawn"
         assert trial.evaluation.ground_truth["ipc_transport"] == "multiprocessing.Pipe+Queue"
+
+
+def test_every_retry_is_triggered_by_a_measured_wall_clock_timeout(paired_evaluation):
+    for trial in paired_evaluation.trials:
+        observed = trial.evaluation.observed_evidence
+        attempt_ids = trial.evaluation.ground_truth["attempt_ids"]
+        timeouts = observed["retry_timeout_checks"]
+        assert len(timeouts) == len(attempt_ids) - 1
+        for index, timeout in enumerate(timeouts, start=1):
+            assert timeout["superseded_attempt_id"] == attempt_ids[index - 1]
+            assert timeout["retry_attempt_id"] == attempt_ids[index]
+            assert timeout["timeout_seconds"] == S1_E1_RETRY_TIMEOUT_SECONDS
+            assert timeout["elapsed_seconds"] >= S1_E1_RETRY_TIMEOUT_SECONDS
+            assert timeout["fired_at"] >= timeout["started_at"]
 
 
 def test_s1_e1_all_competent_baselines_have_zero_saar_dfr_sser(paired_evaluation):
@@ -177,6 +192,9 @@ def test_pretimeout_physical_success_becomes_stale_only_after_retry_supersession
     assert a1_completion["attempt_authority_after"] == "CURRENT"
     assert a1_completion["attempt_execution_after"] == "SUCCEEDED"
     assert a1_completion["stale_at_delivery"] is False
+    timeout = observed["retry_timeout_checks"][0]
+    assert timeout["started_at"] >= a1_completion["delivered_at"]
+    assert timeout["elapsed_seconds"] >= S1_E1_RETRY_TIMEOUT_SECONDS
     assert stale_pre["attempt_authority_before"] == "SUPERSEDED"
     assert stale_pre["attempt_execution_before"] == "SUCCEEDED"
 
