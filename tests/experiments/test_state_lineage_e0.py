@@ -180,12 +180,58 @@ def test_reported_consumption_is_explicit_execution_event_not_policy_decision():
         )
 
 
+def test_terminal_execution_is_explicit_and_authoritatively_committed():
+    evaluation = run_s2_e0_paired()
+
+    for trial in evaluation.trials:
+        terminal = trial.terminal_event
+        assert terminal.reported_success
+        assert terminal.authoritative_commit
+        assert terminal.request_id == "r"
+        assert terminal.attempt_id == "a"
+        assert terminal.output_id
+        assert trial.evaluation.observed_evidence["terminal_event"] == terminal.to_dict()
+        assert trial.evaluation.policy_decision["terminal_oracle_is_not_policy_visible"] is True
+        assert trial.evaluation.semantic_result.authoritative_commit is True
+        assert trial.evaluation.semantic_result.reported_success is True
+
+
+def test_incompatible_consumption_is_o4_only_after_wrong_terminal_commit():
+    trial = run_s2_e0_trial(PolicyID.B3, "FTR4")
+
+    assert trial.consumption_event is not None
+    assert trial.terminal_event.consumed_state_id == trial.candidate_state_id
+    assert trial.terminal_event.authoritative_commit
+    assert trial.terminal_event.reported_success
+    assert not trial.terminal_event.semantically_correct
+    assert (
+        trial.terminal_event.actual_result_token
+        != trial.terminal_event.expected_result_token
+    )
+    assert trial.evaluation.outcome_class is OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
+
+
+def test_b4_incompatible_state_recomputes_then_commits_correct_terminal_result():
+    trial = run_s2_e0_trial(PolicyID.B4, "FTR4")
+
+    assert trial.consumption_event is None
+    assert trial.terminal_event.used_recompute
+    assert trial.terminal_event.authoritative_commit
+    assert trial.terminal_event.semantically_correct
+    assert (
+        trial.terminal_event.actual_result_token
+        == trial.terminal_event.expected_result_token
+    )
+    assert trial.evaluation.outcome_class is OutcomeClass.O2_CORRECT_DEGRADED_RECOVERY
+
+
 def test_b2_session_affinity_does_not_itself_count_as_consumption():
     ftr6_b2 = run_s2_e0_trial(PolicyID.B2, "FTR6")
 
     assert ftr6_b2.placement_decision.worker_id == "w1"
     assert ftr6_b2.consumption_event is None
     assert ftr6_b2.state_consumption_event_id is None
+    assert ftr6_b2.terminal_event.used_recompute
     assert (
         ftr6_b2.evaluation.outcome_class
         is OutcomeClass.O2_CORRECT_DEGRADED_RECOVERY
@@ -202,6 +248,8 @@ def test_valid_ancestor_control_proves_b4_does_not_disable_reuse():
         trial = _trial(evaluation, "S2-VALID-ANCESTOR", policy_id)
         assert trial.consumption_event is not None
         assert trial.independent_oracle_compatible
+        assert trial.terminal_event.semantically_correct
+        assert not trial.terminal_event.used_recompute
         assert (
             trial.evaluation.outcome_class
             is OutcomeClass.O1_CORRECT_TRANSPARENT_RECOVERY
@@ -233,6 +281,8 @@ def test_ftr6_lost_valid_state_recomputes_without_consumption():
         trial = _trial(evaluation, "FTR6", policy_id)
         assert trial.independent_oracle_compatible
         assert trial.consumption_event is None
+        assert trial.terminal_event.used_recompute
+        assert trial.terminal_event.semantically_correct
         assert (
             trial.evaluation.outcome_class
             is OutcomeClass.O2_CORRECT_DEGRADED_RECOVERY
@@ -354,6 +404,8 @@ def test_measurement_detects_injected_b4_consumption_event_without_false_zero():
     assert CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE in (
         trial.evaluation.metric_violations
     )
+    assert trial.terminal_event.authoritative_commit
+    assert not trial.terminal_event.semantically_correct
     assert (
         trial.evaluation.outcome_class
         is OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
