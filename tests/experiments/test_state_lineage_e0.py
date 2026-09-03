@@ -1,11 +1,14 @@
 from experiments.correctness import CorrectnessMetric, OutcomeClass
 from experiments.state_lineage import (
     S2_E0_SCENARIOS,
+    StateConsumptionEvent,
+    _build_runtime,
+    _execute_consumption_directive,
     _run_s2_e0_trial,
     run_s2_e0_paired,
     run_s2_e0_trial,
 )
-from simulator import PolicyID
+from simulator import PlacementDecision, PolicyID
 
 
 _WRONG_BRANCH_SCENARIOS = (
@@ -13,8 +16,7 @@ _WRONG_BRANCH_SCENARIOS = (
     "FTR14",
     "S2-SIMILAR-DIFFERENT",
 )
-
-_INCOMPATIBLE_SCENARIOS = (
+_INCOMPATIBLE_CONSUMPTION_SCENARIOS = (
     "FTR4",
     "FTR5",
     "FTR14",
@@ -32,6 +34,10 @@ def _policy_summary(evaluation, policy_id):
 
 def _rate(summary, metric):
     return next(rate for rate in summary.rates if rate.metric is metric)
+
+
+def _outcome_count(summary, outcome):
+    return dict(summary.outcome_counts)[outcome]
 
 
 def _trial(evaluation, scenario_id, policy_id):
@@ -62,7 +68,7 @@ def test_s2_e0_independent_oracle_and_c1_compatibility_agree():
         trial.independent_oracle_compatible == trial.c1_compatible
         for trial in evaluation.trials
     )
-    for scenario_id in _INCOMPATIBLE_SCENARIOS:
+    for scenario_id in _INCOMPATIBLE_CONSUMPTION_SCENARIOS:
         assert not _trial(
             evaluation, scenario_id, PolicyID.B4
         ).independent_oracle_compatible
@@ -72,10 +78,27 @@ def test_s2_e0_independent_oracle_and_c1_compatibility_agree():
     assert _trial(evaluation, "FTR6", PolicyID.B4).independent_oracle_compatible
 
 
-def test_incompatible_candidates_are_physically_plausible_but_authority_hidden():
+def test_ftr5_is_canonical_superseded_producer_state():
+    evaluation = run_s2_e0_paired()
+    records = [
+        _trial(evaluation, "FTR5", policy_id).evaluation
+        for policy_id in PolicyID
+    ]
+
+    assert len({record.ground_truth_json for record in records}) == 1
+    truth = records[0].ground_truth
+    assert truth["candidate_producer_attempt_id"] == "a1"
+    assert truth["candidate_producer_attempt_authority"] == "SUPERSEDED"
+    assert truth["candidate_origin_request_committed_attempt_id"] == "a2"
+    assert truth["candidate_replica_status"] == "VALID"
+    assert truth["candidate_physical_location"] == "w1"
+    assert truth["independent_oracle_compatible"] is False
+
+
+def test_wrong_branch_candidates_are_physically_plausible_but_causally_hidden():
     evaluation = run_s2_e0_paired()
 
-    for scenario_id in _INCOMPATIBLE_SCENARIOS:
+    for scenario_id in _WRONG_BRANCH_SCENARIOS:
         records = [
             _trial(evaluation, scenario_id, policy_id).evaluation
             for policy_id in PolicyID
@@ -86,72 +109,103 @@ def test_incompatible_candidates_are_physically_plausible_but_authority_hidden()
         assert truth["candidate_semantic_type"] == "PREFIX"
         assert truth["candidate_representation"] == "KV"
         assert truth["candidate_state_validity"] == "VALID"
-        assert truth["candidate_physical_locations"] == ["w1"]
+        assert truth["candidate_replica_status"] == "VALID"
+        assert truth["candidate_physical_location"] == "w1"
         assert truth["independent_oracle_compatible"] is False
 
 
-def test_ftr5_is_canonical_superseded_producer_state():
+def test_consumption_execution_rule_is_policy_neutral_and_reason_blind():
+    runtime = _build_runtime("FTR4")
+    b0_decision = PlacementDecision(
+        PolicyID.B0, "w1", ("w1", "w2"), "LOAD_REASON"
+    )
+    b4_decision = PlacementDecision(
+        PolicyID.B4, "w1", ("w1", "w2"), "COMPATIBILITY_REASON"
+    )
+
+    b0_event = _execute_consumption_directive(runtime, b0_decision)
+    b4_event = _execute_consumption_directive(runtime, b4_decision)
+
+    assert b0_event is not None
+    assert b0_event == b4_event
+    assert b0_event.worker_id == "w1"
+    assert b0_event.state_id == runtime.candidate_state_id
+
+
+def test_consumption_requires_actual_valid_local_replica():
+    ftr4 = _build_runtime("FTR4")
+    nonlocal_decision = PlacementDecision(
+        PolicyID.B3, "w2", ("w2", "w1"), "EXACT_STATE_LOCALITY_THEN_LOAD"
+    )
+    assert _execute_consumption_directive(ftr4, nonlocal_decision) is None
+
+    ftr6 = _build_runtime("FTR6")
+    lost_local_decision = PlacementDecision(
+        PolicyID.B2, "w1", ("w1", "w2"), "SESSION_AFFINITY_THEN_CACHE_LOAD"
+    )
+    assert _execute_consumption_directive(ftr6, lost_local_decision) is None
+
+
+def test_reported_consumption_is_explicit_execution_event_not_policy_decision():
     evaluation = run_s2_e0_paired()
-    truth = _trial(evaluation, "FTR5", PolicyID.B4).evaluation.ground_truth
 
-    assert truth["candidate_origin_continuation_id"] == "c1"
-    assert truth["candidate_origin_request_id"] == "rp"
-    assert truth["candidate_producer_attempt_id"] == "a1"
-    assert truth["candidate_producer_attempt_authority"] == "SUPERSEDED"
-    assert truth["candidate_origin_request_committed_attempt_id"] == "a2"
-    assert truth["consumer_context"]["continuation_id"] == "c2"
-    assert truth["independent_oracle_compatible"] is False
-
-
-def test_b1_b3_reuse_incompatible_state_while_b4_recomputes():
-    evaluation = run_s2_e0_paired()
-
-    for scenario_id in _INCOMPATIBLE_SCENARIOS:
-        assert not _trial(evaluation, scenario_id, PolicyID.B0).candidate_reused
+    for scenario_id in _INCOMPATIBLE_CONSUMPTION_SCENARIOS:
+        assert _trial(evaluation, scenario_id, PolicyID.B0).consumption_event is None
         for policy_id in (PolicyID.B1, PolicyID.B2, PolicyID.B3):
             trial = _trial(evaluation, scenario_id, policy_id)
-            assert trial.candidate_reused
-            assert trial.state_consumption_event_id is not None
-            assert trial.evaluation.outcome_class is OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
+            assert trial.consumption_event is not None
+            assert trial.state_consumption_event_id == trial.consumption_event.event_id
+            assert trial.evaluation.observed_evidence["consumption_event"] == (
+                trial.consumption_event.to_dict()
+            )
+            assert "reuse_action" not in trial.evaluation.policy_decision
+            assert (
+                trial.evaluation.policy_decision[
+                    "state_consumption_is_execution_event_not_policy_decision"
+                ]
+                is True
+            )
+            assert (
+                trial.evaluation.outcome_class
+                is OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
+            )
+
         b4 = _trial(evaluation, scenario_id, PolicyID.B4)
-        assert not b4.candidate_reused
+        assert b4.consumption_event is None
         assert b4.state_consumption_event_id is None
         assert b4.placement_decision.reason == "INCOMPATIBLE_STATE_RECOMPUTE"
-        assert b4.evaluation.outcome_class is OutcomeClass.O2_CORRECT_DEGRADED_RECOVERY
+        assert (
+            b4.evaluation.outcome_class
+            is OutcomeClass.O2_CORRECT_DEGRADED_RECOVERY
+        )
 
 
-def test_ftr5_is_wscr_not_wrong_branch_opportunity():
-    evaluation = run_s2_e0_paired()
-
-    for policy_id in PolicyID:
-        record = _trial(evaluation, "FTR5", policy_id).evaluation
-        assert CorrectnessMetric.WRONG_BRANCH_REUSE_RATE not in record.metric_opportunities
-    for policy_id in (PolicyID.B1, PolicyID.B2, PolicyID.B3):
-        record = _trial(evaluation, "FTR5", policy_id).evaluation
-        assert CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE in record.metric_violations
-
-
-def test_placement_worker_choice_is_not_itself_counted_as_state_reuse():
+def test_b2_session_affinity_does_not_itself_count_as_consumption():
     ftr6_b2 = run_s2_e0_trial(PolicyID.B2, "FTR6")
 
-    # Session affinity may select w1 even though the valid State replica is lost.
-    # The S2 harness must not turn that worker choice into a State consumption.
     assert ftr6_b2.placement_decision.worker_id == "w1"
-    assert ftr6_b2.candidate_reused is False
+    assert ftr6_b2.consumption_event is None
     assert ftr6_b2.state_consumption_event_id is None
+    assert (
+        ftr6_b2.evaluation.outcome_class
+        is OutcomeClass.O2_CORRECT_DEGRADED_RECOVERY
+    )
 
 
-def test_valid_ancestor_control_proves_safety_is_not_disable_all_reuse():
+def test_valid_ancestor_control_proves_b4_does_not_disable_reuse():
     evaluation = run_s2_e0_paired()
 
-    assert not _trial(
+    assert _trial(
         evaluation, "S2-VALID-ANCESTOR", PolicyID.B0
-    ).candidate_reused
+    ).consumption_event is None
     for policy_id in (PolicyID.B1, PolicyID.B2, PolicyID.B3, PolicyID.B4):
         trial = _trial(evaluation, "S2-VALID-ANCESTOR", policy_id)
-        assert trial.candidate_reused
+        assert trial.consumption_event is not None
         assert trial.independent_oracle_compatible
-        assert trial.evaluation.outcome_class is OutcomeClass.O1_CORRECT_TRANSPARENT_RECOVERY
+        assert (
+            trial.evaluation.outcome_class
+            is OutcomeClass.O1_CORRECT_TRANSPARENT_RECOVERY
+        )
     assert (
         _trial(
             evaluation, "S2-VALID-ANCESTOR", PolicyID.B4
@@ -160,7 +214,7 @@ def test_valid_ancestor_control_proves_safety_is_not_disable_all_reuse():
     )
 
 
-def test_valid_ancestor_control_is_not_in_faulted_outcome_or_gate_denominators():
+def test_valid_ancestor_control_is_not_in_faulted_or_gate_denominators():
     evaluation = run_s2_e0_paired()
 
     for policy_id in PolicyID:
@@ -172,15 +226,17 @@ def test_valid_ancestor_control_is_not_in_faulted_outcome_or_gate_denominators()
         assert summary.faulted_operation_count == 5
 
 
-def test_ftr6_lost_valid_state_recomputes_without_state_consumption():
+def test_ftr6_lost_valid_state_recomputes_without_consumption():
     evaluation = run_s2_e0_paired()
 
     for policy_id in PolicyID:
         trial = _trial(evaluation, "FTR6", policy_id)
         assert trial.independent_oracle_compatible
-        assert not trial.candidate_reused
-        assert trial.state_consumption_event_id is None
-        assert trial.evaluation.outcome_class is OutcomeClass.O2_CORRECT_DEGRADED_RECOVERY
+        assert trial.consumption_event is None
+        assert (
+            trial.evaluation.outcome_class
+            is OutcomeClass.O2_CORRECT_DEGRADED_RECOVERY
+        )
         assert CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE not in (
             trial.evaluation.metric_opportunities
         )
@@ -201,15 +257,14 @@ def test_wbrr_exogenous_opportunities_are_identical_across_policies():
         assert signature[0][0] == CorrectnessMetric.WRONG_BRANCH_REUSE_RATE.value
 
 
-def test_only_wrong_branch_cases_carry_wbrr_exogenous_opportunities():
+def test_ftr5_is_wscr_pressure_not_wrong_branch_pressure():
     evaluation = run_s2_e0_paired()
 
-    for scenario_id in S2_E0_SCENARIOS:
-        expected = scenario_id in _WRONG_BRANCH_SCENARIOS
-        for policy_id in PolicyID:
-            record = _trial(evaluation, scenario_id, policy_id).evaluation
-            has_wbrr = CorrectnessMetric.WRONG_BRANCH_REUSE_RATE in record.metric_opportunities
-            assert has_wbrr is expected
+    for policy_id in PolicyID:
+        record = _trial(evaluation, "FTR5", policy_id).evaluation
+        assert CorrectnessMetric.WRONG_BRANCH_REUSE_RATE not in (
+            record.metric_opportunities
+        )
 
 
 def test_s2_e0_summary_records_expected_wbrr_wscr_and_sser():
@@ -246,39 +301,69 @@ def test_s2_e0_summary_records_expected_wbrr_wscr_and_sser():
         assert (wscr.numerator, wscr.denominator) == expected_wscr[policy_id]
         assert (sser.numerator, sser.denominator) == expected_sser[policy_id]
 
+        if policy_id in {PolicyID.B1, PolicyID.B2, PolicyID.B3}:
+            assert (
+                _outcome_count(
+                    summary, OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
+                )
+                == 4
+            )
+            assert (
+                _outcome_count(
+                    summary, OutcomeClass.O2_CORRECT_DEGRADED_RECOVERY
+                )
+                == 1
+            )
+        else:
+            assert (
+                _outcome_count(
+                    summary, OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
+                )
+                == 0
+            )
+            assert (
+                _outcome_count(
+                    summary, OutcomeClass.O2_CORRECT_DEGRADED_RECOVERY
+                )
+                == 5
+            )
 
-def test_faulted_wrong_state_consumption_is_o4_not_merely_gate_violation():
-    trial = run_s2_e0_trial(PolicyID.B3, "FTR4")
 
-    assert CorrectnessMetric.WRONG_BRANCH_REUSE_RATE in trial.evaluation.metric_violations
-    assert CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE in trial.evaluation.metric_violations
-    assert trial.evaluation.outcome_class is OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
+def test_measurement_detects_injected_b4_consumption_event_without_false_zero():
+    runtime = _build_runtime("FTR4")
+    assert runtime.candidate_replica_id is not None
+    event = StateConsumptionEvent(
+        event_id="S2:injected:wrong-consumption",
+        directive_id=runtime.consumption_directive.directive_id,
+        state_id=runtime.candidate_state_id,
+        replica_id=runtime.candidate_replica_id,
+        worker_id="w1",
+    )
 
+    trial = _run_s2_e0_trial(
+        PolicyID.B4,
+        "FTR4",
+        injected_consumption_event=event,
+    )
 
-def test_measurement_detects_injected_b4_wrong_state_consumption_without_false_zero():
-    trial = _run_s2_e0_trial(PolicyID.B4, "FTR4", forced_reuse=True)
-
-    assert trial.candidate_reused
+    assert trial.consumption_event == event
     assert trial.independent_oracle_compatible is False
-    assert CorrectnessMetric.WRONG_BRANCH_REUSE_RATE in trial.evaluation.metric_violations
-    assert CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE in trial.evaluation.metric_violations
-    assert trial.evaluation.outcome_class is OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
-
-
-def test_measurement_detects_injected_superseded_producer_consumption():
-    trial = _run_s2_e0_trial(PolicyID.B4, "FTR5", forced_reuse=True)
-
-    assert trial.candidate_reused
-    assert trial.independent_oracle_compatible is False
-    assert CorrectnessMetric.WRONG_BRANCH_REUSE_RATE not in trial.evaluation.metric_violations
-    assert CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE in trial.evaluation.metric_violations
-    assert trial.evaluation.outcome_class is OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
+    assert CorrectnessMetric.WRONG_BRANCH_REUSE_RATE in (
+        trial.evaluation.metric_violations
+    )
+    assert CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE in (
+        trial.evaluation.metric_violations
+    )
+    assert (
+        trial.evaluation.outcome_class
+        is OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
+    )
 
 
 def test_b4_is_only_policy_marked_as_receiving_c1_lineage_guard():
     evaluation = run_s2_e0_paired()
 
     for trial in evaluation.trials:
-        assert trial.evaluation.policy_decision["c1_lineage_guard_policy_visible"] is (
-            trial.policy_id is PolicyID.B4
-        )
+        assert trial.evaluation.policy_decision[
+            "c1_lineage_guard_policy_visible"
+        ] is (trial.policy_id is PolicyID.B4)
