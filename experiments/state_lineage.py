@@ -67,6 +67,7 @@ _WBRR_EVENT_ID: Mapping[str, str | None] = {
 }
 
 _EXECUTION_RULE = "CONSUME_DECLARED_CANDIDATE_IF_VALID_REPLICA_IS_LOCAL"
+_TERMINAL_RULE = "EXECUTE_PATH_AND_FINALIZE_CURRENT_ATTEMPT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,7 +122,72 @@ class StateConsumptionEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class TerminalExecutionEvent:
+    event_id: str
+    request_id: str
+    attempt_id: str
+    output_id: str
+    expected_result_token: str
+    actual_result_token: str
+    consumed_state_id: str | None
+    used_recompute: bool
+    reported_success: bool
+    authoritative_commit: bool
+    semantically_correct: bool
+    terminal_rule: str = _TERMINAL_RULE
+
+    def __post_init__(self) -> None:
+        for value, name in (
+            (self.event_id, "event_id"),
+            (self.request_id, "request_id"),
+            (self.attempt_id, "attempt_id"),
+            (self.output_id, "output_id"),
+            (self.expected_result_token, "expected_result_token"),
+            (self.actual_result_token, "actual_result_token"),
+        ):
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{name} must be a non-empty string")
+        if self.consumed_state_id is not None and (
+            not isinstance(self.consumed_state_id, str) or not self.consumed_state_id
+        ):
+            raise ValueError("consumed_state_id must be a non-empty string or None")
+        for value, name in (
+            (self.used_recompute, "used_recompute"),
+            (self.reported_success, "reported_success"),
+            (self.authoritative_commit, "authoritative_commit"),
+            (self.semantically_correct, "semantically_correct"),
+        ):
+            if not isinstance(value, bool):
+                raise TypeError(f"{name} must be bool")
+        if self.terminal_rule != _TERMINAL_RULE:
+            raise ValueError("unsupported S2 E0 terminal rule")
+        if self.used_recompute != (self.consumed_state_id is None):
+            raise ValueError("recompute must occur exactly when no candidate State was consumed")
+        if self.semantically_correct != (
+            self.actual_result_token == self.expected_result_token
+        ):
+            raise ValueError("semantic correctness must match terminal result tokens")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "event_id": self.event_id,
+            "request_id": self.request_id,
+            "attempt_id": self.attempt_id,
+            "output_id": self.output_id,
+            "expected_result_token": self.expected_result_token,
+            "actual_result_token": self.actual_result_token,
+            "consumed_state_id": self.consumed_state_id,
+            "used_recompute": self.used_recompute,
+            "reported_success": self.reported_success,
+            "authoritative_commit": self.authoritative_commit,
+            "semantically_correct": self.semantically_correct,
+            "terminal_rule": self.terminal_rule,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class _ScenarioRuntime:
+    scenario_id: str
     core: ContinuityCore
     observation: PolicyObservation
     candidate_state_id: str
@@ -142,6 +208,7 @@ class StateLineageTrial:
     placement_decision: PlacementDecision
     candidate_state_id: str
     consumption_event: StateConsumptionEvent | None
+    terminal_event: TerminalExecutionEvent
     independent_oracle_compatible: bool
     c1_compatible: bool
 
@@ -166,12 +233,17 @@ class StateLineageTrial:
             self.consumption_event, StateConsumptionEvent
         ):
             raise TypeError("consumption_event must be StateConsumptionEvent or None")
+        if not isinstance(self.terminal_event, TerminalExecutionEvent):
+            raise TypeError("terminal_event must be TerminalExecutionEvent")
         if not isinstance(self.independent_oracle_compatible, bool):
             raise TypeError("independent_oracle_compatible must be bool")
         if not isinstance(self.c1_compatible, bool):
             raise TypeError("c1_compatible must be bool")
         if self.independent_oracle_compatible != self.c1_compatible:
             raise ValueError("C1 compatibility must agree with the independent S2 oracle")
+        expected_consumed = None if self.consumption_event is None else self.consumption_event.state_id
+        if self.terminal_event.consumed_state_id != expected_consumed:
+            raise ValueError("terminal event must reference the actual consumption event")
 
     @property
     def candidate_reused(self) -> bool:
@@ -468,6 +540,7 @@ def _build_runtime(scenario_id: str) -> _ScenarioRuntime:
     )
     fault_class = _FAULT_CLASS[scenario_id]
     return _ScenarioRuntime(
+        scenario_id=scenario_id,
         core=core,
         observation=observation,
         candidate_state_id=candidate_state_id,
@@ -475,7 +548,7 @@ def _build_runtime(scenario_id: str) -> _ScenarioRuntime:
         candidate_replica_id=candidate_replica_id,
         compatible_alternative_state_id=compatible_alternative_state_id,
         consumption_directive=StateConsumptionDirective(
-            directive_id=f"S2:{scenario_id}:local-candidate-consumption",
+            directive_id=f"S2:{scenario_id}:candidate-consumption-directive",
             state_id=candidate_state_id,
         ),
         fault_id=None if fault_class is None else f"S2:{scenario_id}",
@@ -571,12 +644,8 @@ def _execute_consumption_directive(
     runtime: _ScenarioRuntime,
     decision: PlacementDecision,
 ) -> StateConsumptionEvent | None:
-    """Apply one post-placement worker execution rule to every baseline.
+    """Apply the same post-placement worker execution rule to B0-B4."""
 
-    This function intentionally has no PolicyID parameter and never inspects the
-    placement reason. The declared candidate is consumed only when its actual
-    physical replica is VALID on the worker selected by the closed C3 policy.
-    """
     if decision.worker_id is None or runtime.candidate_replica_id is None:
         return None
     replica = runtime.core.replicas[runtime.candidate_replica_id]
@@ -588,13 +657,88 @@ def _execute_consumption_directive(
         return None
     return StateConsumptionEvent(
         event_id=(
-            f"S2:{runtime.observation.request_id}:consume:"
+            f"S2:{runtime.scenario_id}:{decision.policy_id.value}:consume:"
             f"{runtime.consumption_directive.state_id}@{decision.worker_id}"
         ),
         directive_id=runtime.consumption_directive.directive_id,
         state_id=runtime.consumption_directive.state_id,
         replica_id=replica.id,
         worker_id=decision.worker_id,
+    )
+
+
+def _expected_result_token(runtime: _ScenarioRuntime) -> str:
+    return f"correct:{runtime.consumer_context.continuation_id}:{runtime.consumer_context.request_id}"
+
+
+def _execute_terminal_outcome(
+    runtime: _ScenarioRuntime,
+    consumption_event: StateConsumptionEvent | None,
+    *,
+    independent_compatible: bool,
+) -> TerminalExecutionEvent:
+    """Execute and authoritatively finalize the consumer request.
+
+    The application-level oracle is intentionally outside policy-visible input.
+    Recompute produces the expected token. Compatible reuse produces the same
+    token. Incompatible reuse produces a distinct but syntactically successful
+    token. The current Attempt is then completed and finalized through C1, so O4
+    is recorded only when an actually wrong result becomes authoritative.
+    """
+
+    core = runtime.core
+    ctx = runtime.consumer_context
+    expected = _expected_result_token(runtime)
+    if consumption_event is None or independent_compatible:
+        actual = expected
+    else:
+        actual = f"wrong:{consumption_event.state_id}:{ctx.request_id}"
+
+    core.complete_attempt(ctx.attempt_id)
+    evidence_id = f"S2:{runtime.scenario_id}:terminal-evidence:{ctx.attempt_id}"
+    core.record_evidence(
+        Evidence(
+            id=evidence_id,
+            claim="terminal consumer execution success",
+            source="C4.3a deterministic execution",
+            authority=EvidenceAuthority.EXACT_OBSERVATION,
+            status=EvidenceStatus.VALID,
+            observed_at=1.0,
+            scope=frozenset({("attempt", ctx.attempt_id)}),
+        )
+    )
+    output_id = f"S2:{runtime.scenario_id}:terminal-output:{ctx.attempt_id}"
+    core.create_output(
+        output_id,
+        ctx.attempt_id,
+        terminal=True,
+        evidence_ids=(evidence_id,),
+    )
+    core.finalize_request(ctx.request_id, output_id, now=1.0)
+
+    request = core.requests[ctx.request_id]
+    authoritative_commit = (
+        request.status is RequestStatus.COMPLETED
+        and request.committed_attempt_id == ctx.attempt_id
+        and request.authoritative_output_id == output_id
+    )
+    if not authoritative_commit:
+        raise AssertionError("S2 terminal execution failed to establish C1 authority")
+
+    return TerminalExecutionEvent(
+        event_id=f"S2:{runtime.scenario_id}:terminal:{ctx.request_id}",
+        request_id=ctx.request_id,
+        attempt_id=ctx.attempt_id,
+        output_id=output_id,
+        expected_result_token=expected,
+        actual_result_token=actual,
+        consumed_state_id=(
+            None if consumption_event is None else consumption_event.state_id
+        ),
+        used_recompute=consumption_event is None,
+        reported_success=True,
+        authoritative_commit=authoritative_commit,
+        semantically_correct=actual == expected,
     )
 
 
@@ -653,6 +797,8 @@ def _runtime_ground_truth(runtime: _ScenarioRuntime, scenario_id: str) -> dict[s
             "attempt_id": runtime.consumer_context.attempt_id,
         },
         "consumption_directive": runtime.consumption_directive.to_dict(),
+        "terminal_execution_rule": _TERMINAL_RULE,
+        "expected_result_token": _expected_result_token(runtime),
         "independent_oracle_compatible": independent_compatible,
         "wrong_branch_reuse_opportunity_event_id": runtime.wbrr_event_id,
     }
@@ -704,9 +850,12 @@ def _run_s2_e0_trial(
         if consumption_event.directive_id != runtime.consumption_directive.directive_id:
             raise AssertionError("consumption event references a different directive")
 
-    candidate_reused = consumption_event is not None
-    incompatible_consumption = candidate_reused and not independent_compatible
-    wrong_branch_reuse = runtime.wbrr_event_id is not None and incompatible_consumption
+    incompatible_consumption = (
+        consumption_event is not None and not independent_compatible
+    )
+    wrong_branch_reuse = (
+        runtime.wbrr_event_id is not None and incompatible_consumption
+    )
 
     opportunities: list[CorrectnessMetric] = []
     opportunity_event_ids: list[str] = []
@@ -730,25 +879,20 @@ def _run_s2_e0_trial(
             violations.append(CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE)
             violation_event_ids.append(consumption_event.event_id)
 
-    if incompatible_consumption:
-        semantic_result = SemanticResult(
-            reported_success=True,
-            authoritative_commit=True,
-            semantically_correct=False,
-        )
-    elif consumption_event is not None:
-        semantic_result = SemanticResult(
-            reported_success=True,
-            authoritative_commit=True,
-            semantically_correct=True,
-        )
-    else:
-        semantic_result = SemanticResult(
-            reported_success=True,
-            authoritative_commit=True,
-            semantically_correct=True,
-            recovery_actions=(RecoveryAction.RECOMPUTE,),
-        )
+    terminal_event = _execute_terminal_outcome(
+        runtime,
+        consumption_event,
+        independent_compatible=independent_compatible,
+    )
+
+    semantic_result = SemanticResult(
+        reported_success=terminal_event.reported_success,
+        authoritative_commit=terminal_event.authoritative_commit,
+        semantically_correct=terminal_event.semantically_correct,
+        recovery_actions=(
+            (RecoveryAction.RECOMPUTE,) if terminal_event.used_recompute else ()
+        ),
+    )
 
     observed_evidence = {
         "c1_state_compatible": c1_compatible,
@@ -759,12 +903,16 @@ def _run_s2_e0_trial(
             if runtime.candidate_replica_id is None
             else core.replicas[runtime.candidate_replica_id].status.name
         ),
-        "consumption_event": None if consumption_event is None else consumption_event.to_dict(),
+        "consumption_event": (
+            None if consumption_event is None else consumption_event.to_dict()
+        ),
+        "terminal_event": terminal_event.to_dict(),
     }
     policy_decision = {
         "placement": _placement_to_dict(decision),
         "c1_lineage_guard_policy_visible": policy_id is PolicyID.B4,
         "state_consumption_is_execution_event_not_policy_decision": True,
+        "terminal_oracle_is_not_policy_visible": True,
     }
 
     evaluation = CorrectnessEvaluationRecord.create(
@@ -795,6 +943,7 @@ def _run_s2_e0_trial(
         placement_decision=decision,
         candidate_state_id=runtime.candidate_state_id,
         consumption_event=consumption_event,
+        terminal_event=terminal_event,
         independent_oracle_compatible=independent_compatible,
         c1_compatible=c1_compatible,
     )
