@@ -562,7 +562,7 @@ def _apply_presentation(core: ContinuityCore, message: Mapping[str, Any], *, sta
     invariant_error: BaseException | None = None
     try:
         InvariantOracle(core).assert_all()
-    except (AssertionError, SemanticViolation) as exc:
+    except Exception as exc:
         invariant_error = exc
 
     post = {
