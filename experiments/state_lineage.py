@@ -657,7 +657,7 @@ def _execute_consumption_directive(
         return None
     return StateConsumptionEvent(
         event_id=(
-            f"S2:{runtime.scenario_id}:{decision.policy_id.value}:consume:"
+            f"S2:{runtime.scenario_id}:consume:"
             f"{runtime.consumption_directive.state_id}@{decision.worker_id}"
         ),
         directive_id=runtime.consumption_directive.directive_id,
@@ -679,20 +679,21 @@ def _execute_terminal_outcome(
 ) -> TerminalExecutionEvent:
     """Execute and authoritatively finalize the consumer request.
 
-    The application-level oracle is intentionally outside policy-visible input.
-    Recompute produces the expected token. Compatible reuse produces the same
-    token. Incompatible reuse produces a distinct but syntactically successful
-    token. The current Attempt is then completed and finalized through C1, so O4
-    is recorded only when an actually wrong result becomes authoritative.
+    The application-level oracle is outside policy-visible input. Recompute and
+    compatible reuse produce the expected token. Incompatible reuse produces a
+    distinct but syntactically successful token. The current Attempt is then
+    completed and finalized through C1, so O4 exists only when that wrong token
+    actually becomes the authoritative request result.
     """
 
     core = runtime.core
     ctx = runtime.consumer_context
     expected = _expected_result_token(runtime)
-    if consumption_event is None or independent_compatible:
-        actual = expected
-    else:
-        actual = f"wrong:{consumption_event.state_id}:{ctx.request_id}"
+    actual = (
+        expected
+        if consumption_event is None or independent_compatible
+        else f"wrong:{consumption_event.state_id}:{ctx.request_id}"
+    )
 
     core.complete_attempt(ctx.attempt_id)
     evidence_id = f"S2:{runtime.scenario_id}:terminal-evidence:{ctx.attempt_id}"
@@ -838,6 +839,7 @@ def _run_s2_e0_trial(
         raise AssertionError(
             "C1 State compatibility diverges from the independent S2 lineage oracle"
         )
+    ground_truth = _runtime_ground_truth(runtime, scenario_id)
 
     consumption_event = (
         injected_consumption_event
@@ -884,7 +886,6 @@ def _run_s2_e0_trial(
         consumption_event,
         independent_compatible=independent_compatible,
     )
-
     semantic_result = SemanticResult(
         reported_success=terminal_event.reported_success,
         authoritative_commit=terminal_event.authoritative_commit,
@@ -923,7 +924,7 @@ def _run_s2_e0_trial(
         scenario_id=scenario_id,
         validation_level=ValidationEvidenceLevel.EV0_DETERMINISTIC_SEMANTICS,
         evidence_provenance=ResultEvidenceProvenance.SYNTHETICALLY_GENERATED,
-        ground_truth=_runtime_ground_truth(runtime, scenario_id),
+        ground_truth=ground_truth,
         observed_evidence=observed_evidence,
         policy_decision=policy_decision,
         semantic_result=semantic_result,
