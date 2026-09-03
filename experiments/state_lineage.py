@@ -1,0 +1,629 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Mapping
+
+from continuity.core import ContinuityCore
+from continuity.entities import (
+    ContinuationLifecycle,
+    ExecutionContext,
+    ReplicaStatus,
+    StateValidity,
+)
+from simulator import (
+    CoreContinuityAuthority,
+    PlacementDecision,
+    PolicyID,
+    PolicyObservation,
+    WorkerObservation,
+    build_baseline_policies,
+    decide_placement,
+)
+
+from .correctness import (
+    CorrectnessEvaluationRecord,
+    CorrectnessMetric,
+    CorrectnessSummary,
+    MetricOpportunityScope,
+    RecoveryAction,
+    ResultEvidenceProvenance,
+    SemanticResult,
+    ValidationEvidenceLevel,
+    summarize_correctness,
+)
+
+
+S2_E0_COHORT_ID = "C4.3a:S2:E0"
+S2_E0_SCENARIOS = (
+    "FTR4",
+    "S2-ABANDONED-RESIDUE",
+    "S2-SIMILAR-DIFFERENT",
+    "S2-VALID-ANCESTOR",
+    "FTR5",
+)
+
+_FAULT_CLASS: Mapping[str, str | None] = {
+    "FTR4": "wrong sibling state",
+    "S2-ABANDONED-RESIDUE": "residual abandoned-branch state",
+    "S2-SIMILAR-DIFFERENT": "similar-but-different state",
+    "S2-VALID-ANCESTOR": None,
+    "FTR5": "total state loss",
+}
+
+_WBRR_EVENT_ID: Mapping[str, str | None] = {
+    "FTR4": "S2:FTR4:wrong-branch-reuse-opportunity",
+    "S2-ABANDONED-RESIDUE": "S2:ABANDONED:wrong-branch-reuse-opportunity",
+    "S2-SIMILAR-DIFFERENT": "S2:SIMILAR:wrong-branch-reuse-opportunity",
+    "S2-VALID-ANCESTOR": None,
+    "FTR5": None,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _ScenarioRuntime:
+    core: ContinuityCore
+    observation: PolicyObservation
+    candidate_state_id: str
+    consumer_context: ExecutionContext
+    candidate_replica_id: str | None
+    compatible_alternative_state_id: str | None
+    fault_id: str | None
+    fault_class: str | None
+    wbrr_event_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class StateLineageTrial:
+    policy_id: PolicyID
+    scenario_id: str
+    evaluation: CorrectnessEvaluationRecord
+    placement_decision: PlacementDecision
+    candidate_state_id: str
+    candidate_reused: bool
+    independent_oracle_compatible: bool
+    c1_compatible: bool
+    state_consumption_event_id: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.policy_id, PolicyID):
+            raise TypeError("policy_id must be PolicyID")
+        if self.scenario_id not in S2_E0_SCENARIOS:
+            raise ValueError("scenario_id must be one of the mandatory S2 E0 scenarios")
+        if not isinstance(self.evaluation, CorrectnessEvaluationRecord):
+            raise TypeError("evaluation must be CorrectnessEvaluationRecord")
+        if self.evaluation.policy_id is not self.policy_id:
+            raise ValueError("evaluation policy_id must match trial policy_id")
+        if self.evaluation.scenario_id != self.scenario_id:
+            raise ValueError("evaluation scenario_id must match trial scenario_id")
+        if not isinstance(self.placement_decision, PlacementDecision):
+            raise TypeError("placement_decision must be PlacementDecision")
+        if self.placement_decision.policy_id is not self.policy_id:
+            raise ValueError("placement_decision policy_id must match trial policy_id")
+        if not isinstance(self.candidate_state_id, str) or not self.candidate_state_id:
+            raise ValueError("candidate_state_id must be a non-empty string")
+        if not isinstance(self.candidate_reused, bool):
+            raise TypeError("candidate_reused must be bool")
+        if not isinstance(self.independent_oracle_compatible, bool):
+            raise TypeError("independent_oracle_compatible must be bool")
+        if not isinstance(self.c1_compatible, bool):
+            raise TypeError("c1_compatible must be bool")
+        if self.independent_oracle_compatible != self.c1_compatible:
+            raise ValueError("C1 compatibility must agree with the independent S2 oracle")
+        if self.candidate_reused != (self.state_consumption_event_id is not None):
+            raise ValueError(
+                "state_consumption_event_id must exist exactly when candidate State is reused"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class StateLineageEvaluation:
+    trials: tuple[StateLineageTrial, ...]
+    summary: CorrectnessSummary
+
+    def __post_init__(self) -> None:
+        expected_count = len(S2_E0_SCENARIOS) * len(tuple(PolicyID))
+        if len(self.trials) != expected_count:
+            raise ValueError(
+                f"S2 E0 evaluation must contain exactly {expected_count} paired trials"
+            )
+        expected_order = tuple(
+            (scenario_id, policy_id)
+            for scenario_id in S2_E0_SCENARIOS
+            for policy_id in PolicyID
+        )
+        actual_order = tuple(
+            (trial.scenario_id, trial.policy_id) for trial in self.trials
+        )
+        if actual_order != expected_order:
+            raise ValueError("S2 E0 trials must use canonical scenario then B0-B4 ordering")
+        if not isinstance(self.summary, CorrectnessSummary):
+            raise TypeError("summary must be CorrectnessSummary")
+
+
+def _workers() -> tuple[WorkerObservation, ...]:
+    # The State-local worker is intentionally busier. B0 therefore selects w2,
+    # while B1-B3 may still prefer w1 for their declared locality/affinity
+    # abstractions. This makes reuse intent observable without weakening them.
+    return (
+        WorkerObservation("w1", True, 1, 1, 0),
+        WorkerObservation("w2", True, 1, 0, 0),
+    )
+
+
+def _base_core() -> ContinuityCore:
+    core = ContinuityCore()
+    core.create_program("p")
+    core.create_session("s", "p")
+    core.create_continuation(
+        "c0", "s", lifecycle=ContinuationLifecycle.ACTIVE
+    )
+    return core
+
+
+def _add_consumer(
+    core: ContinuityCore,
+    continuation_id: str,
+) -> ExecutionContext:
+    core.create_request("r", continuation_id)
+    core.start_attempt("a", "r")
+    return ExecutionContext(
+        program_id="p",
+        session_id="s",
+        continuation_id=continuation_id,
+        request_id="r",
+        attempt_id="a",
+    )
+
+
+def _observation(
+    core: ContinuityCore,
+    *,
+    candidate_state_id: str,
+    consumer_context: ExecutionContext,
+    state_locations: tuple[str, ...],
+) -> PolicyObservation:
+    state = core.states[candidate_state_id]
+    ancestry = tuple(
+        sorted(
+            _independent_ancestors(core, consumer_context.continuation_id)
+            - {consumer_context.continuation_id}
+        )
+    )
+    return PolicyObservation(
+        request_id=consumer_context.request_id,
+        workers=_workers(),
+        program_id=consumer_context.program_id,
+        attempt_id=consumer_context.attempt_id,
+        attempt_authority="CURRENT",
+        session_id=consumer_context.session_id,
+        session_preferred_location="w1",
+        continuation_id=consumer_context.continuation_id,
+        continuation_ancestry=ancestry,
+        state_candidate_key="prefix:shared",
+        exact_state_id=candidate_state_id,
+        state_locations=state_locations,
+        state_provenance=(("origin_continuation", state.origin_continuation_id),),
+        state_lifecycle=state.lifecycle.name,
+        producer_attempt_id=state.producer_attempt_id,
+        binding_id=None,
+        binding_epoch=None,
+        evidence_authority="EXACT_OBSERVATION",
+        evidence_status="VALID",
+        evidence_freshness=0.0,
+        reconciliation="MATCHED",
+    )
+
+
+def _build_runtime(scenario_id: str) -> _ScenarioRuntime:
+    if scenario_id not in S2_E0_SCENARIOS:
+        raise ValueError(f"scenario_id must be one of {S2_E0_SCENARIOS!r}")
+
+    core = _base_core()
+    candidate_state_id: str
+    candidate_replica_id: str | None = None
+    compatible_alternative_state_id: str | None = None
+
+    if scenario_id == "FTR4":
+        core.create_continuation(
+            "c1", "s", parent_ids=("c0",), lifecycle=ContinuationLifecycle.ACTIVE
+        )
+        core.create_continuation(
+            "c2", "s", parent_ids=("c0",), lifecycle=ContinuationLifecycle.ACTIVE
+        )
+        candidate_state_id = "x-sibling"
+        core.create_state(
+            candidate_state_id,
+            origin_type="continuation",
+            origin_id="c1",
+            semantic_type="PREFIX",
+            representation="KV",
+        )
+        candidate_replica_id = "rho-sibling"
+        core.add_replica(candidate_replica_id, candidate_state_id, "w1")
+        consumer_context = _add_consumer(core, "c2")
+        state_locations = ("w1",)
+
+    elif scenario_id == "S2-ABANDONED-RESIDUE":
+        core.create_continuation(
+            "c1", "s", parent_ids=("c0",), lifecycle=ContinuationLifecycle.ACTIVE
+        )
+        candidate_state_id = "x-abandoned"
+        core.create_state(
+            candidate_state_id,
+            origin_type="continuation",
+            origin_id="c1",
+            semantic_type="PREFIX",
+            representation="KV",
+        )
+        candidate_replica_id = "rho-abandoned"
+        core.add_replica(candidate_replica_id, candidate_state_id, "w1")
+        core.set_continuation_lifecycle("c1", ContinuationLifecycle.ABANDONED)
+        core.create_continuation(
+            "c2", "s", parent_ids=("c0",), lifecycle=ContinuationLifecycle.ACTIVE
+        )
+        consumer_context = _add_consumer(core, "c2")
+        state_locations = ("w1",)
+
+    elif scenario_id == "S2-SIMILAR-DIFFERENT":
+        core.create_continuation(
+            "c1", "s", parent_ids=("c0",), lifecycle=ContinuationLifecycle.ACTIVE
+        )
+        core.create_continuation(
+            "c2", "s", parent_ids=("c0",), lifecycle=ContinuationLifecycle.ACTIVE
+        )
+        compatible_alternative_state_id = "x-compatible"
+        core.create_state(
+            compatible_alternative_state_id,
+            origin_type="continuation",
+            origin_id="c0",
+            semantic_type="PREFIX",
+            representation="KV",
+        )
+        core.add_replica("rho-compatible", compatible_alternative_state_id, "w2")
+        candidate_state_id = "x-similar-wrong"
+        core.create_state(
+            candidate_state_id,
+            origin_type="continuation",
+            origin_id="c1",
+            semantic_type="PREFIX",
+            representation="KV",
+        )
+        candidate_replica_id = "rho-similar-wrong"
+        core.add_replica(candidate_replica_id, candidate_state_id, "w1")
+        consumer_context = _add_consumer(core, "c2")
+        state_locations = ("w1",)
+
+    elif scenario_id == "S2-VALID-ANCESTOR":
+        candidate_state_id = "x-ancestor"
+        core.create_state(
+            candidate_state_id,
+            origin_type="continuation",
+            origin_id="c0",
+            semantic_type="PREFIX",
+            representation="KV",
+        )
+        candidate_replica_id = "rho-ancestor"
+        core.add_replica(candidate_replica_id, candidate_state_id, "w1")
+        core.create_continuation(
+            "c2", "s", parent_ids=("c0",), lifecycle=ContinuationLifecycle.ACTIVE
+        )
+        consumer_context = _add_consumer(core, "c2")
+        state_locations = ("w1",)
+
+    elif scenario_id == "FTR5":
+        candidate_state_id = "x-lost"
+        core.create_state(
+            candidate_state_id,
+            origin_type="continuation",
+            origin_id="c0",
+            semantic_type="PREFIX",
+            representation="KV",
+        )
+        candidate_replica_id = "rho-lost"
+        core.add_replica(candidate_replica_id, candidate_state_id, "w1")
+        core.set_replica_status(candidate_replica_id, ReplicaStatus.LOST)
+        core.create_continuation(
+            "c1", "s", parent_ids=("c0",), lifecycle=ContinuationLifecycle.ACTIVE
+        )
+        consumer_context = _add_consumer(core, "c1")
+        state_locations = ()
+
+    else:  # pragma: no cover - guarded above
+        raise AssertionError("unhandled S2 scenario")
+
+    observation = _observation(
+        core,
+        candidate_state_id=candidate_state_id,
+        consumer_context=consumer_context,
+        state_locations=state_locations,
+    )
+    fault_class = _FAULT_CLASS[scenario_id]
+    return _ScenarioRuntime(
+        core=core,
+        observation=observation,
+        candidate_state_id=candidate_state_id,
+        consumer_context=consumer_context,
+        candidate_replica_id=candidate_replica_id,
+        compatible_alternative_state_id=compatible_alternative_state_id,
+        fault_id=None if fault_class is None else f"S2:{scenario_id}",
+        fault_class=fault_class,
+        wbrr_event_id=_WBRR_EVENT_ID[scenario_id],
+    )
+
+
+def _independent_ancestors(core: ContinuityCore, continuation_id: str) -> set[str]:
+    """Independent graph traversal used by the experiment oracle.
+
+    This intentionally does not call ContinuityCore.is_ancestor or
+    ContinuityCore.state_compatible, so an implementation bug in the B4/C1
+    compatibility path is not duplicated by the experiment oracle.
+    """
+
+    if continuation_id not in core.continuations:
+        return set()
+    result = {continuation_id}
+    todo = list(core.continuations[continuation_id].parent_ids)
+    while todo:
+        current = todo.pop()
+        if current in result:
+            continue
+        result.add(current)
+        parent = core.continuations.get(current)
+        if parent is None:
+            return set()
+        todo.extend(parent.parent_ids)
+    return result
+
+
+def _independent_lineage_compatible(
+    core: ContinuityCore,
+    state_id: str,
+    ctx: ExecutionContext,
+) -> bool:
+    state = core.states.get(state_id)
+    consumer = core.continuations.get(ctx.continuation_id)
+    session = core.sessions.get(ctx.session_id)
+    if state is None or consumer is None or session is None:
+        return False
+    if state.validity is not StateValidity.VALID:
+        return False
+    origin = core.continuations.get(state.origin_continuation_id)
+    if origin is None:
+        return False
+    if origin.session_id != consumer.session_id or consumer.session_id != session.id:
+        return False
+    if state.origin_continuation_id not in _independent_ancestors(
+        core, ctx.continuation_id
+    ):
+        return False
+    # C4.3a uses continuation-origin State so causal branch lineage is isolated
+    # from producer-Attempt/Phase authority. Those dimensions are added in the
+    # adversarial S2 corpus rather than silently simplified here.
+    if state.producer_attempt_id is not None or state.producer_phase_id is not None:
+        raise AssertionError(
+            "C4.3a independent oracle expects continuation-origin State only"
+        )
+    return True
+
+
+def _candidate_reused(
+    policy_id: PolicyID,
+    decision: PlacementDecision,
+    observation: PolicyObservation,
+) -> bool:
+    """Map the closed placement abstraction to an explicit State reuse action.
+
+    Worker placement alone is never counted as reuse. B1/B2 consume the
+    candidate only when their candidate-key-local worker is selected; B3 only
+    when its exact-State-local worker is selected; B4 only when its decision
+    explicitly says compatibility-authorized State locality was used. B0 has no
+    State-reuse information contract and never consumes the candidate here.
+    """
+
+    if decision.worker_id is None or decision.worker_id not in observation.state_locations:
+        return False
+    if policy_id is PolicyID.B0:
+        return False
+    if policy_id in {PolicyID.B1, PolicyID.B2}:
+        return observation.state_candidate_key is not None
+    if policy_id is PolicyID.B3:
+        return observation.exact_state_id is not None
+    if policy_id is PolicyID.B4:
+        return decision.reason == "COMPATIBLE_STATE_LOCALITY_THEN_LOAD"
+    raise AssertionError(f"unhandled policy {policy_id}")
+
+
+def _placement_to_dict(decision: PlacementDecision) -> dict[str, Any]:
+    return {
+        "policy_id": decision.policy_id.value,
+        "worker_id": decision.worker_id,
+        "ranked_worker_ids": list(decision.ranked_worker_ids),
+        "reason": decision.reason,
+    }
+
+
+def _runtime_ground_truth(runtime: _ScenarioRuntime, scenario_id: str) -> dict[str, Any]:
+    core = runtime.core
+    state = core.states[runtime.candidate_state_id]
+    replica = (
+        None
+        if runtime.candidate_replica_id is None
+        else core.replicas[runtime.candidate_replica_id]
+    )
+    independent_compatible = _independent_lineage_compatible(
+        core, runtime.candidate_state_id, runtime.consumer_context
+    )
+    return {
+        "scenario_id": scenario_id,
+        "candidate_key": runtime.observation.state_candidate_key,
+        "candidate_state_id": runtime.candidate_state_id,
+        "candidate_origin_continuation_id": state.origin_continuation_id,
+        "candidate_semantic_type": state.semantic_type,
+        "candidate_representation": state.representation,
+        "candidate_state_validity": state.validity.name,
+        "candidate_replica_id": runtime.candidate_replica_id,
+        "candidate_replica_status": None if replica is None else replica.status.name,
+        "candidate_physical_locations": list(runtime.observation.state_locations),
+        "compatible_alternative_state_id": runtime.compatible_alternative_state_id,
+        "consumer_context": {
+            "program_id": runtime.consumer_context.program_id,
+            "session_id": runtime.consumer_context.session_id,
+            "continuation_id": runtime.consumer_context.continuation_id,
+            "request_id": runtime.consumer_context.request_id,
+            "attempt_id": runtime.consumer_context.attempt_id,
+        },
+        "independent_oracle_compatible": independent_compatible,
+        "wrong_branch_reuse_opportunity_event_id": runtime.wbrr_event_id,
+    }
+
+
+def _run_s2_e0_trial(
+    policy_id: PolicyID,
+    scenario_id: str,
+    *,
+    forced_reuse: bool | None = None,
+) -> StateLineageTrial:
+    if not isinstance(policy_id, PolicyID):
+        raise TypeError("policy_id must be PolicyID")
+    runtime = _build_runtime(scenario_id)
+    core = runtime.core
+    authority = CoreContinuityAuthority(core)
+    policy = build_baseline_policies(authority)[policy_id]
+    decision = decide_placement(policy, runtime.observation)
+
+    independent_compatible = _independent_lineage_compatible(
+        core, runtime.candidate_state_id, runtime.consumer_context
+    )
+    c1_compatible = authority.state_compatible(
+        runtime.candidate_state_id,
+        program_id=runtime.consumer_context.program_id,
+        session_id=runtime.consumer_context.session_id,
+        continuation_id=runtime.consumer_context.continuation_id,
+        request_id=runtime.consumer_context.request_id,
+        attempt_id=runtime.consumer_context.attempt_id,
+    )
+    if c1_compatible != independent_compatible:
+        raise AssertionError(
+            "C1 State compatibility diverges from the independent S2 lineage oracle"
+        )
+
+    candidate_reused = _candidate_reused(policy_id, decision, runtime.observation)
+    if forced_reuse is not None:
+        if not isinstance(forced_reuse, bool):
+            raise TypeError("forced_reuse must be bool or None")
+        candidate_reused = forced_reuse
+
+    consumption_event_id = (
+        f"S2:{scenario_id}:{policy_id.value}:state-consumption:{runtime.candidate_state_id}"
+        if candidate_reused
+        else None
+    )
+    incompatible_consumption = candidate_reused and not independent_compatible
+    wrong_branch_reuse = (
+        runtime.wbrr_event_id is not None and incompatible_consumption
+    )
+
+    opportunities: list[CorrectnessMetric] = []
+    opportunity_event_ids: list[str] = []
+    opportunity_scopes: list[MetricOpportunityScope] = []
+    violations: list[CorrectnessMetric] = []
+    violation_event_ids: list[str] = []
+
+    if runtime.wbrr_event_id is not None:
+        opportunities.append(CorrectnessMetric.WRONG_BRANCH_REUSE_RATE)
+        opportunity_event_ids.append(runtime.wbrr_event_id)
+        opportunity_scopes.append(MetricOpportunityScope.EXOGENOUS_PAIRED)
+        if wrong_branch_reuse:
+            violations.append(CorrectnessMetric.WRONG_BRANCH_REUSE_RATE)
+            violation_event_ids.append(runtime.wbrr_event_id)
+
+    if candidate_reused and runtime.fault_id is not None:
+        assert consumption_event_id is not None
+        opportunities.append(CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE)
+        opportunity_event_ids.append(consumption_event_id)
+        opportunity_scopes.append(MetricOpportunityScope.POLICY_DERIVED)
+        if incompatible_consumption:
+            violations.append(CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE)
+            violation_event_ids.append(consumption_event_id)
+
+    if incompatible_consumption:
+        semantic_result = SemanticResult(
+            reported_success=True,
+            authoritative_commit=True,
+            semantically_correct=False,
+        )
+    elif candidate_reused:
+        semantic_result = SemanticResult(
+            reported_success=True,
+            authoritative_commit=True,
+            semantically_correct=True,
+        )
+    else:
+        semantic_result = SemanticResult(
+            reported_success=True,
+            authoritative_commit=True,
+            semantically_correct=True,
+            recovery_actions=(RecoveryAction.RECOMPUTE,),
+        )
+
+    observed_evidence = {
+        "c1_state_compatible": c1_compatible,
+        "candidate_replica_available": bool(runtime.observation.state_locations),
+        "candidate_reused": candidate_reused,
+        "state_consumption_event_id": consumption_event_id,
+        "selected_worker_id": decision.worker_id,
+    }
+    policy_decision = {
+        "placement": _placement_to_dict(decision),
+        "reuse_action": "CONSUME_CANDIDATE" if candidate_reused else "RECOMPUTE",
+        "reuse_action_source": "CLOSED_C3_INFORMATION_CONTRACT",
+        "c1_lineage_guard_policy_visible": policy_id is PolicyID.B4,
+        "placement_is_not_reuse": True,
+    }
+
+    evaluation = CorrectnessEvaluationRecord.create(
+        cohort_id=S2_E0_COHORT_ID,
+        trial_id=scenario_id,
+        operation_id="r",
+        policy_id=policy_id,
+        scenario_id=scenario_id,
+        validation_level=ValidationEvidenceLevel.EV0_DETERMINISTIC_SEMANTICS,
+        evidence_provenance=ResultEvidenceProvenance.SYNTHETICALLY_GENERATED,
+        ground_truth=_runtime_ground_truth(runtime, scenario_id),
+        observed_evidence=observed_evidence,
+        policy_decision=policy_decision,
+        semantic_result=semantic_result,
+        metric_opportunities=tuple(opportunities),
+        metric_opportunity_event_ids=tuple(opportunity_event_ids),
+        metric_opportunity_scopes=tuple(opportunity_scopes),
+        metric_violations=tuple(violations),
+        metric_violation_event_ids=tuple(violation_event_ids),
+        fault_id=runtime.fault_id,
+        fault_class=runtime.fault_class,
+    )
+
+    return StateLineageTrial(
+        policy_id=policy_id,
+        scenario_id=scenario_id,
+        evaluation=evaluation,
+        placement_decision=decision,
+        candidate_state_id=runtime.candidate_state_id,
+        candidate_reused=candidate_reused,
+        independent_oracle_compatible=independent_compatible,
+        c1_compatible=c1_compatible,
+        state_consumption_event_id=consumption_event_id,
+    )
+
+
+def run_s2_e0_trial(policy_id: PolicyID, scenario_id: str) -> StateLineageTrial:
+    return _run_s2_e0_trial(policy_id, scenario_id)
+
+
+def run_s2_e0_paired() -> StateLineageEvaluation:
+    trials = tuple(
+        run_s2_e0_trial(policy_id, scenario_id)
+        for scenario_id in S2_E0_SCENARIOS
+        for policy_id in PolicyID
+    )
+    summary = summarize_correctness(tuple(trial.evaluation for trial in trials))
+    return StateLineageEvaluation(trials=trials, summary=summary)
