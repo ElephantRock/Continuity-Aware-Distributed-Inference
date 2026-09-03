@@ -50,6 +50,14 @@ from .correctness import (
     ValidationEvidenceLevel,
     summarize_correctness,
 )
+from .state_lineage import (
+    S2_E0_COHORT_ID,
+    S2_E0_SCENARIOS,
+    StateLineageEvaluation,
+    StateLineageTrial,
+    run_s2_e0_paired,
+    run_s2_e0_trial,
+)
 
 __all__ = [
     "S1_E0_COHORT_ID",
@@ -96,4 +104,10 @@ __all__ = [
     "SemanticResult",
     "ValidationEvidenceLevel",
     "summarize_correctness",
+    "S2_E0_COHORT_ID",
+    "S2_E0_SCENARIOS",
+    "StateLineageEvaluation",
+    "StateLineageTrial",
+    "run_s2_e0_paired",
+    "run_s2_e0_trial",
 ]
