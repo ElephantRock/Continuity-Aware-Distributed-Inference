@@ -173,6 +173,13 @@ def test_every_declared_saar_event_reaches_terminal_finalization_and_is_stale(pa
             assert finalizations[event_id]["outcome"] == "REJECTED"
 
 
+def test_real_e1_presentations_have_no_invariant_diagnostics(paired_evaluation):
+    for trial in paired_evaluation.trials:
+        for presentation in trial.evaluation.observed_evidence["terminal_presentations"]:
+            assert presentation["invariant_error_type"] is None
+            assert presentation["invariant_error_message"] is None
+
+
 def test_duplicate_delivery_preserves_semantic_identity_and_observation_time(paired_evaluation):
     trial = _trial(paired_evaluation, "E1-C-duplicate-result-delivery", PolicyID.B4)
     observed = trial.evaluation.observed_evidence
