@@ -66,6 +66,59 @@ _WBRR_EVENT_ID: Mapping[str, str | None] = {
     "FTR6": None,
 }
 
+_EXECUTION_RULE = "CONSUME_DECLARED_CANDIDATE_IF_VALID_REPLICA_IS_LOCAL"
+
+
+@dataclass(frozen=True, slots=True)
+class StateConsumptionDirective:
+    directive_id: str
+    state_id: str
+    execution_rule: str = _EXECUTION_RULE
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.directive_id, str) or not self.directive_id:
+            raise ValueError("directive_id must be a non-empty string")
+        if not isinstance(self.state_id, str) or not self.state_id:
+            raise ValueError("state_id must be a non-empty string")
+        if self.execution_rule != _EXECUTION_RULE:
+            raise ValueError("unsupported S2 E0 execution rule")
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "directive_id": self.directive_id,
+            "state_id": self.state_id,
+            "execution_rule": self.execution_rule,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class StateConsumptionEvent:
+    event_id: str
+    directive_id: str
+    state_id: str
+    replica_id: str
+    worker_id: str
+
+    def __post_init__(self) -> None:
+        for value, name in (
+            (self.event_id, "event_id"),
+            (self.directive_id, "directive_id"),
+            (self.state_id, "state_id"),
+            (self.replica_id, "replica_id"),
+            (self.worker_id, "worker_id"),
+        ):
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{name} must be a non-empty string")
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "event_id": self.event_id,
+            "directive_id": self.directive_id,
+            "state_id": self.state_id,
+            "replica_id": self.replica_id,
+            "worker_id": self.worker_id,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class _ScenarioRuntime:
@@ -75,6 +128,7 @@ class _ScenarioRuntime:
     consumer_context: ExecutionContext
     candidate_replica_id: str | None
     compatible_alternative_state_id: str | None
+    consumption_directive: StateConsumptionDirective
     fault_id: str | None
     fault_class: str | None
     wbrr_event_id: str | None
@@ -87,10 +141,9 @@ class StateLineageTrial:
     evaluation: CorrectnessEvaluationRecord
     placement_decision: PlacementDecision
     candidate_state_id: str
-    candidate_reused: bool
+    consumption_event: StateConsumptionEvent | None
     independent_oracle_compatible: bool
     c1_compatible: bool
-    state_consumption_event_id: str | None
 
     def __post_init__(self) -> None:
         if not isinstance(self.policy_id, PolicyID):
@@ -109,18 +162,24 @@ class StateLineageTrial:
             raise ValueError("placement_decision policy_id must match trial policy_id")
         if not isinstance(self.candidate_state_id, str) or not self.candidate_state_id:
             raise ValueError("candidate_state_id must be a non-empty string")
-        if not isinstance(self.candidate_reused, bool):
-            raise TypeError("candidate_reused must be bool")
+        if self.consumption_event is not None and not isinstance(
+            self.consumption_event, StateConsumptionEvent
+        ):
+            raise TypeError("consumption_event must be StateConsumptionEvent or None")
         if not isinstance(self.independent_oracle_compatible, bool):
             raise TypeError("independent_oracle_compatible must be bool")
         if not isinstance(self.c1_compatible, bool):
             raise TypeError("c1_compatible must be bool")
         if self.independent_oracle_compatible != self.c1_compatible:
             raise ValueError("C1 compatibility must agree with the independent S2 oracle")
-        if self.candidate_reused != (self.state_consumption_event_id is not None):
-            raise ValueError(
-                "state_consumption_event_id must exist exactly when candidate State is reused"
-            )
+
+    @property
+    def candidate_reused(self) -> bool:
+        return self.consumption_event is not None
+
+    @property
+    def state_consumption_event_id(self) -> str | None:
+        return None if self.consumption_event is None else self.consumption_event.event_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,9 +208,6 @@ class StateLineageEvaluation:
 
 
 def _workers() -> tuple[WorkerObservation, ...]:
-    # The State-local worker is intentionally busier. B0 therefore selects w2,
-    # while B1-B3 may still prefer w1 for their declared locality/affinity
-    # abstractions. This makes reuse intent observable without weakening them.
     return (
         WorkerObservation("w1", True, 1, 1, 0),
         WorkerObservation("w2", True, 1, 0, 0),
@@ -162,16 +218,11 @@ def _base_core() -> ContinuityCore:
     core = ContinuityCore()
     core.create_program("p")
     core.create_session("s", "p")
-    core.create_continuation(
-        "c0", "s", lifecycle=ContinuationLifecycle.ACTIVE
-    )
+    core.create_continuation("c0", "s", lifecycle=ContinuationLifecycle.ACTIVE)
     return core
 
 
-def _add_consumer(
-    core: ContinuityCore,
-    continuation_id: str,
-) -> ExecutionContext:
+def _add_consumer(core: ContinuityCore, continuation_id: str) -> ExecutionContext:
     core.create_request("r", continuation_id)
     core.start_attempt("a", "r")
     return ExecutionContext(
@@ -210,6 +261,23 @@ def _commit_current_attempt(
         evidence_ids=(evidence_id,),
     )
     core.finalize_request(request_id, output_id, now=0.0)
+
+
+def _independent_ancestors(core: ContinuityCore, continuation_id: str) -> set[str]:
+    if continuation_id not in core.continuations:
+        return set()
+    result = {continuation_id}
+    todo = list(core.continuations[continuation_id].parent_ids)
+    while todo:
+        current = todo.pop()
+        if current in result:
+            continue
+        result.add(current)
+        parent = core.continuations.get(current)
+        if parent is None:
+            return set()
+        todo.extend(parent.parent_ids)
+    return result
 
 
 def _observation(
@@ -389,7 +457,7 @@ def _build_runtime(scenario_id: str) -> _ScenarioRuntime:
         consumer_context = _add_consumer(core, "c1")
         state_locations = ()
 
-    else:  # pragma: no cover - guarded above
+    else:  # pragma: no cover
         raise AssertionError("unhandled S2 scenario")
 
     observation = _observation(
@@ -406,34 +474,14 @@ def _build_runtime(scenario_id: str) -> _ScenarioRuntime:
         consumer_context=consumer_context,
         candidate_replica_id=candidate_replica_id,
         compatible_alternative_state_id=compatible_alternative_state_id,
+        consumption_directive=StateConsumptionDirective(
+            directive_id=f"S2:{scenario_id}:local-candidate-consumption",
+            state_id=candidate_state_id,
+        ),
         fault_id=None if fault_class is None else f"S2:{scenario_id}",
         fault_class=fault_class,
         wbrr_event_id=_WBRR_EVENT_ID[scenario_id],
     )
-
-
-def _independent_ancestors(core: ContinuityCore, continuation_id: str) -> set[str]:
-    """Independent graph traversal used by the experiment oracle.
-
-    This intentionally does not call ContinuityCore.is_ancestor or
-    ContinuityCore.state_compatible, so an implementation bug in the B4/C1
-    compatibility path is not duplicated by the experiment oracle.
-    """
-
-    if continuation_id not in core.continuations:
-        return set()
-    result = {continuation_id}
-    todo = list(core.continuations[continuation_id].parent_ids)
-    while todo:
-        current = todo.pop()
-        if current in result:
-            continue
-        result.add(current)
-        parent = core.continuations.get(current)
-        if parent is None:
-            return set()
-        todo.extend(parent.parent_ids)
-    return result
 
 
 def _independent_context_consistent(
@@ -460,9 +508,7 @@ def _independent_context_consistent(
         return False
     if attempt.authority_status is not AttemptAuthority.CURRENT:
         return False
-    if ctx.phase_id is not None:
-        return False
-    return True
+    return ctx.phase_id is None
 
 
 def _independent_lineage_compatible(
@@ -514,8 +560,6 @@ def _independent_lineage_compatible(
         ):
             return False
 
-    # C4.3a exercises Continuation-origin and Attempt-origin State only. Phase
-    # authority and derived-State dependency pressure remain for C4.3b.
     if state.producer_phase_id is not None:
         raise AssertionError("C4.3a independent oracle excludes Phase-origin State")
     if state.derived_from:
@@ -523,31 +567,35 @@ def _independent_lineage_compatible(
     return True
 
 
-def _candidate_reused(
-    policy_id: PolicyID,
+def _execute_consumption_directive(
+    runtime: _ScenarioRuntime,
     decision: PlacementDecision,
-    observation: PolicyObservation,
-) -> bool:
-    """Map the closed placement abstraction to an explicit State reuse action.
+) -> StateConsumptionEvent | None:
+    """Apply one post-placement worker execution rule to every baseline.
 
-    Worker placement alone is never counted as reuse. B1/B2 consume the
-    candidate only when their candidate-key-local worker is selected; B3 only
-    when its exact-State-local worker is selected; B4 only when its decision
-    explicitly says compatibility-authorized State locality was used. B0 has no
-    State-reuse information contract and never consumes the candidate here.
+    This function intentionally has no PolicyID parameter and never inspects the
+    placement reason. The declared candidate is consumed only when its actual
+    physical replica is VALID on the worker selected by the closed C3 policy.
     """
-
-    if decision.worker_id is None or decision.worker_id not in observation.state_locations:
-        return False
-    if policy_id is PolicyID.B0:
-        return False
-    if policy_id in {PolicyID.B1, PolicyID.B2}:
-        return observation.state_candidate_key is not None
-    if policy_id is PolicyID.B3:
-        return observation.exact_state_id is not None
-    if policy_id is PolicyID.B4:
-        return decision.reason == "COMPATIBLE_STATE_LOCALITY_THEN_LOAD"
-    raise AssertionError(f"unhandled policy {policy_id}")
+    if decision.worker_id is None or runtime.candidate_replica_id is None:
+        return None
+    replica = runtime.core.replicas[runtime.candidate_replica_id]
+    if replica.state_id != runtime.consumption_directive.state_id:
+        raise AssertionError("S2 consumption directive/replica State mismatch")
+    if replica.status is not ReplicaStatus.VALID:
+        return None
+    if replica.location_id != decision.worker_id:
+        return None
+    return StateConsumptionEvent(
+        event_id=(
+            f"S2:{runtime.observation.request_id}:consume:"
+            f"{runtime.consumption_directive.state_id}@{decision.worker_id}"
+        ),
+        directive_id=runtime.consumption_directive.directive_id,
+        state_id=runtime.consumption_directive.state_id,
+        replica_id=replica.id,
+        worker_id=decision.worker_id,
+    )
 
 
 def _placement_to_dict(decision: PlacementDecision) -> dict[str, Any]:
@@ -568,14 +616,10 @@ def _runtime_ground_truth(runtime: _ScenarioRuntime, scenario_id: str) -> dict[s
         else core.replicas[runtime.candidate_replica_id]
     )
     producer_attempt = (
-        None
-        if state.producer_attempt_id is None
-        else core.attempts[state.producer_attempt_id]
+        None if state.producer_attempt_id is None else core.attempts[state.producer_attempt_id]
     )
     producer_request = (
-        None
-        if state.origin_request_id is None
-        else core.requests[state.origin_request_id]
+        None if state.origin_request_id is None else core.requests[state.origin_request_id]
     )
     independent_compatible = _independent_lineage_compatible(
         core, runtime.candidate_state_id, runtime.consumer_context
@@ -598,7 +642,8 @@ def _runtime_ground_truth(runtime: _ScenarioRuntime, scenario_id: str) -> dict[s
         "candidate_state_validity": state.validity.name,
         "candidate_replica_id": runtime.candidate_replica_id,
         "candidate_replica_status": None if replica is None else replica.status.name,
-        "candidate_physical_locations": list(runtime.observation.state_locations),
+        "candidate_physical_location": None if replica is None else replica.location_id,
+        "candidate_policy_visible_locations": list(runtime.observation.state_locations),
         "compatible_alternative_state_id": runtime.compatible_alternative_state_id,
         "consumer_context": {
             "program_id": runtime.consumer_context.program_id,
@@ -607,6 +652,7 @@ def _runtime_ground_truth(runtime: _ScenarioRuntime, scenario_id: str) -> dict[s
             "request_id": runtime.consumer_context.request_id,
             "attempt_id": runtime.consumer_context.attempt_id,
         },
+        "consumption_directive": runtime.consumption_directive.to_dict(),
         "independent_oracle_compatible": independent_compatible,
         "wrong_branch_reuse_opportunity_event_id": runtime.wbrr_event_id,
     }
@@ -616,10 +662,15 @@ def _run_s2_e0_trial(
     policy_id: PolicyID,
     scenario_id: str,
     *,
-    forced_reuse: bool | None = None,
+    injected_consumption_event: StateConsumptionEvent | None = None,
 ) -> StateLineageTrial:
     if not isinstance(policy_id, PolicyID):
         raise TypeError("policy_id must be PolicyID")
+    if injected_consumption_event is not None and not isinstance(
+        injected_consumption_event, StateConsumptionEvent
+    ):
+        raise TypeError("injected_consumption_event must be StateConsumptionEvent or None")
+
     runtime = _build_runtime(scenario_id)
     core = runtime.core
     authority = CoreContinuityAuthority(core)
@@ -642,21 +693,20 @@ def _run_s2_e0_trial(
             "C1 State compatibility diverges from the independent S2 lineage oracle"
         )
 
-    candidate_reused = _candidate_reused(policy_id, decision, runtime.observation)
-    if forced_reuse is not None:
-        if not isinstance(forced_reuse, bool):
-            raise TypeError("forced_reuse must be bool or None")
-        candidate_reused = forced_reuse
+    consumption_event = (
+        injected_consumption_event
+        if injected_consumption_event is not None
+        else _execute_consumption_directive(runtime, decision)
+    )
+    if consumption_event is not None:
+        if consumption_event.state_id != runtime.candidate_state_id:
+            raise AssertionError("consumption event references a different candidate State")
+        if consumption_event.directive_id != runtime.consumption_directive.directive_id:
+            raise AssertionError("consumption event references a different directive")
 
-    consumption_event_id = (
-        f"S2:{scenario_id}:{policy_id.value}:state-consumption:{runtime.candidate_state_id}"
-        if candidate_reused
-        else None
-    )
+    candidate_reused = consumption_event is not None
     incompatible_consumption = candidate_reused and not independent_compatible
-    wrong_branch_reuse = (
-        runtime.wbrr_event_id is not None and incompatible_consumption
-    )
+    wrong_branch_reuse = runtime.wbrr_event_id is not None and incompatible_consumption
 
     opportunities: list[CorrectnessMetric] = []
     opportunity_event_ids: list[str] = []
@@ -672,14 +722,13 @@ def _run_s2_e0_trial(
             violations.append(CorrectnessMetric.WRONG_BRANCH_REUSE_RATE)
             violation_event_ids.append(runtime.wbrr_event_id)
 
-    if candidate_reused and runtime.fault_id is not None:
-        assert consumption_event_id is not None
+    if consumption_event is not None and runtime.fault_id is not None:
         opportunities.append(CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE)
-        opportunity_event_ids.append(consumption_event_id)
+        opportunity_event_ids.append(consumption_event.event_id)
         opportunity_scopes.append(MetricOpportunityScope.POLICY_DERIVED)
         if incompatible_consumption:
             violations.append(CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE)
-            violation_event_ids.append(consumption_event_id)
+            violation_event_ids.append(consumption_event.event_id)
 
     if incompatible_consumption:
         semantic_result = SemanticResult(
@@ -687,7 +736,7 @@ def _run_s2_e0_trial(
             authoritative_commit=True,
             semantically_correct=False,
         )
-    elif candidate_reused:
+    elif consumption_event is not None:
         semantic_result = SemanticResult(
             reported_success=True,
             authoritative_commit=True,
@@ -703,17 +752,19 @@ def _run_s2_e0_trial(
 
     observed_evidence = {
         "c1_state_compatible": c1_compatible,
-        "candidate_replica_available": bool(runtime.observation.state_locations),
-        "candidate_reused": candidate_reused,
-        "state_consumption_event_id": consumption_event_id,
         "selected_worker_id": decision.worker_id,
+        "candidate_replica_id": runtime.candidate_replica_id,
+        "candidate_replica_status": (
+            None
+            if runtime.candidate_replica_id is None
+            else core.replicas[runtime.candidate_replica_id].status.name
+        ),
+        "consumption_event": None if consumption_event is None else consumption_event.to_dict(),
     }
     policy_decision = {
         "placement": _placement_to_dict(decision),
-        "reuse_action": "CONSUME_CANDIDATE" if candidate_reused else "RECOMPUTE",
-        "reuse_action_source": "CLOSED_C3_INFORMATION_CONTRACT",
         "c1_lineage_guard_policy_visible": policy_id is PolicyID.B4,
-        "placement_is_not_reuse": True,
+        "state_consumption_is_execution_event_not_policy_decision": True,
     }
 
     evaluation = CorrectnessEvaluationRecord.create(
@@ -743,10 +794,9 @@ def _run_s2_e0_trial(
         evaluation=evaluation,
         placement_decision=decision,
         candidate_state_id=runtime.candidate_state_id,
-        candidate_reused=candidate_reused,
+        consumption_event=consumption_event,
         independent_oracle_compatible=independent_compatible,
         c1_compatible=c1_compatible,
-        state_consumption_event_id=consumption_event_id,
     )
 
 
