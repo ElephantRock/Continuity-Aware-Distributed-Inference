@@ -5,9 +5,14 @@ from typing import Any, Mapping
 
 from continuity.core import ContinuityCore
 from continuity.entities import (
+    AttemptAuthority,
     ContinuationLifecycle,
+    Evidence,
+    EvidenceAuthority,
+    EvidenceStatus,
     ExecutionContext,
     ReplicaStatus,
+    RequestStatus,
     StateValidity,
 )
 from simulator import (
@@ -36,26 +41,29 @@ from .correctness import (
 S2_E0_COHORT_ID = "C4.3a:S2:E0"
 S2_E0_SCENARIOS = (
     "FTR4",
-    "S2-ABANDONED-RESIDUE",
+    "FTR5",
+    "FTR14",
     "S2-SIMILAR-DIFFERENT",
     "S2-VALID-ANCESTOR",
-    "FTR5",
+    "FTR6",
 )
 
 _FAULT_CLASS: Mapping[str, str | None] = {
     "FTR4": "wrong sibling state",
-    "S2-ABANDONED-RESIDUE": "residual abandoned-branch state",
+    "FTR5": "superseded-producer state",
+    "FTR14": "residual abandoned-branch state",
     "S2-SIMILAR-DIFFERENT": "similar-but-different state",
     "S2-VALID-ANCESTOR": None,
-    "FTR5": "total state loss",
+    "FTR6": "total state loss",
 }
 
 _WBRR_EVENT_ID: Mapping[str, str | None] = {
     "FTR4": "S2:FTR4:wrong-branch-reuse-opportunity",
-    "S2-ABANDONED-RESIDUE": "S2:ABANDONED:wrong-branch-reuse-opportunity",
+    "FTR5": None,
+    "FTR14": "S2:FTR14:wrong-branch-reuse-opportunity",
     "S2-SIMILAR-DIFFERENT": "S2:SIMILAR:wrong-branch-reuse-opportunity",
     "S2-VALID-ANCESTOR": None,
-    "FTR5": None,
+    "FTR6": None,
 }
 
 
@@ -175,6 +183,35 @@ def _add_consumer(
     )
 
 
+def _commit_current_attempt(
+    core: ContinuityCore,
+    *,
+    request_id: str,
+    attempt_id: str,
+) -> None:
+    core.complete_attempt(attempt_id)
+    evidence_id = f"e-{attempt_id}"
+    core.record_evidence(
+        Evidence(
+            id=evidence_id,
+            claim="terminal attempt success",
+            source="C4.3a deterministic oracle fixture",
+            authority=EvidenceAuthority.EXACT_OBSERVATION,
+            status=EvidenceStatus.VALID,
+            observed_at=0.0,
+            scope=frozenset({("attempt", attempt_id)}),
+        )
+    )
+    output_id = f"o-{attempt_id}"
+    core.create_output(
+        output_id,
+        attempt_id,
+        terminal=True,
+        evidence_ids=(evidence_id,),
+    )
+    core.finalize_request(request_id, output_id, now=0.0)
+
+
 def _observation(
     core: ContinuityCore,
     *,
@@ -243,7 +280,31 @@ def _build_runtime(scenario_id: str) -> _ScenarioRuntime:
         consumer_context = _add_consumer(core, "c2")
         state_locations = ("w1",)
 
-    elif scenario_id == "S2-ABANDONED-RESIDUE":
+    elif scenario_id == "FTR5":
+        core.create_continuation(
+            "c1", "s", parent_ids=("c0",), lifecycle=ContinuationLifecycle.ACTIVE
+        )
+        core.create_request("rp", "c1")
+        core.start_attempt("a1", "rp")
+        candidate_state_id = "x-superseded-producer"
+        core.create_state(
+            candidate_state_id,
+            origin_type="attempt",
+            origin_id="a1",
+            semantic_type="PREFIX",
+            representation="KV",
+        )
+        candidate_replica_id = "rho-superseded-producer"
+        core.add_replica(candidate_replica_id, candidate_state_id, "w1")
+        core.start_attempt("a2", "rp")
+        _commit_current_attempt(core, request_id="rp", attempt_id="a2")
+        core.create_continuation(
+            "c2", "s", parent_ids=("c1",), lifecycle=ContinuationLifecycle.ACTIVE
+        )
+        consumer_context = _add_consumer(core, "c2")
+        state_locations = ("w1",)
+
+    elif scenario_id == "FTR14":
         core.create_continuation(
             "c1", "s", parent_ids=("c0",), lifecycle=ContinuationLifecycle.ACTIVE
         )
@@ -310,7 +371,7 @@ def _build_runtime(scenario_id: str) -> _ScenarioRuntime:
         consumer_context = _add_consumer(core, "c2")
         state_locations = ("w1",)
 
-    elif scenario_id == "FTR5":
+    elif scenario_id == "FTR6":
         candidate_state_id = "x-lost"
         core.create_state(
             candidate_state_id,
@@ -375,11 +436,43 @@ def _independent_ancestors(core: ContinuityCore, continuation_id: str) -> set[st
     return result
 
 
+def _independent_context_consistent(
+    core: ContinuityCore,
+    ctx: ExecutionContext,
+) -> bool:
+    program = core.programs.get(ctx.program_id)
+    session = core.sessions.get(ctx.session_id)
+    continuation = core.continuations.get(ctx.continuation_id)
+    request = core.requests.get(ctx.request_id)
+    attempt = core.attempts.get(ctx.attempt_id)
+    if any(value is None for value in (program, session, continuation, request, attempt)):
+        return False
+    assert program is not None
+    assert session is not None
+    assert continuation is not None
+    assert request is not None
+    assert attempt is not None
+    if session.program_id != program.id or continuation.session_id != session.id:
+        return False
+    if request.continuation_id != continuation.id or attempt.request_id != request.id:
+        return False
+    if request.current_attempt_id != attempt.id:
+        return False
+    if attempt.authority_status is not AttemptAuthority.CURRENT:
+        return False
+    if ctx.phase_id is not None:
+        return False
+    return True
+
+
 def _independent_lineage_compatible(
     core: ContinuityCore,
     state_id: str,
     ctx: ExecutionContext,
 ) -> bool:
+    if not _independent_context_consistent(core, ctx):
+        return False
+
     state = core.states.get(state_id)
     consumer = core.continuations.get(ctx.continuation_id)
     session = core.sessions.get(ctx.session_id)
@@ -396,13 +489,37 @@ def _independent_lineage_compatible(
         core, ctx.continuation_id
     ):
         return False
-    # C4.3a uses continuation-origin State so causal branch lineage is isolated
-    # from producer-Attempt/Phase authority. Those dimensions are added in the
-    # adversarial S2 corpus rather than silently simplified here.
-    if state.producer_attempt_id is not None or state.producer_phase_id is not None:
-        raise AssertionError(
-            "C4.3a independent oracle expects continuation-origin State only"
-        )
+
+    if state.producer_attempt_id is not None:
+        producer_attempt = core.attempts.get(state.producer_attempt_id)
+        if producer_attempt is None:
+            return False
+        if producer_attempt.authority_status is AttemptAuthority.SUPERSEDED:
+            return False
+        if state.origin_request_id is not None:
+            producer_request = core.requests.get(state.origin_request_id)
+            if producer_request is None:
+                return False
+            if producer_request.status is RequestStatus.COMPLETED:
+                if producer_request.committed_attempt_id != producer_attempt.id:
+                    return False
+            elif (
+                producer_attempt.id != ctx.attempt_id
+                or producer_attempt.authority_status is not AttemptAuthority.CURRENT
+            ):
+                return False
+        elif (
+            producer_attempt.id != ctx.attempt_id
+            or producer_attempt.authority_status is not AttemptAuthority.CURRENT
+        ):
+            return False
+
+    # C4.3a exercises Continuation-origin and Attempt-origin State only. Phase
+    # authority and derived-State dependency pressure remain for C4.3b.
+    if state.producer_phase_id is not None:
+        raise AssertionError("C4.3a independent oracle excludes Phase-origin State")
+    if state.derived_from:
+        raise AssertionError("C4.3a independent oracle excludes derived State")
     return True
 
 
@@ -450,6 +567,16 @@ def _runtime_ground_truth(runtime: _ScenarioRuntime, scenario_id: str) -> dict[s
         if runtime.candidate_replica_id is None
         else core.replicas[runtime.candidate_replica_id]
     )
+    producer_attempt = (
+        None
+        if state.producer_attempt_id is None
+        else core.attempts[state.producer_attempt_id]
+    )
+    producer_request = (
+        None
+        if state.origin_request_id is None
+        else core.requests[state.origin_request_id]
+    )
     independent_compatible = _independent_lineage_compatible(
         core, runtime.candidate_state_id, runtime.consumer_context
     )
@@ -458,6 +585,14 @@ def _runtime_ground_truth(runtime: _ScenarioRuntime, scenario_id: str) -> dict[s
         "candidate_key": runtime.observation.state_candidate_key,
         "candidate_state_id": runtime.candidate_state_id,
         "candidate_origin_continuation_id": state.origin_continuation_id,
+        "candidate_origin_request_id": state.origin_request_id,
+        "candidate_producer_attempt_id": state.producer_attempt_id,
+        "candidate_producer_attempt_authority": (
+            None if producer_attempt is None else producer_attempt.authority_status.name
+        ),
+        "candidate_origin_request_committed_attempt_id": (
+            None if producer_request is None else producer_request.committed_attempt_id
+        ),
         "candidate_semantic_type": state.semantic_type,
         "candidate_representation": state.representation,
         "candidate_state_validity": state.validity.name,
