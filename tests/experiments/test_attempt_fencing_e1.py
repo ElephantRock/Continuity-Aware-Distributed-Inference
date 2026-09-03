@@ -317,6 +317,44 @@ def test_bad_stale_commit_is_classified_before_invariant_failure(monkeypatch):
     assert post["invariant_error_type"] is not None
 
 
+def test_dangling_authoritative_reference_is_recorded_after_stale_acceptance(monkeypatch):
+    core = _scaffold_core()
+    core.start_attempt("a1", "r")
+    core.set_attempt_execution("a1", ExecutionStatus.RUNNING)
+    core.complete_attempt("a1", succeeded=True)
+    core.start_attempt("a2", "r")
+    core.set_attempt_execution("a2", ExecutionStatus.RUNNING)
+
+    def defective_finalize(self: ContinuityCore, request_id: str, output_id: str, now=None):
+        del now, output_id
+        request = self.requests[request_id]
+        self.attempts["a1"] = replace(
+            self.attempts["a1"], authority_status=AttemptAuthority.COMMITTED
+        )
+        self.attempts["a2"] = replace(
+            self.attempts["a2"], authority_status=AttemptAuthority.SUPERSEDED
+        )
+        self.requests[request_id] = replace(
+            request,
+            status=RequestStatus.COMPLETED,
+            current_attempt_id=None,
+            committed_attempt_id="a1",
+            authoritative_output_id="missing-output",
+        )
+
+    monkeypatch.setattr(ContinuityCore, "finalize_request", defective_finalize)
+    _, post = _apply_presentation(
+        core,
+        _presentation_message(event_id="test:dangling", attempt_id="a1"),
+        stale=True,
+    )
+    assert post["accepted_authoritatively"] is True
+    assert post["finalization_outcome"] == "APPLIED"
+    assert post["request_committed_attempt_id_after"] == "a1"
+    assert post["request_authoritative_output_id_after"] == "missing-output"
+    assert post["invariant_error_type"] == "KeyError"
+
+
 @pytest.mark.parametrize("authority_channel", ("output", "attempt"))
 def test_stale_acceptance_detects_partial_authority_corruption(monkeypatch, authority_channel):
     core = _scaffold_core()
