@@ -1,9 +1,11 @@
 from experiments.correctness import CorrectnessMetric, OutcomeClass
 from experiments.state_lineage import (
     S2_E0_SCENARIOS,
+    ApplicationEffect,
     StateConsumptionEvent,
     _build_runtime,
     _execute_consumption_directive,
+    _execute_terminal_outcome,
     _run_s2_e0_trial,
     run_s2_e0_paired,
     run_s2_e0_trial,
@@ -165,10 +167,6 @@ def test_reported_consumption_is_explicit_execution_event_not_policy_decision():
                 ]
                 is True
             )
-            assert (
-                trial.evaluation.outcome_class
-                is OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
-            )
 
         b4 = _trial(evaluation, scenario_id, PolicyID.B4)
         assert b4.consumption_event is None
@@ -180,7 +178,31 @@ def test_reported_consumption_is_explicit_execution_event_not_policy_decision():
         )
 
 
-def test_terminal_execution_is_explicit_and_authoritatively_committed():
+def test_application_profiles_are_policy_invariant_and_not_compatibility_derived():
+    evaluation = run_s2_e0_paired()
+
+    expected_effects = {
+        "FTR4": ApplicationEffect.WRONG_UNDETECTED.value,
+        "FTR5": ApplicationEffect.DETECT_AND_RECOMPUTE.value,
+        "FTR14": ApplicationEffect.WRONG_UNDETECTED.value,
+        "S2-SIMILAR-DIFFERENT": ApplicationEffect.CORRECT_RESULT.value,
+    }
+    for scenario_id, expected_effect in expected_effects.items():
+        records = [
+            _trial(evaluation, scenario_id, policy_id).evaluation
+            for policy_id in PolicyID
+        ]
+        assert len({record.ground_truth_json for record in records}) == 1
+        truth = records[0].ground_truth
+        assert truth["independent_oracle_compatible"] is False
+        assert truth["application_profile"]["effect"] == expected_effect
+
+    # Four equally incompatible candidates intentionally exercise three distinct
+    # application outcomes. Compatibility therefore cannot determine O-class.
+    assert len(set(expected_effects.values())) == 3
+
+
+def test_terminal_execution_is_explicit_result_bearing_and_authoritatively_committed():
     evaluation = run_s2_e0_paired()
 
     for trial in evaluation.trials:
@@ -189,26 +211,77 @@ def test_terminal_execution_is_explicit_and_authoritatively_committed():
         assert terminal.authoritative_commit
         assert terminal.request_id == "r"
         assert terminal.attempt_id == "a"
+        assert terminal.result_evidence_id
         assert terminal.output_id
         assert trial.evaluation.observed_evidence["terminal_event"] == terminal.to_dict()
         assert trial.evaluation.policy_decision["terminal_oracle_is_not_policy_visible"] is True
+        assert (
+            trial.evaluation.policy_decision["application_profile_is_not_policy_visible"]
+            is True
+        )
         assert trial.evaluation.semantic_result.authoritative_commit is True
         assert trial.evaluation.semantic_result.reported_success is True
 
 
-def test_incompatible_consumption_is_o4_only_after_wrong_terminal_commit():
+def test_result_token_is_carried_by_evidence_referenced_from_authoritative_output():
+    runtime = _build_runtime("FTR4")
+    assert runtime.candidate_replica_id is not None
+    event = StateConsumptionEvent(
+        event_id="S2:test:consume-ftr4",
+        directive_id=runtime.consumption_directive.directive_id,
+        state_id=runtime.candidate_state_id,
+        replica_id=runtime.candidate_replica_id,
+        worker_id="w1",
+    )
+
+    terminal = _execute_terminal_outcome(runtime, event)
+    output = runtime.core.outputs[terminal.output_id]
+    evidence = runtime.core.evidence[terminal.result_evidence_id]
+
+    assert terminal.result_evidence_id in output.evidence_ids
+    assert ("result_token", terminal.actual_result_token) in evidence.scope
+    assert runtime.core.requests[terminal.request_id].authoritative_output_id == output.id
+
+
+def test_ftr4_incompatible_consumption_is_independently_wrong_o4():
     trial = run_s2_e0_trial(PolicyID.B3, "FTR4")
 
     assert trial.consumption_event is not None
-    assert trial.terminal_event.consumed_state_id == trial.candidate_state_id
+    assert CorrectnessMetric.WRONG_BRANCH_REUSE_RATE in trial.evaluation.metric_violations
+    assert CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE in trial.evaluation.metric_violations
+    assert trial.terminal_event.application_effect is ApplicationEffect.WRONG_UNDETECTED
+    assert not trial.terminal_event.detected_bad_state
+    assert not trial.terminal_event.used_recompute
     assert trial.terminal_event.authoritative_commit
-    assert trial.terminal_event.reported_success
     assert not trial.terminal_event.semantically_correct
-    assert (
-        trial.terminal_event.actual_result_token
-        != trial.terminal_event.expected_result_token
-    )
     assert trial.evaluation.outcome_class is OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
+
+
+def test_ftr5_wscr_violation_can_be_detected_and_recomputed_to_o2():
+    trial = run_s2_e0_trial(PolicyID.B3, "FTR5")
+
+    assert trial.consumption_event is not None
+    assert CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE in trial.evaluation.metric_violations
+    assert trial.terminal_event.application_effect is ApplicationEffect.DETECT_AND_RECOMPUTE
+    assert trial.terminal_event.detected_bad_state
+    assert trial.terminal_event.used_recompute
+    assert trial.terminal_event.semantically_correct
+    assert trial.terminal_event.authoritative_commit
+    assert trial.evaluation.outcome_class is OutcomeClass.O2_CORRECT_DEGRADED_RECOVERY
+
+
+def test_wrong_branch_and_state_consumption_can_still_commit_correct_o1():
+    trial = run_s2_e0_trial(PolicyID.B3, "S2-SIMILAR-DIFFERENT")
+
+    assert trial.consumption_event is not None
+    assert CorrectnessMetric.WRONG_BRANCH_REUSE_RATE in trial.evaluation.metric_violations
+    assert CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE in trial.evaluation.metric_violations
+    assert trial.terminal_event.application_effect is ApplicationEffect.CORRECT_RESULT
+    assert not trial.terminal_event.detected_bad_state
+    assert not trial.terminal_event.used_recompute
+    assert trial.terminal_event.semantically_correct
+    assert trial.terminal_event.authoritative_commit
+    assert trial.evaluation.outcome_class is OutcomeClass.O1_CORRECT_TRANSPARENT_RECOVERY
 
 
 def test_b4_incompatible_state_recomputes_then_commits_correct_terminal_result():
@@ -216,12 +289,10 @@ def test_b4_incompatible_state_recomputes_then_commits_correct_terminal_result()
 
     assert trial.consumption_event is None
     assert trial.terminal_event.used_recompute
+    assert trial.terminal_event.candidate_result_token is None
     assert trial.terminal_event.authoritative_commit
     assert trial.terminal_event.semantically_correct
-    assert (
-        trial.terminal_event.actual_result_token
-        == trial.terminal_event.expected_result_token
-    )
+    assert trial.terminal_event.actual_result_token == trial.terminal_event.expected_result_token
     assert trial.evaluation.outcome_class is OutcomeClass.O2_CORRECT_DEGRADED_RECOVERY
 
 
@@ -248,6 +319,7 @@ def test_valid_ancestor_control_proves_b4_does_not_disable_reuse():
         trial = _trial(evaluation, "S2-VALID-ANCESTOR", policy_id)
         assert trial.consumption_event is not None
         assert trial.independent_oracle_compatible
+        assert trial.terminal_event.application_effect is ApplicationEffect.CORRECT_RESULT
         assert trial.terminal_event.semantically_correct
         assert not trial.terminal_event.used_recompute
         assert (
@@ -312,12 +384,10 @@ def test_ftr5_is_wscr_pressure_not_wrong_branch_pressure():
 
     for policy_id in PolicyID:
         record = _trial(evaluation, "FTR5", policy_id).evaluation
-        assert CorrectnessMetric.WRONG_BRANCH_REUSE_RATE not in (
-            record.metric_opportunities
-        )
+        assert CorrectnessMetric.WRONG_BRANCH_REUSE_RATE not in record.metric_opportunities
 
 
-def test_s2_e0_summary_records_expected_wbrr_wscr_and_sser():
+def test_s2_e0_summary_records_gate_metrics_independently_from_sser():
     evaluation = run_s2_e0_paired()
 
     expected_wbrr = {
@@ -336,9 +406,9 @@ def test_s2_e0_summary_records_expected_wbrr_wscr_and_sser():
     }
     expected_sser = {
         PolicyID.B0: (0, 5),
-        PolicyID.B1: (4, 5),
-        PolicyID.B2: (4, 5),
-        PolicyID.B3: (4, 5),
+        PolicyID.B1: (2, 5),
+        PolicyID.B2: (2, 5),
+        PolicyID.B3: (2, 5),
         PolicyID.B4: (0, 5),
     }
 
@@ -352,31 +422,25 @@ def test_s2_e0_summary_records_expected_wbrr_wscr_and_sser():
         assert (sser.numerator, sser.denominator) == expected_sser[policy_id]
 
         if policy_id in {PolicyID.B1, PolicyID.B2, PolicyID.B3}:
-            assert (
-                _outcome_count(
-                    summary, OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
-                )
-                == 4
-            )
-            assert (
-                _outcome_count(
-                    summary, OutcomeClass.O2_CORRECT_DEGRADED_RECOVERY
-                )
-                == 1
-            )
+            assert _outcome_count(
+                summary, OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
+            ) == 2
+            assert _outcome_count(
+                summary, OutcomeClass.O2_CORRECT_DEGRADED_RECOVERY
+            ) == 2
+            assert _outcome_count(
+                summary, OutcomeClass.O1_CORRECT_TRANSPARENT_RECOVERY
+            ) == 1
         else:
-            assert (
-                _outcome_count(
-                    summary, OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
-                )
-                == 0
-            )
-            assert (
-                _outcome_count(
-                    summary, OutcomeClass.O2_CORRECT_DEGRADED_RECOVERY
-                )
-                == 5
-            )
+            assert _outcome_count(
+                summary, OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
+            ) == 0
+            assert _outcome_count(
+                summary, OutcomeClass.O2_CORRECT_DEGRADED_RECOVERY
+            ) == 5
+            assert _outcome_count(
+                summary, OutcomeClass.O1_CORRECT_TRANSPARENT_RECOVERY
+            ) == 0
 
 
 def test_measurement_detects_injected_b4_consumption_event_without_false_zero():
@@ -398,18 +462,12 @@ def test_measurement_detects_injected_b4_consumption_event_without_false_zero():
 
     assert trial.consumption_event == event
     assert trial.independent_oracle_compatible is False
-    assert CorrectnessMetric.WRONG_BRANCH_REUSE_RATE in (
-        trial.evaluation.metric_violations
-    )
-    assert CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE in (
-        trial.evaluation.metric_violations
-    )
+    assert CorrectnessMetric.WRONG_BRANCH_REUSE_RATE in trial.evaluation.metric_violations
+    assert CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE in trial.evaluation.metric_violations
+    assert trial.terminal_event.application_effect is ApplicationEffect.WRONG_UNDETECTED
     assert trial.terminal_event.authoritative_commit
     assert not trial.terminal_event.semantically_correct
-    assert (
-        trial.evaluation.outcome_class
-        is OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
-    )
+    assert trial.evaluation.outcome_class is OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION
 
 
 def test_b4_is_only_policy_marked_as_receiving_c1_lineage_guard():
