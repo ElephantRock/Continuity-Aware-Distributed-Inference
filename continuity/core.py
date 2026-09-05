@@ -22,6 +22,12 @@ class ContinuityCore:
         "estimate_reuse": EvidenceAuthority.ESTIMATED,
     }
 
+    CORRECTNESS_SENSITIVE_EVIDENCE_ACTIONS = frozenset({
+        "finalize",
+        "consume_state",
+        "commit_migration",
+    })
+
     def __init__(self, semantic_validity: Optional[Callable[[ReusableState, ExecutionContext], bool]] = None):
         self.programs: dict[str, Program] = {}
         self.sessions: dict[str, Session] = {}
@@ -470,6 +476,10 @@ class ContinuityCore:
         now = time.time() if now is None else now
         req = self.REQUIRED_AUTHORITY[action]
         evs = [self.evidence[eid] for eid in evidence_ids if eid in self.evidence]
+        if action in self.CORRECTNESS_SENSITIVE_EVIDENCE_ACTIONS and any(
+            e.status == EvidenceStatus.AMBIGUOUS for e in evs
+        ):
+            raise InsufficientEvidence(f"ambiguous Evidence for {action}")
         good=[]
         for e in evs:
             if e.status != EvidenceStatus.VALID: continue
