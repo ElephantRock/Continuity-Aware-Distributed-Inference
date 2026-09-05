@@ -181,7 +181,7 @@ def test_current_closed_stack_summary_exposes_one_real_acr_o4_per_policy(evaluat
         assert summary.faulted_operation_count == 9
         assert (acr.numerator, acr.denominator) == (1, 9)
         assert (sser.numerator, sser.denominator) == (1, 9)
-        assert _outcome_count(summary, OutcomeClass.O1_CORRECT_TRANSPARENT_RECOVERY) == 1
+        assert _outcome_count(summary, OutcomeClass.O1_CORRECT_TRANSPARENT_RECOVERY) == 0
         assert _outcome_count(summary, OutcomeClass.O2_CORRECT_DEGRADED_RECOVERY) == 0
         assert _outcome_count(summary, OutcomeClass.O3_EXPLICIT_NON_SUCCESS) == 8
         assert _outcome_count(summary, OutcomeClass.O4_SILENT_SEMANTIC_VIOLATION) == 1
