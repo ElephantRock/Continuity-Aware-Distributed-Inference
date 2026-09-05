@@ -71,6 +71,20 @@ from .state_lineage_adversarial import (
     run_s2_adversarial_paired,
     run_s2_adversarial_trial,
 )
+from .state_lineage_e1 import (
+    S2_E1_COHORT_ID,
+    S2_E1_MIN_CPU_SECONDS,
+    S2_E1_SCENARIOS,
+    S2_E1_SCENARIO_IDS,
+    S2_E1_SCHEMA,
+    S2_E1_START_METHOD,
+    S2_E1_WORKER_IDS,
+    StateLineageE1Evaluation,
+    StateLineageE1Scenario,
+    StateLineageE1Trial,
+    run_s2_e1_paired,
+    run_s2_e1_trial,
+)
 
 __all__ = [
     "S1_E0_COHORT_ID",
@@ -134,4 +148,16 @@ __all__ = [
     "run_s2_adversarial_case",
     "run_s2_adversarial_paired",
     "run_s2_adversarial_trial",
+    "S2_E1_COHORT_ID",
+    "S2_E1_MIN_CPU_SECONDS",
+    "S2_E1_SCENARIOS",
+    "S2_E1_SCENARIO_IDS",
+    "S2_E1_SCHEMA",
+    "S2_E1_START_METHOD",
+    "S2_E1_WORKER_IDS",
+    "StateLineageE1Evaluation",
+    "StateLineageE1Scenario",
+    "StateLineageE1Trial",
+    "run_s2_e1_paired",
+    "run_s2_e1_trial",
 ]
