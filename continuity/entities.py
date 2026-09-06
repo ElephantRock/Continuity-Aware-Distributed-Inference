@@ -153,6 +153,17 @@ class Evidence:
     confidence: Optional[float] = None
     derived_from: FrozenSet[str] = frozenset()
     derivation_rule: Optional[str] = None
+    claim_key: Optional[str] = None
+    claim_value: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if (self.claim_key is None) != (self.claim_value is None):
+            raise ValueError("Evidence claim_key and claim_value must be both present or both absent")
+        if self.claim_key is not None:
+            if not isinstance(self.claim_key, str) or not self.claim_key:
+                raise ValueError("Evidence claim_key must be a non-empty string")
+            if not isinstance(self.claim_value, str) or not self.claim_value:
+                raise ValueError("Evidence claim_value must be a non-empty string")
 
 @dataclass(frozen=True)
 class Output:
