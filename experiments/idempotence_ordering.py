@@ -71,17 +71,11 @@ class S5DeterministicScenario:
         ):
             raise ValueError("fault_class must be a non-empty string or None")
         if self.creates_dfr_opportunity and self.fault_class is None:
-            raise ValueError("DFR Gate opportunities in C4 require a faulted operation")
+            raise ValueError("expected DFR Gate opportunities must be faulted operations")
 
     @property
     def fault_id(self) -> str | None:
         return None if self.fault_class is None else f"S5:EV0:{self.scenario_id}"
-
-    @property
-    def dfr_event_id(self) -> str | None:
-        if not self.creates_dfr_opportunity:
-            return None
-        return f"S5:EV0:{self.scenario_id}:completed-request:{S5_REQUEST_ID}"
 
 
 S5_E0_SCENARIOS = (
@@ -147,6 +141,7 @@ class _ExecutionPresentation:
     finalization_effects: tuple[str, ...]
     invariant_violations: tuple[str, ...]
     intended_semantic_state_reached: bool
+    completed_request_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +153,7 @@ class S5DeterministicTrial:
     semantic_snapshot: Mapping[str, Any]
     finalization_effects: tuple[str, ...]
     invariant_violations: tuple[str, ...]
+    completed_request_id: str | None
     injected_duplicate_finalization: bool = False
 
     def __post_init__(self) -> None:
@@ -169,6 +165,10 @@ class S5DeterministicTrial:
             raise ValueError("evaluation policy must match trial policy")
         if self.evaluation.scenario_id != self.scenario.scenario_id:
             raise ValueError("evaluation scenario must match trial scenario")
+        if self.completed_request_id is not None and (
+            not isinstance(self.completed_request_id, str) or not self.completed_request_id
+        ):
+            raise ValueError("completed_request_id must be a non-empty string or None")
         if not isinstance(self.injected_duplicate_finalization, bool):
             raise TypeError("injected_duplicate_finalization must be bool")
 
@@ -235,6 +235,16 @@ def _request_snapshot(core: ContinuityCore) -> dict[str, Any]:
     }
 
 
+def _completed_request_id(snapshot: Mapping[str, Any]) -> str | None:
+    if (
+        snapshot.get("request_status") == RequestStatus.COMPLETED.name
+        and snapshot.get("committed_attempt_id") is not None
+        and snapshot.get("authoritative_output_id") is not None
+    ):
+        return S5_REQUEST_ID
+    return None
+
+
 def _capture_finalize(
     core: ContinuityCore,
     output_id: str,
@@ -270,6 +280,15 @@ def _inject_second_finalization(core: ContinuityCore, effects: list[str]) -> Non
     effects.append("injected-second-output")
 
 
+def _event_snapshot(core: ContinuityCore, event_id: str) -> dict[str, Any]:
+    event = core.events[event_id]
+    return {
+        "event_order": list(core.event_order),
+        "event_count": len(core.events),
+        "event_payload": sorted(event.payload),
+    }
+
+
 def _run_mode(
     scenario: S5DeterministicScenario,
     *,
@@ -279,6 +298,7 @@ def _run_mode(
     finalization_effects: list[str] = []
     violations: list[str] = []
     intended = True
+    completed_request_id: str | None = None
 
     if scenario.mode is S5DeterministicMode.SAME_OUTPUT_FINALIZE_TWICE:
         core = _valid_finalize_core()
@@ -294,15 +314,16 @@ def _run_mode(
             _inject_second_finalization(core, finalization_effects)
             violations.append("IDEMPOTENCE_VIOLATION")
         snapshot = _request_snapshot(core)
+        completed_request_id = _completed_request_id(snapshot)
         intended = (
-            snapshot["request_status"] == "COMPLETED"
-            and snapshot["committed_attempt_id"] == S5_ATTEMPT_ID
+            completed_request_id == S5_REQUEST_ID
             and (
                 snapshot["authoritative_output_id"] == S5_OUTPUT_ID
                 if not inject_duplicate_finalization
                 else snapshot["authoritative_output_id"] == "injected-second-output"
             )
         )
+
     elif scenario.mode is S5DeterministicMode.CONFLICTING_OUTPUT_AFTER_COMPLETION:
         core = _valid_finalize_core(create_second_output=True)
         outcomes.append(_capture_finalize(core, S5_OUTPUT_ID, finalization_effects))
@@ -316,7 +337,12 @@ def _run_mode(
         if len(finalization_effects) != 1:
             violations.append("DUPLICATE_FINALIZATION")
         snapshot = second
-        intended = second["authoritative_output_id"] == S5_OUTPUT_ID
+        completed_request_id = _completed_request_id(snapshot)
+        intended = (
+            completed_request_id == S5_REQUEST_ID
+            and second["authoritative_output_id"] == S5_OUTPUT_ID
+        )
+
     elif scenario.mode is S5DeterministicMode.DUPLICATE_SEMANTIC_EVENT_ID:
         core = _base_core()
         event = SemanticEvent(
@@ -326,19 +352,16 @@ def _run_mode(
             subject_id="a1",
             payload=frozenset({("result", "SUCCEEDED")}),
         )
+        core.record_event(event)
         outcomes.append("APPLIED")
-        core.record_event(event)
         before = (dict(core.events), tuple(core.event_order))
-        outcomes.append("IDEMPOTENT")
         core.record_event(event)
+        outcomes.append("IDEMPOTENT")
         after = (dict(core.events), tuple(core.event_order))
         if before != after or core.event_order.count(event.id) != 1:
             violations.append("IDEMPOTENCE_VIOLATION")
-        snapshot = {
-            "event_order": list(core.event_order),
-            "event_count": len(core.events),
-            "event_payload": sorted(core.events[event.id].payload),
-        }
+        snapshot = _event_snapshot(core, event.id)
+
     elif scenario.mode is S5DeterministicMode.CONFLICTING_DUPLICATE_EVENT_ID:
         core = _base_core()
         first_event = SemanticEvent(
@@ -368,11 +391,8 @@ def _run_mode(
             violations.append("IDENTITY_CORRUPTION")
         if core.events["event-1"] != first_event:
             violations.append("MONOTONICITY_VIOLATION")
-        snapshot = {
-            "event_order": list(core.event_order),
-            "event_count": len(core.events),
-            "event_payload": sorted(core.events["event-1"].payload),
-        }
+        snapshot = _event_snapshot(core, "event-1")
+
     elif scenario.mode is S5DeterministicMode.DUPLICATE_MIGRATION_COMMIT:
         core = _base_core()
         initial = core.activate_initial_binding("b1", "subject", "w1")
@@ -421,6 +441,7 @@ def _run_mode(
         if initial.epoch >= candidate.epoch:
             violations.append("MONOTONICITY_VIOLATION")
         snapshot = after
+
     elif scenario.mode is S5DeterministicMode.TERMINAL_CONTINUATION_REPLAY:
         core = _base_core()
         core.set_continuation_lifecycle("c", ContinuationLifecycle.TERMINAL)
@@ -437,6 +458,7 @@ def _run_mode(
         if before is not after or after is not ContinuationLifecycle.TERMINAL:
             violations.append("MONOTONICITY_VIOLATION")
         snapshot = {"continuation_lifecycle": after.name}
+
     elif scenario.mode is S5DeterministicMode.INVALID_STATE_REPLAY:
         core = _base_core()
         core.create_state("x", origin_type="continuation", origin_id="c")
@@ -454,12 +476,14 @@ def _run_mode(
         if before is not after or after is not StateValidity.INVALID:
             violations.append("MONOTONICITY_VIOLATION")
         snapshot = {"state_validity": after.name}
+
     elif scenario.mode is S5DeterministicMode.FIRST_VALID_FINALIZATION_CONTROL:
         core = _valid_finalize_core()
         outcomes.append(_capture_finalize(core, S5_OUTPUT_ID, finalization_effects))
         snapshot = _request_snapshot(core)
+        completed_request_id = _completed_request_id(snapshot)
         intended = (
-            snapshot["request_status"] == RequestStatus.COMPLETED.name
+            completed_request_id == S5_REQUEST_ID
             and snapshot["authoritative_output_id"] == S5_OUTPUT_ID
             and snapshot["attempt_execution_status"] == ExecutionStatus.SUCCEEDED.name
             and snapshot["attempt_authority_status"] == AttemptAuthority.COMMITTED.name
@@ -467,7 +491,8 @@ def _run_mode(
         )
         if not intended:
             violations.append("FINALIZATION_CONTROL_FAILED")
-    else:
+
+    else:  # pragma: no cover
         raise AssertionError("unhandled deterministic S5 mode")
 
     return _ExecutionPresentation(
@@ -476,6 +501,7 @@ def _run_mode(
         finalization_effects=tuple(finalization_effects),
         invariant_violations=tuple(dict.fromkeys(violations)),
         intended_semantic_state_reached=intended,
+        completed_request_id=completed_request_id,
     )
 
 
@@ -490,7 +516,10 @@ def _run_s5_e0_trial(
     scenario = _SCENARIO_BY_ID.get(scenario_id)
     if scenario is None:
         raise ValueError(f"scenario_id must be one of {S5_E0_SCENARIO_IDS!r}")
-    if inject_duplicate_finalization and scenario.mode is not S5DeterministicMode.SAME_OUTPUT_FINALIZE_TWICE:
+    if (
+        inject_duplicate_finalization
+        and scenario.mode is not S5DeterministicMode.SAME_OUTPUT_FINALIZE_TWICE
+    ):
         raise ValueError("anti-false-zero injection is defined only for D1")
 
     presentation = _run_mode(
@@ -498,7 +527,9 @@ def _run_s5_e0_trial(
         inject_duplicate_finalization=inject_duplicate_finalization,
     )
     duplicate_finalization = len(presentation.finalization_effects) > 1
-    semantically_correct = not presentation.invariant_violations and not duplicate_finalization
+    semantically_correct = (
+        not presentation.invariant_violations and not duplicate_finalization
+    )
 
     if not presentation.intended_semantic_state_reached:
         semantic_result = SemanticResult(
@@ -523,15 +554,23 @@ def _run_s5_e0_trial(
     opportunities: tuple[CorrectnessMetric, ...] = ()
     opportunity_event_ids: tuple[str, ...] = ()
     opportunity_scopes: tuple[MetricOpportunityScope, ...] = ()
-    violations: tuple[CorrectnessMetric, ...] = ()
+    metric_violations: tuple[CorrectnessMetric, ...] = ()
     violation_event_ids: tuple[str, ...] = ()
-    if scenario.dfr_event_id is not None:
+
+    # DFR is policy-derived: construct its denominator only from an observed
+    # completed LogicalRequest in this faulted execution, never from the scenario label.
+    dfr_event_id: str | None = None
+    if scenario.fault_id is not None and presentation.completed_request_id is not None:
+        dfr_event_id = (
+            f"S5:EV0:{scenario.scenario_id}:completed-request:"
+            f"{presentation.completed_request_id}"
+        )
         opportunities = (CorrectnessMetric.DUPLICATE_FINALIZATION_RATE,)
-        opportunity_event_ids = (scenario.dfr_event_id,)
+        opportunity_event_ids = (dfr_event_id,)
         opportunity_scopes = (MetricOpportunityScope.POLICY_DERIVED,)
         if duplicate_finalization:
-            violations = (CorrectnessMetric.DUPLICATE_FINALIZATION_RATE,)
-            violation_event_ids = (scenario.dfr_event_id,)
+            metric_violations = (CorrectnessMetric.DUPLICATE_FINALIZATION_RATE,)
+            violation_event_ids = (dfr_event_id,)
 
     ground_truth = {
         "schema": S5_E0_SCHEMA,
@@ -550,6 +589,8 @@ def _run_s5_e0_trial(
         "semantic_finalization_count": len(presentation.finalization_effects),
         "duplicate_finalization_observed": duplicate_finalization,
         "invariant_violations": list(presentation.invariant_violations),
+        "completed_request_id": presentation.completed_request_id,
+        "dfr_opportunity_observed": dfr_event_id is not None,
         "injected_duplicate_finalization": inject_duplicate_finalization,
     }
     policy_decision = {
@@ -573,7 +614,7 @@ def _run_s5_e0_trial(
         metric_opportunities=opportunities,
         metric_opportunity_event_ids=opportunity_event_ids,
         metric_opportunity_scopes=opportunity_scopes,
-        metric_violations=violations,
+        metric_violations=metric_violations,
         metric_violation_event_ids=violation_event_ids,
         fault_id=scenario.fault_id,
         fault_class=scenario.fault_class,
@@ -586,6 +627,7 @@ def _run_s5_e0_trial(
         semantic_snapshot=presentation.semantic_snapshot,
         finalization_effects=presentation.finalization_effects,
         invariant_violations=presentation.invariant_violations,
+        completed_request_id=presentation.completed_request_id,
         injected_duplicate_finalization=inject_duplicate_finalization,
     )
 
