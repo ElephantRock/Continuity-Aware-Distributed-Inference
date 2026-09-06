@@ -144,7 +144,7 @@ def test_conflicting_duplicate_event_identity_is_rejected_without_rewrite(evalua
         trial = _trial(evaluation, scenario_id, policy_id)
         assert trial.semantic_snapshot["event_count"] == 1
         assert trial.semantic_snapshot["event_order"] == ["event-1"]
-        assert trial.semantic_snapshot["event_payload"] == [["result", "SUCCEEDED"]]
+        assert trial.semantic_snapshot["event_payload"] == [("result", "SUCCEEDED")]
         assert trial.application_outcomes[1].startswith("REJECTED:SemanticViolation")
         assert trial.invariant_violations == ()
         assert trial.evaluation.metric_opportunities == ()
