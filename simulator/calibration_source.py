@@ -30,7 +30,6 @@ class CalibrationArtifact:
     role: CalibrationArtifactRole
     path: str
     git_blob_sha1: str
-    size_bytes: int
 
     def __post_init__(self) -> None:
         if not isinstance(self.role, CalibrationArtifactRole):
@@ -39,15 +38,12 @@ class CalibrationArtifact:
             raise ValueError("path must be a non-empty string")
         if not _SHA1_RE.fullmatch(self.git_blob_sha1):
             raise ValueError("git_blob_sha1 must be 40 lowercase hexadecimal characters")
-        if not isinstance(self.size_bytes, int) or isinstance(self.size_bytes, bool) or self.size_bytes <= 0:
-            raise ValueError("size_bytes must be a positive integer")
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self) -> dict[str, str]:
         return {
             "role": self.role.value,
             "path": self.path,
             "git_blob_sha1": self.git_blob_sha1,
-            "size_bytes": self.size_bytes,
         }
 
 
@@ -113,7 +109,9 @@ class CalibrationSourceManifest:
         }
 
     def to_json(self) -> str:
-        return json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"), allow_nan=False)
+        return json.dumps(
+            self.to_dict(), sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
 
     @property
     def fingerprint(self) -> str:
@@ -133,7 +131,9 @@ def assert_source_snapshot(
     if set(observed) != set(expected):
         missing = sorted(set(expected) - set(observed))
         extra = sorted(set(observed) - set(expected))
-        raise ValueError(f"calibration source path mismatch: missing={missing}, extra={extra}")
+        raise ValueError(
+            f"calibration source path mismatch: missing={missing}, extra={extra}"
+        )
     mismatches = {
         path: (expected[path], observed[path])
         for path in sorted(expected)
@@ -143,8 +143,10 @@ def assert_source_snapshot(
         raise ValueError(f"calibration source blob mismatch: {mismatches}")
 
 
-def _artifact(role: CalibrationArtifactRole, path: str, sha1: str, size: int) -> CalibrationArtifact:
-    return CalibrationArtifact(role=role, path=path, git_blob_sha1=sha1, size_bytes=size)
+def _artifact(
+    role: CalibrationArtifactRole, path: str, sha1: str
+) -> CalibrationArtifact:
+    return CalibrationArtifact(role=role, path=path, git_blob_sha1=sha1)
 
 
 _VIDUR_COMMON = dict(
@@ -152,8 +154,14 @@ _VIDUR_COMMON = dict(
     upstream_repository="microsoft/vidur",
     upstream_commit="abae7f63aa857300f5cdc6f5e0d27860cd24721b",
     license_id="MIT",
-    publication_reference="Vidur: A Large-Scale Simulation Framework For LLM Inference, MLSys 2024, arXiv:2405.05465",
-    methods_reference="microsoft/vidur docs/profiling.md at abae7f63aa857300f5cdc6f5e0d27860cd24721b",
+    publication_reference=(
+        "Vidur: A Large-Scale Simulation Framework For LLM Inference, "
+        "MLSys 2024, arXiv:2405.05465"
+    ),
+    methods_reference=(
+        "microsoft/vidur docs/profiling.md at "
+        "abae7f63aa857300f5cdc6f5e0d27860cd24721b"
+    ),
     model_id="meta-llama/Llama-2-7b-hf",
 )
 
@@ -162,11 +170,31 @@ VIDUR_LLAMA2_7B_A100_DGX = CalibrationSourceManifest(
     hardware_id="a100-80gb",
     network_id="a100_dgx",
     artifacts=(
-        _artifact(CalibrationArtifactRole.MODEL_CONFIG, "vidur/config/model_config.py", "722299bbb556ccbab2b82609598be6b8c2963c29", 12238),
-        _artifact(CalibrationArtifactRole.COMPUTE_ATTENTION, "data/profiling/compute/a100/meta-llama/Llama-2-7b-hf/attention.csv", "6ce0a3beab1618969d429b4313666b5dff6850dd", 10680357),
-        _artifact(CalibrationArtifactRole.COMPUTE_MLP, "data/profiling/compute/a100/meta-llama/Llama-2-7b-hf/mlp.csv", "479ed2f6ed22049ac444bca9fa44578532cbf28a", 706614),
-        _artifact(CalibrationArtifactRole.NETWORK_ALL_REDUCE, "data/profiling/network/a100_dgx/all_reduce.csv", "730776436cbd9e3e40aae50768e2b64921dd0379", 645190),
-        _artifact(CalibrationArtifactRole.NETWORK_SEND_RECV, "data/profiling/network/a100_dgx/send_recv.csv", "418cd50858fdd604c3da21eb3aaa06e583059865", 176791),
+        _artifact(
+            CalibrationArtifactRole.MODEL_CONFIG,
+            "vidur/config/model_config.py",
+            "722299bbb556ccbab2b82609598be6b8c2963c29",
+        ),
+        _artifact(
+            CalibrationArtifactRole.COMPUTE_ATTENTION,
+            "data/profiling/compute/a100/meta-llama/Llama-2-7b-hf/attention.csv",
+            "6ce0a3beab1618969d429b4313666b5dff6850dd",
+        ),
+        _artifact(
+            CalibrationArtifactRole.COMPUTE_MLP,
+            "data/profiling/compute/a100/meta-llama/Llama-2-7b-hf/mlp.csv",
+            "479ed2f6ed22049ac444bca9fa44578532cbf28a",
+        ),
+        _artifact(
+            CalibrationArtifactRole.NETWORK_ALL_REDUCE,
+            "data/profiling/network/a100_dgx/all_reduce.csv",
+            "730776436cbd9e3e40aae50768e2b64921dd0379",
+        ),
+        _artifact(
+            CalibrationArtifactRole.NETWORK_SEND_RECV,
+            "data/profiling/network/a100_dgx/send_recv.csv",
+            "418cd50858fdd604c3da21eb3aaa06e583059865",
+        ),
     ),
     **_VIDUR_COMMON,
 )
@@ -176,11 +204,31 @@ VIDUR_LLAMA2_7B_H100_DGX = CalibrationSourceManifest(
     hardware_id="h100-80gb",
     network_id="h100_dgx",
     artifacts=(
-        _artifact(CalibrationArtifactRole.MODEL_CONFIG, "vidur/config/model_config.py", "722299bbb556ccbab2b82609598be6b8c2963c29", 12238),
-        _artifact(CalibrationArtifactRole.COMPUTE_ATTENTION, "data/profiling/compute/h100/meta-llama/Llama-2-7b-hf/attention.csv", "dfc6b05e232e3d243bf3c89feb3f380a77f5ad0d", 10792177),
-        _artifact(CalibrationArtifactRole.COMPUTE_MLP, "data/profiling/compute/h100/meta-llama/Llama-2-7b-hf/mlp.csv", "661ea954e9508d67f37d3b24f0e07eb96f83ca46", 715469),
-        _artifact(CalibrationArtifactRole.NETWORK_ALL_REDUCE, "data/profiling/network/h100_dgx/all_reduce.csv", "a7a2470393d9ad8786e2423f081d01f8997b4bdb", 274142),
-        _artifact(CalibrationArtifactRole.NETWORK_SEND_RECV, "data/profiling/network/h100_dgx/send_recv.csv", "fed60792e5d5900ea008e4d26427f39b7285434f", 177070),
+        _artifact(
+            CalibrationArtifactRole.MODEL_CONFIG,
+            "vidur/config/model_config.py",
+            "722299bbb556ccbab2b82609598be6b8c2963c29",
+        ),
+        _artifact(
+            CalibrationArtifactRole.COMPUTE_ATTENTION,
+            "data/profiling/compute/h100/meta-llama/Llama-2-7b-hf/attention.csv",
+            "dfc6b05e232e3d243bf3c89feb3f380a77f5ad0d",
+        ),
+        _artifact(
+            CalibrationArtifactRole.COMPUTE_MLP,
+            "data/profiling/compute/h100/meta-llama/Llama-2-7b-hf/mlp.csv",
+            "661ea954e9508d67f37d3b24f0e07eb96f83ca46",
+        ),
+        _artifact(
+            CalibrationArtifactRole.NETWORK_ALL_REDUCE,
+            "data/profiling/network/h100_dgx/all_reduce.csv",
+            "a7a2470393d9ad8786e2423f081d01f8997b4bdb",
+        ),
+        _artifact(
+            CalibrationArtifactRole.NETWORK_SEND_RECV,
+            "data/profiling/network/h100_dgx/send_recv.csv",
+            "fed60792e5d5900ea008e4d26427f39b7285434f",
+        ),
     ),
     **_VIDUR_COMMON,
 )
