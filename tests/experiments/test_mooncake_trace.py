@@ -5,6 +5,8 @@ import hashlib
 import pytest
 
 from experiments.mooncake_trace import (
+    MOONCAKE_DOC_REVISION,
+    MOONCAKE_DOC_URI,
     MOONCAKE_EXPECTED_REQUESTS,
     MOONCAKE_NORMALIZATION_VERSION,
     MOONCAKE_PREFIX_BLOCK_TOKENS,
@@ -12,9 +14,9 @@ from experiments.mooncake_trace import (
     MOONCAKE_SOURCE_SHA256,
     MOONCAKE_SOURCE_URI,
     MooncakeSourceRow,
+    derive_mooncake_records,
     load_pinned_mooncake_trace,
     mooncake_manifest,
-    normalize_mooncake_rows,
     parse_mooncake_jsonl,
 )
 from experiments.trace_workload import (
@@ -22,9 +24,6 @@ from experiments.trace_workload import (
     TraceField,
     TraceFieldOrigin,
 )
-
-
-FIXTURE_SHA = "a" * 64
 
 
 def _row(
@@ -44,7 +43,10 @@ def _row(
 
 
 def _dataset(*rows: MooncakeSourceRow) -> NormalizedTraceDataset:
-    return normalize_mooncake_rows(rows, source_sha256=FIXTURE_SHA)
+    return NormalizedTraceDataset(
+        manifest=mooncake_manifest(),
+        records=derive_mooncake_records(rows),
+    )
 
 
 def test_manifest_freezes_source_and_field_provenance() -> None:
@@ -54,6 +56,8 @@ def test_manifest_freezes_source_and_field_provenance() -> None:
     assert manifest.source_sha256 == MOONCAKE_SOURCE_SHA256
     assert manifest.normalization_version == MOONCAKE_NORMALIZATION_VERSION
     assert manifest.license_id == "Apache-2.0"
+    assert MOONCAKE_DOC_REVISION in " ".join(manifest.normalization_steps)
+    assert MOONCAKE_DOC_URI.endswith("/FAST25-release/README.md")
     assert manifest.origin_by_field == {
         TraceField.ARRIVAL_TIME_S: TraceFieldOrigin.SOURCE_OBSERVED,
         TraceField.INPUT_TOKENS: TraceFieldOrigin.SOURCE_OBSERVED,
@@ -69,7 +73,10 @@ def test_parse_valid_jsonl_and_millisecond_normalization() -> None:
         b'{"timestamp":5999,"input_length":512,"output_length":3,"hash_ids":[10]}\n'
     )
     rows = parse_mooncake_jsonl(raw)
-    dataset = normalize_mooncake_rows(rows, source_sha256=hashlib.sha256(raw).hexdigest())
+    dataset = NormalizedTraceDataset(
+        manifest=mooncake_manifest(),
+        records=derive_mooncake_records(rows),
+    )
     assert [record.arrival_time_s for record in dataset.source_order] == [3.0, 5.999]
     assert [record.input_tokens for record in dataset.source_order] == [1024, 512]
     assert [record.output_tokens for record in dataset.source_order] == [7, 3]
@@ -239,11 +246,11 @@ def test_c5_1_round_trip_preserves_adapter_output() -> None:
     assert restored.field_coverage()[TraceField.PREFIX_GROUP_ID] == (1, 2)
 
 
-def test_normalize_requires_rows_and_row_type() -> None:
+def test_derive_requires_rows_and_row_type() -> None:
     with pytest.raises(ValueError, match="must not be empty"):
-        normalize_mooncake_rows((), source_sha256=FIXTURE_SHA)
+        derive_mooncake_records(())
     with pytest.raises(TypeError, match="MooncakeSourceRow"):
-        normalize_mooncake_rows((object(),), source_sha256=FIXTURE_SHA)
+        derive_mooncake_records((object(),))
 
 
 def test_source_contract_constants_are_frozen() -> None:
