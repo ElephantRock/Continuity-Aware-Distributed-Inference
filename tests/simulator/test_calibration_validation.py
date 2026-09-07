@@ -4,6 +4,7 @@ import math
 import pytest
 
 from simulator.calibration_validation import (
+    C6_THRESHOLD_ULP_BUDGET,
     C6_VALIDATION_MAPE_LIMIT,
     C6_VALIDATION_MAX_APE_LIMIT,
     C6_VALIDATION_REPORT_SCHEMA,
@@ -227,25 +228,21 @@ def test_exact_predictions_pass_and_report_schema_is_canonical() -> None:
     assert payload["schema"] == C6_VALIDATION_REPORT_SCHEMA
     assert payload["thresholds"]["mape_limit"] == C6_VALIDATION_MAPE_LIMIT
     assert payload["thresholds"]["max_ape_limit"] == C6_VALIDATION_MAX_APE_LIMIT
+    assert payload["thresholds"]["floating_boundary_ulp_budget"] == C6_THRESHOLD_ULP_BUDGET
     assert report.to_json() == report.to_json()
 
 
 def test_predeclared_thresholds_are_inclusive_but_not_a_tolerance_band() -> None:
     partition = split_reference_family(
-        [
-            _point("p1", 1, 10.0),
-            _point("p2", 2, 10.0),
-            _point("p3", 3, 10.0),
-            _point("p4", 4, 10.0),
-        ]
+        [_point("p1", 1), _point("p2", 2), _point("p3", 3), _point("p4", 4)]
     )
-    at_limit = evaluate_reference_predictions(partition, {"p2": 11.0, "p4": 10.0})
+    at_limit = evaluate_reference_predictions(partition, {"p2": 1.1, "p4": 1.0})
     assert at_limit.mape == pytest.approx(0.05)
     assert at_limit.max_ape == pytest.approx(0.10)
     assert at_limit.decision is AdequacyDecision.ADEQUATE_WITHIN_DECLARED_DOMAIN
 
     over_limit = evaluate_reference_predictions(
-        partition, {"p2": 11.000000001, "p4": 10.0}
+        partition, {"p2": 1.100000000001, "p4": 1.0}
     )
     assert over_limit.max_ape is not None and over_limit.max_ape > C6_VALIDATION_MAX_APE_LIMIT
     assert over_limit.decision is AdequacyDecision.INADEQUATE_REVISE_REPRESENTATION
@@ -309,3 +306,16 @@ def test_prediction_keys_and_values_fail_closed() -> None:
         )
     with pytest.raises(ValueError, match="finite and non-negative"):
         evaluate_reference_predictions(partition, {"p2": -1.0, "p4": 1.0})
+
+
+def test_nonfinite_derived_percentage_error_fails_closed() -> None:
+    partition = split_reference_family(
+        [
+            _point("p1", 1, 1.0),
+            _point("p2", 2, 5e-324),
+            _point("p3", 3, 1.0),
+            _point("p4", 4, 1.0),
+        ]
+    )
+    with pytest.raises(ValueError, match="percentage error is non-finite"):
+        evaluate_reference_predictions(partition, {"p2": 1e308, "p4": 1.0})
