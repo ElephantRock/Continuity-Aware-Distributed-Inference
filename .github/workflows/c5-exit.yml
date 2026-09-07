@@ -9,6 +9,7 @@ on:
       - "experiments/trace_workload.py"
       - "experiments/continuity_augmentation.py"
       - "experiments/workload_modes.py"
+      - "simulator/faults.py"
       - "tests/experiments/test_c5_exit.py"
       - "spec/36-c5.5-exit-reproducibility.md"
   workflow_dispatch:
