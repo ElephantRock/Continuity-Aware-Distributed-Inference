@@ -7,6 +7,11 @@ import math
 import re
 from typing import Mapping, Sequence
 
+from .calibration_source import (
+    CalibrationArtifactRole,
+    VIDUR_CALIBRATION_SOURCES,
+)
+
 
 C6_VALIDATION_REPORT_SCHEMA = "cadi.c6.validation-report.v1"
 VIDUR_PINNED_REPOSITORY = "microsoft/vidur"
@@ -34,7 +39,9 @@ def _finite_nonnegative(value: float, name: str) -> float:
 
 
 def _within_limit(value: float, limit: float) -> bool:
-    return value < limit or math.isclose(value, limit, rel_tol=1e-12, abs_tol=1e-15)
+    # Admit at most the immediately adjacent floating-point representation above
+    # the declared threshold; do not create a material post-hoc tolerance band.
+    return value <= math.nextafter(limit, math.inf)
 
 
 class ReferenceKind(str, Enum):
@@ -90,6 +97,10 @@ VIDUR_LLAMA2_7B_TP1_DOMAIN = VidurReferenceDomain(
     max_model_len=4096,
     attention_backend="FLASH_ATTENTION",
 )
+
+_SOURCE_BY_HARDWARE = {source.hardware_id: source for source in VIDUR_CALIBRATION_SOURCES}
+if set(_SOURCE_BY_HARDWARE) != set(VIDUR_LLAMA2_7B_TP1_DOMAIN.hardware_ids):
+    raise RuntimeError("C6.2 source family does not match the C6.3 declared hardware domain")
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +159,29 @@ class SourceArtifactRef:
         return {"path": self.path, "git_blob_sha1": self.git_blob_sha1}
 
 
+def _expected_source_artifacts(
+    hardware_id: str,
+    kind: ReferenceKind,
+) -> tuple[SourceArtifactRef, ...]:
+    source = _SOURCE_BY_HARDWARE[hardware_id]
+    if kind in (ReferenceKind.COLD_PREFILL, ReferenceKind.SINGLE_TOKEN_DECODE):
+        roles = {
+            CalibrationArtifactRole.MODEL_CONFIG,
+            CalibrationArtifactRole.COMPUTE_ATTENTION,
+            CalibrationArtifactRole.COMPUTE_MLP,
+        }
+    else:
+        roles = {CalibrationArtifactRole.NETWORK_SEND_RECV}
+    refs = tuple(
+        SourceArtifactRef(path=artifact.path, git_blob_sha1=artifact.git_blob_sha1)
+        for artifact in source.artifacts
+        if artifact.role in roles
+    )
+    if len(refs) != len(roles):
+        raise RuntimeError("C6.2 manifest is missing a required C6.3 source artifact role")
+    return tuple(sorted(refs, key=lambda item: (item.path, item.git_blob_sha1)))
+
+
 @dataclass(frozen=True, slots=True)
 class CalibrationReferencePoint:
     point_id: str
@@ -181,6 +215,15 @@ class CalibrationReferencePoint:
         paths = [item.path for item in self.source_artifacts]
         if len(paths) != len(set(paths)):
             raise ValueError("source_artifact paths must be unique")
+        observed_artifacts = tuple(
+            sorted(self.source_artifacts, key=lambda item: (item.path, item.git_blob_sha1))
+        )
+        expected_artifacts = _expected_source_artifacts(self.hardware_id, self.kind)
+        if observed_artifacts != expected_artifacts:
+            raise ValueError(
+                "source_artifacts must exactly match the pinned C6.2 roles for "
+                f"{self.hardware_id}/{self.kind.value}"
+            )
 
     @property
     def axis_unit(self) -> str:
@@ -244,6 +287,14 @@ class ReferencePartition:
         axis_values = [point.axis_value for point in combined]
         if len(axis_values) != len(set(axis_values)):
             raise ValueError("partition axis values must be unique")
+
+        ordered = tuple(sorted(combined, key=lambda point: (point.axis_value, point.point_id)))
+        expected_fit = tuple(point for index, point in enumerate(ordered) if index % 2 == 0)
+        expected_validation = tuple(
+            point for index, point in enumerate(ordered) if index % 2 == 1
+        )
+        if self.fit != expected_fit or self.validation != expected_validation:
+            raise ValueError("partition must use the canonical even-FIT/odd-VALIDATION split")
 
 
 def split_reference_family(
