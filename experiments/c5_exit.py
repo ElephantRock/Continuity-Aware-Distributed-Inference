@@ -34,8 +34,25 @@ C5_EXIT_VERSION = "cadi.c5.5.exit-reproducibility.v1"
 C5_EXIT_EXPECTED_SOURCE_DATASET_FINGERPRINT = (
     "22ead90d97ae218f229f94378f8f019499ede0e4050e6cbf8092b455ae047718"
 )
+C5_EXIT_EXPECTED_SOURCE_ENVELOPE_FINGERPRINT = (
+    "9584184e86f465e65090afbeeded5b66fe9a3ff66c7310e90d6cbae04d9d84db"
+)
+C5_EXIT_EXPECTED_AUGMENTATION_FINGERPRINT = (
+    "4fac982ec40960bc69f1db6fef534b7f049e20380c998383d38706fb5d8f8f28"
+)
+C5_EXIT_EXPECTED_AUGMENTATION_ANNOTATIONS = 12_031
+C5_EXIT_EXPECTED_AUGMENTATION_SESSIONS = 1_504
+C5_EXIT_EXPECTED_AUGMENTATION_TOOL_WAITS = 2_143
+C5_EXIT_EXPECTED_AUGMENTATION_BRANCHES = 904
+C5_EXIT_EXPECTED_AUGMENTATION_FAULTS = 622
+C5_EXIT_EXPECTED_TRACE_AUGMENTED_ENVELOPE_FINGERPRINT = (
+    "d4aef08466fdd5547fe15c074190ad014e0890183fe6404e8b0e319205cd924d"
+)
 C5_EXIT_EXPECTED_SYNTHETIC_DATASET_FINGERPRINT = (
     "d78dbb41571aec557c2a6fc581e454a0cd50011b8f3582bcaa9eaa1c495c4051"
+)
+C5_EXIT_EXPECTED_SYNTHETIC_ENVELOPE_FINGERPRINT = (
+    "1e6df4347a82bfb4b5337d2508875cb32c26aa28f09223b894cdc50c4622b119"
 )
 
 
@@ -211,6 +228,28 @@ class C5ExitSummary:
         )
 
 
+def _assert_frozen_exit_summary(summary: C5ExitSummary) -> None:
+    expected = {
+        "source_envelope_fingerprint": C5_EXIT_EXPECTED_SOURCE_ENVELOPE_FINGERPRINT,
+        "augmentation_fingerprint": C5_EXIT_EXPECTED_AUGMENTATION_FINGERPRINT,
+        "augmentation_annotations": C5_EXIT_EXPECTED_AUGMENTATION_ANNOTATIONS,
+        "augmentation_sessions": C5_EXIT_EXPECTED_AUGMENTATION_SESSIONS,
+        "augmentation_tool_waits": C5_EXIT_EXPECTED_AUGMENTATION_TOOL_WAITS,
+        "augmentation_branches": C5_EXIT_EXPECTED_AUGMENTATION_BRANCHES,
+        "augmentation_faults": C5_EXIT_EXPECTED_AUGMENTATION_FAULTS,
+        "trace_augmented_envelope_fingerprint": (
+            C5_EXIT_EXPECTED_TRACE_AUGMENTED_ENVELOPE_FINGERPRINT
+        ),
+        "synthetic_envelope_fingerprint": (
+            C5_EXIT_EXPECTED_SYNTHETIC_ENVELOPE_FINGERPRINT
+        ),
+    }
+    for field, frozen in expected.items():
+        actual = getattr(summary, field)
+        if actual != frozen:
+            raise ValueError(f"C5 exit frozen {field} drift: {actual!r} != {frozen!r}")
+
+
 def run_c5_exit(raw: bytes) -> C5ExitSummary:
     if not isinstance(raw, bytes):
         raise TypeError("C5 exit source artifact must be bytes")
@@ -233,7 +272,7 @@ def run_c5_exit(raw: bytes) -> C5ExitSummary:
         for field, origin in first.source.manifest.field_origins
     }
 
-    return C5ExitSummary(
+    summary = C5ExitSummary(
         version=C5_EXIT_VERSION,
         raw_sha256=raw_sha256,
         source_requests=len(first.source.source_order),
@@ -265,6 +304,8 @@ def run_c5_exit(raw: bytes) -> C5ExitSummary:
         ),
         replay_identical=True,
     )
+    _assert_frozen_exit_summary(summary)
+    return summary
 
 
 def _main(argv: list[str]) -> int:
