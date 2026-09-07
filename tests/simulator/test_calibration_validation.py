@@ -12,6 +12,7 @@ from simulator.calibration_validation import (
     AdequacyDecision,
     CalibrationReferencePoint,
     ReferenceKind,
+    ReferencePartition,
     SourceArtifactRef,
     VidurComputeComponents,
     compose_vidur_llama2_7b_tp1_model_seconds,
@@ -20,18 +21,46 @@ from simulator.calibration_validation import (
 )
 
 
-ATTENTION = SourceArtifactRef(
+MODEL_CONFIG = SourceArtifactRef(
+    path="vidur/config/model_config.py",
+    git_blob_sha1="722299bbb556ccbab2b82609598be6b8c2963c29",
+)
+A100_ATTENTION = SourceArtifactRef(
     path="data/profiling/compute/a100/meta-llama/Llama-2-7b-hf/attention.csv",
     git_blob_sha1="6ce0a3beab1618969d429b4313666b5dff6850dd",
 )
-MLP = SourceArtifactRef(
+A100_MLP = SourceArtifactRef(
     path="data/profiling/compute/a100/meta-llama/Llama-2-7b-hf/mlp.csv",
     git_blob_sha1="479ed2f6ed22049ac444bca9fa44578532cbf28a",
 )
-SEND_RECV = SourceArtifactRef(
+A100_SEND_RECV = SourceArtifactRef(
     path="data/profiling/network/a100_dgx/send_recv.csv",
     git_blob_sha1="418cd50858fdd604c3da21eb3aaa06e583059865",
 )
+H100_ATTENTION = SourceArtifactRef(
+    path="data/profiling/compute/h100/meta-llama/Llama-2-7b-hf/attention.csv",
+    git_blob_sha1="dfc6b05e232e3d243bf3c89feb3f380a77f5ad0d",
+)
+H100_MLP = SourceArtifactRef(
+    path="data/profiling/compute/h100/meta-llama/Llama-2-7b-hf/mlp.csv",
+    git_blob_sha1="661ea954e9508d67f37d3b24f0e07eb96f83ca46",
+)
+H100_SEND_RECV = SourceArtifactRef(
+    path="data/profiling/network/h100_dgx/send_recv.csv",
+    git_blob_sha1="fed60792e5d5900ea008e4d26427f39b7285434f",
+)
+
+
+def _artifacts(hardware: str, kind: ReferenceKind) -> tuple[SourceArtifactRef, ...]:
+    if hardware == "a100-80gb":
+        compute = (MODEL_CONFIG, A100_ATTENTION, A100_MLP)
+        transfer = (A100_SEND_RECV,)
+    elif hardware == "h100-80gb":
+        compute = (MODEL_CONFIG, H100_ATTENTION, H100_MLP)
+        transfer = (H100_SEND_RECV,)
+    else:
+        raise AssertionError("test helper only supports the declared hardware domain")
+    return transfer if kind is ReferenceKind.POINT_TO_POINT_TRANSFER else compute
 
 
 def _point(
@@ -42,7 +71,6 @@ def _point(
     kind: ReferenceKind = ReferenceKind.COLD_PREFILL,
     hardware: str = "a100-80gb",
 ) -> CalibrationReferencePoint:
-    artifacts = (SEND_RECV,) if kind is ReferenceKind.POINT_TO_POINT_TRANSFER else (ATTENTION, MLP)
     return CalibrationReferencePoint(
         point_id=point_id,
         hardware_id=hardware,
@@ -51,7 +79,7 @@ def _point(
         observed_seconds=observed,
         derivation_id="test-derivation",
         source_commit=VIDUR_PINNED_COMMIT,
-        source_artifacts=artifacts,
+        source_artifacts=_artifacts(hardware, kind),
     )
 
 
@@ -115,6 +143,8 @@ def test_reference_point_carries_exact_source_provenance_and_axis_units() -> Non
     assert prefill.axis_unit == "input-tokens"
     assert decode.axis_unit == "context-tokens"
     assert transfer.axis_unit == "bytes"
+    assert len(prefill.source_artifacts) == 3
+    assert len(transfer.source_artifacts) == 1
     assert prefill.to_dict()["source_commit"] == VIDUR_PINNED_COMMIT
     assert prefill.to_dict()["source_repository"] == "microsoft/vidur"
 
@@ -127,6 +157,18 @@ def test_reference_point_carries_exact_source_provenance_and_axis_units() -> Non
         replace(prefill, hardware_id="other")
 
 
+def test_reference_point_rejects_incomplete_or_wrong_manifest_artifacts() -> None:
+    prefill = _point("p-prefill", 128)
+    transfer = _point("p-transfer", 4096, kind=ReferenceKind.POINT_TO_POINT_TRANSFER)
+
+    with pytest.raises(ValueError, match="exactly match the pinned C6.2 roles"):
+        replace(prefill, source_artifacts=prefill.source_artifacts[:-1])
+    with pytest.raises(ValueError, match="exactly match the pinned C6.2 roles"):
+        replace(prefill, source_artifacts=(MODEL_CONFIG, H100_ATTENTION, H100_MLP))
+    with pytest.raises(ValueError, match="exactly match the pinned C6.2 roles"):
+        replace(transfer, source_artifacts=(H100_SEND_RECV,))
+
+
 def test_reference_split_is_canonical_and_even_odd() -> None:
     points = (
         _point("p256", 256),
@@ -137,8 +179,18 @@ def test_reference_split_is_canonical_and_even_odd() -> None:
     partition = split_reference_family(points)
     assert [point.point_id for point in partition.fit] == ["p32", "p128"]
     assert [point.point_id for point in partition.validation] == ["p64", "p256"]
-
     assert split_reference_family(tuple(reversed(points))) == partition
+
+
+def test_direct_partition_construction_cannot_bypass_canonical_split() -> None:
+    points = tuple(_point(f"p{i}", i) for i in range(1, 5))
+    with pytest.raises(ValueError, match="canonical even-FIT/odd-VALIDATION"):
+        ReferencePartition(
+            hardware_id="a100-80gb",
+            kind=ReferenceKind.COLD_PREFILL,
+            fit=(points[0], points[3]),
+            validation=(points[1], points[2]),
+        )
 
 
 def test_reference_split_rejects_ambiguous_or_underpowered_families() -> None:
@@ -147,11 +199,17 @@ def test_reference_split_rejects_ambiguous_or_underpowered_families() -> None:
     with pytest.raises(ValueError, match="at least four"):
         split_reference_family(points[:3])
     with pytest.raises(ValueError, match="axis values must be unique"):
-        split_reference_family([points[0], replace(points[1], axis_value=1), points[2], points[3]])
+        split_reference_family(
+            [points[0], replace(points[1], axis_value=1), points[2], points[3]]
+        )
     with pytest.raises(ValueError, match="point IDs must be unique"):
-        split_reference_family([points[0], replace(points[1], point_id="p1"), points[2], points[3]])
+        split_reference_family(
+            [points[0], replace(points[1], point_id="p1"), points[2], points[3]]
+        )
     with pytest.raises(ValueError, match="one hardware_id and one kind"):
-        split_reference_family([points[0], points[1], points[2], replace(points[3], hardware_id="h100-80gb")])
+        split_reference_family(
+            [points[0], points[1], points[2], _point("p4-h100", 4, hardware="h100-80gb")]
+        )
 
 
 def test_exact_predictions_pass_and_report_schema_is_canonical() -> None:
@@ -172,14 +230,21 @@ def test_exact_predictions_pass_and_report_schema_is_canonical() -> None:
     assert report.to_json() == report.to_json()
 
 
-def test_predeclared_thresholds_are_inclusive() -> None:
+def test_predeclared_thresholds_are_inclusive_but_not_a_tolerance_band() -> None:
     partition = split_reference_family(
         [_point("p1", 1), _point("p2", 2), _point("p3", 3), _point("p4", 4)]
     )
-    report = evaluate_reference_predictions(partition, {"p2": 1.1, "p4": 1.0})
-    assert report.mape == pytest.approx(0.05)
-    assert report.max_ape == pytest.approx(0.10)
-    assert report.decision is AdequacyDecision.ADEQUATE_WITHIN_DECLARED_DOMAIN
+    at_limit = evaluate_reference_predictions(partition, {"p2": 1.1, "p4": 1.0})
+    assert at_limit.mape == pytest.approx(0.05)
+    assert at_limit.max_ape == pytest.approx(0.10)
+    assert at_limit.decision is AdequacyDecision.ADEQUATE_WITHIN_DECLARED_DOMAIN
+
+    over_ape = math.nextafter(math.nextafter(0.10, math.inf), math.inf)
+    over_limit = evaluate_reference_predictions(
+        partition, {"p2": 1.0 + over_ape, "p4": 1.0}
+    )
+    assert over_limit.max_ape is not None and over_limit.max_ape > C6_VALIDATION_MAX_APE_LIMIT
+    assert over_limit.decision is AdequacyDecision.INADEQUATE_REVISE_REPRESENTATION
 
 
 def test_max_ape_gate_can_fail_even_when_mape_passes() -> None:
@@ -235,6 +300,8 @@ def test_prediction_keys_and_values_fail_closed() -> None:
     with pytest.raises(ValueError, match="prediction key mismatch"):
         evaluate_reference_predictions(partition, {"p2": 1.0})
     with pytest.raises(ValueError, match="prediction key mismatch"):
-        evaluate_reference_predictions(partition, {"p2": 1.0, "p4": 1.0, "extra": 1.0})
+        evaluate_reference_predictions(
+            partition, {"p2": 1.0, "p4": 1.0, "extra": 1.0}
+        )
     with pytest.raises(ValueError, match="finite and non-negative"):
         evaluate_reference_predictions(partition, {"p2": -1.0, "p4": 1.0})
