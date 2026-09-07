@@ -19,6 +19,7 @@ VIDUR_PINNED_COMMIT = "abae7f63aa857300f5cdc6f5e0d27860cd24721b"
 VIDUR_LLAMA2_7B_NUM_LAYERS = 32
 C6_VALIDATION_MAPE_LIMIT = 0.05
 C6_VALIDATION_MAX_APE_LIMIT = 0.10
+C6_THRESHOLD_ULP_BUDGET = 8
 C6_MIN_FIT_POINTS = 2
 C6_MIN_VALIDATION_POINTS = 2
 _SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -39,9 +40,10 @@ def _finite_nonnegative(value: float, name: str) -> float:
 
 
 def _within_limit(value: float, limit: float) -> bool:
-    # Admit at most the immediately adjacent floating-point representation above
-    # the declared threshold; do not create a material post-hoc tolerance band.
-    return value <= math.nextafter(limit, math.inf)
+    # APE/MAPE require subtraction and division, so an exact decimal boundary can
+    # land a few binary ULPs above the declared limit. Admit only a fixed ULP
+    # budget, not a material percentage tolerance band.
+    return value <= limit or value - limit <= C6_THRESHOLD_ULP_BUDGET * math.ulp(limit)
 
 
 class ReferenceKind(str, Enum):
@@ -373,6 +375,7 @@ class ValidationReport:
             "thresholds": {
                 "mape_limit": C6_VALIDATION_MAPE_LIMIT,
                 "max_ape_limit": C6_VALIDATION_MAX_APE_LIMIT,
+                "floating_boundary_ulp_budget": C6_THRESHOLD_ULP_BUDGET,
                 "zero_reference_requires_exact_zero_error": True,
             },
             "errors": [error.to_dict() for error in self.errors],
@@ -420,6 +423,8 @@ def evaluate_reference_predictions(
                 zero_reference_mismatch = True
         else:
             ape = absolute / point.observed_seconds
+            if not math.isfinite(ape):
+                raise ValueError("validation percentage error is non-finite")
             nonzero_apes.append(ape)
         errors.append(
             PredictionError(
@@ -432,8 +437,12 @@ def evaluate_reference_predictions(
             )
         )
 
-    mae = sum(error.absolute_error_seconds for error in errors) / len(errors)
-    mape = None if not nonzero_apes else sum(nonzero_apes) / len(nonzero_apes)
+    mae = sum(error.absolute_error_seconds / len(errors) for error in errors)
+    mape = (
+        None
+        if not nonzero_apes
+        else sum(ape / len(nonzero_apes) for ape in nonzero_apes)
+    )
     max_ape = None if not nonzero_apes else max(nonzero_apes)
 
     adequate = (
