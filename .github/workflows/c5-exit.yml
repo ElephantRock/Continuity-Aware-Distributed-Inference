@@ -1,0 +1,103 @@
+name: c5-exit
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/c5-exit.yml"
+      - "experiments/c5_exit.py"
+      - "experiments/mooncake_trace.py"
+      - "experiments/trace_workload.py"
+      - "experiments/continuity_augmentation.py"
+      - "experiments/workload_modes.py"
+      - "simulator/faults.py"
+      - "tests/experiments/test_c5_exit.py"
+      - "spec/36-c5.5-exit-reproducibility.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ev2-exit:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download immutable Mooncake FAST25 conversation trace
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            'https://raw.githubusercontent.com/kvcache-ai/Mooncake/3cca71daccf2a7afb8fe3f0295358f70e3a69fdb/FAST25-release/traces/conversation_trace.jsonl' \
+            --output /tmp/conversation_trace.jsonl
+
+      - name: Run C5 end-to-end exit reproducibility harness
+        run: |
+          set -euo pipefail
+          python -m experiments.c5_exit /tmp/conversation_trace.jsonl \
+            | tee /tmp/c5-exit-summary.json
+
+      - name: Validate frozen C5 exit vector
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+
+          with open("/tmp/c5-exit-summary.json", "r", encoding="utf-8") as handle:
+              summary = json.load(handle)
+
+          expected = {
+              "version": "cadi.c5.5.exit-reproducibility.v1",
+              "raw_sha256": "b8cbb061a85206d729d91cdc2981f43c9e0d99209dce588d3af5f7934408b9df",
+              "source_requests": 12031,
+              "source_dataset_fingerprint": "22ead90d97ae218f229f94378f8f019499ede0e4050e6cbf8092b455ae047718",
+              "source_envelope_fingerprint": "9584184e86f465e65090afbeeded5b66fe9a3ff66c7310e90d6cbae04d9d84db",
+              "augmentation_fingerprint": "4fac982ec40960bc69f1db6fef534b7f049e20380c998383d38706fb5d8f8f28",
+              "augmentation_annotations": 12031,
+              "augmentation_sessions": 1504,
+              "augmentation_tool_waits": 2143,
+              "augmentation_branches": 904,
+              "augmentation_faults": 622,
+              "augmentation_provenance": "SYNTHETIC",
+              "trace_augmented_envelope_fingerprint": "d4aef08466fdd5547fe15c074190ad014e0890183fe6404e8b0e319205cd924d",
+              "synthetic_dataset_fingerprint": "d78dbb41571aec557c2a6fc581e454a0cd50011b8f3582bcaa9eaa1c495c4051",
+              "synthetic_requests": 4,
+              "synthetic_provenance": "SYNTHETIC",
+              "synthetic_envelope_fingerprint": "1e6df4347a82bfb4b5337d2508875cb32c26aa28f09223b894cdc50c4622b119",
+              "modes": [
+                  "SOURCE_DERIVED",
+                  "TRACE_AUGMENTED",
+                  "FULLY_SYNTHETIC",
+              ],
+              "replay_identical": True,
+          }
+          for field, value in expected.items():
+              assert summary[field] == value, (field, summary[field], value)
+
+          assert summary["source_field_origins"] == {
+              "arrival_time_s": "SOURCE_OBSERVED",
+              "input_tokens": "SOURCE_OBSERVED",
+              "output_tokens": "SOURCE_OBSERVED",
+              "prefix_group_id": "TRACE_DERIVED",
+              "prefix_tokens": "TRACE_DERIVED",
+          }
+          PY
+
+      - name: Publish C5 exit provenance summary
+        if: always()
+        run: |
+          if [ -f /tmp/c5-exit-summary.json ]; then
+            {
+              echo '## C5.5 end-to-end EV2 reproducibility'
+              echo
+              echo '```json'
+              cat /tmp/c5-exit-summary.json
+              echo
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
