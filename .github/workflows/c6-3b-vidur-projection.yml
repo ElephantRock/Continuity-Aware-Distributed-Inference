@@ -91,6 +91,21 @@ jobs:
                   'accepted_by_frozen_fit_rule': not violations,
               }
 
+          def admissibility_errors(hardware_id, diagnostics):
+              expected = set()
+              for item in diagnostics:
+                  if 'NONFINITE_COEFFICIENT' in item['violations']:
+                      expected.add('affine fit produced a non-finite coefficient')
+                  if 'NONPOSITIVE_SLOPE' in item['violations']:
+                      expected.add(
+                          f"{hardware_id}/{item['kind']} fit slope must be positive"
+                      )
+                  if 'NEGATIVE_INTERCEPT' in item['violations']:
+                      expected.add(
+                          f"{hardware_id}/{item['kind']} fit intercept must be non-negative"
+                      )
+              return expected
+
           results = []
           for hardware_id, folder in (
               ('a100-80gb', 'a100'),
@@ -148,15 +163,12 @@ jobs:
                       send_recv_bytes=blobs['send_recv'],
                   )
               except ValueError as exc:
-                  # An inadmissible affine coefficient is a scientific C6.3b
-                  # outcome, not a CI/infrastructure failure. Preserve it as
-                  # INVALID_AFFINE_FIT. Any ValueError that is not explained by
-                  # the independently mirrored frozen fit rule remains a hard
-                  # workflow failure.
-                  violating_families = [
-                      item for item in diagnostics if item['violations']
-                  ]
-                  if not violating_families:
+                  # Only a ValueError that exactly matches a violation produced
+                  # by the independent mirror of the frozen admissibility rule
+                  # is a scientific C6.3b outcome. Every other ValueError is a
+                  # source/implementation/CI failure and remains hard-failing.
+                  expected_errors = admissibility_errors(hardware_id, diagnostics)
+                  if str(exc) not in expected_errors:
                       raise
                   diagnostic['projection_status'] = 'INVALID_AFFINE_FIT'
                   diagnostic['projection_error'] = str(exc)
