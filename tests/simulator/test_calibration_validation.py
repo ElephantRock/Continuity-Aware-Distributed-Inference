@@ -232,16 +232,20 @@ def test_exact_predictions_pass_and_report_schema_is_canonical() -> None:
 
 def test_predeclared_thresholds_are_inclusive_but_not_a_tolerance_band() -> None:
     partition = split_reference_family(
-        [_point("p1", 1), _point("p2", 2), _point("p3", 3), _point("p4", 4)]
+        [
+            _point("p1", 1, 10.0),
+            _point("p2", 2, 10.0),
+            _point("p3", 3, 10.0),
+            _point("p4", 4, 10.0),
+        ]
     )
-    at_limit = evaluate_reference_predictions(partition, {"p2": 1.1, "p4": 1.0})
+    at_limit = evaluate_reference_predictions(partition, {"p2": 11.0, "p4": 10.0})
     assert at_limit.mape == pytest.approx(0.05)
     assert at_limit.max_ape == pytest.approx(0.10)
     assert at_limit.decision is AdequacyDecision.ADEQUATE_WITHIN_DECLARED_DOMAIN
 
-    over_ape = math.nextafter(math.nextafter(0.10, math.inf), math.inf)
     over_limit = evaluate_reference_predictions(
-        partition, {"p2": 1.0 + over_ape, "p4": 1.0}
+        partition, {"p2": 11.000000001, "p4": 10.0}
     )
     assert over_limit.max_ape is not None and over_limit.max_ape > C6_VALIDATION_MAX_APE_LIMIT
     assert over_limit.decision is AdequacyDecision.INADEQUATE_REVISE_REPRESENTATION
