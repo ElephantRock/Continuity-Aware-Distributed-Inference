@@ -107,7 +107,7 @@ def test_profile_serialization_and_fingerprint_are_deterministic() -> None:
     assert changed.fingerprint != profile.fingerprint
 
 
-def test_profile_rejects_unit_ambiguity_and_nonpositive_capacity() -> None:
+def test_profile_rejects_unit_ambiguity_nonphysical_ranges_and_nonpositive_capacity() -> None:
     profile = _profile()
     with pytest.raises(ValueError, match="unit must be 'seconds/input-token'"):
         replace(
@@ -117,11 +117,19 @@ def test_profile_rejects_unit_ambiguity_and_nonpositive_capacity() -> None:
             ),
         )
 
+    with pytest.raises(ValueError, match="sensitivity range must remain non-negative"):
+        replace(
+            profile,
+            transfer_latency_seconds=_synthetic_scalar(
+                0.5, "seconds", -0.1, 1.0
+            ),
+        )
+
     with pytest.raises(ValueError, match="memory_capacity_bytes must be positive"):
         replace(
             profile,
             memory_capacity_bytes=_synthetic_scalar(
-                0.0, "bytes", -1.0, 1.0
+                0.0, "bytes", 0.0, 1.0
             ),
         )
 
