@@ -1,0 +1,231 @@
+name: c6-3b-vidur-projection
+
+on:
+  push:
+    branches:
+      - c6/vidur-source-projection-fit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  project:
+    runs-on: ubuntu-24.04
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download immutable Vidur inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=abae7f63aa857300f5cdc6f5e0d27860cd24721b
+          base="https://raw.githubusercontent.com/microsoft/vidur/${commit}"
+          mkdir -p /tmp/vidur/{a100,h100} projection-output
+          for hw in a100 h100; do
+            curl --fail --location --silent --show-error "${base}/data/profiling/compute/${hw}/meta-llama/Llama-2-7b-hf/attention.csv" -o "/tmp/vidur/${hw}/attention.csv"
+            curl --fail --location --silent --show-error "${base}/data/profiling/compute/${hw}/meta-llama/Llama-2-7b-hf/mlp.csv" -o "/tmp/vidur/${hw}/mlp.csv"
+          done
+          curl --fail --location --silent --show-error "${base}/data/profiling/network/a100_dgx/send_recv.csv" -o /tmp/vidur/a100/send_recv.csv
+          curl --fail --location --silent --show-error "${base}/data/profiling/network/h100_dgx/send_recv.csv" -o /tmp/vidur/h100/send_recv.csv
+      - name: Derive references and fit using FIT points only
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import math
+          from pathlib import Path
+
+          from simulator.calibration_projection import (
+              C6_PROJECTION_AGGREGATION,
+              VIDUR_SOURCE_SHA256,
+              build_pinned_vidur_projection,
+              derive_vidur_reference_corpus,
+          )
+          from simulator.calibration_validation import ReferenceKind, split_reference_family
+
+          def stable_fingerprint(payload):
+              encoded = json.dumps(
+                  payload,
+                  sort_keys=True,
+                  separators=(',', ':'),
+                  allow_nan=False,
+              ).encode('utf-8')
+              return hashlib.sha256(encoded).hexdigest()
+
+          def raw_ols(partition):
+              # Diagnostic mirror of the frozen C6.3b affine law. It does not
+              # authorize a fit; build_pinned_vidur_projection remains the
+              # normative fail-closed acceptance path below.
+              xs = [float(point.axis_value) for point in partition.fit]
+              ys = [point.observed_seconds for point in partition.fit]
+              x_mean = math.fsum(xs) / len(xs)
+              y_mean = math.fsum(ys) / len(ys)
+              centered_x = [value - x_mean for value in xs]
+              sxx = math.fsum(value * value for value in centered_x)
+              slope = math.fsum(
+                  dx * (y - y_mean)
+                  for dx, y in zip(centered_x, ys, strict=True)
+              ) / sxx
+              intercept = y_mean - slope * x_mean
+              violations = []
+              if not math.isfinite(slope) or not math.isfinite(intercept):
+                  violations.append('NONFINITE_COEFFICIENT')
+              else:
+                  if slope <= 0:
+                      violations.append('NONPOSITIVE_SLOPE')
+                  if intercept < 0:
+                      violations.append('NEGATIVE_INTERCEPT')
+              return {
+                  'hardware_id': partition.hardware_id,
+                  'kind': partition.kind.value,
+                  'intercept_seconds': intercept if math.isfinite(intercept) else None,
+                  'slope_seconds_per_axis_unit': slope if math.isfinite(slope) else None,
+                  'fit_point_ids': [point.point_id for point in partition.fit],
+                  'validation_point_ids': [point.point_id for point in partition.validation],
+                  'violations': violations,
+                  'accepted_by_frozen_fit_rule': not violations,
+              }
+
+          def admissibility_errors(hardware_id, diagnostics):
+              expected = set()
+              for item in diagnostics:
+                  if 'NONFINITE_COEFFICIENT' in item['violations']:
+                      expected.add('affine fit produced a non-finite coefficient')
+                  if 'NONPOSITIVE_SLOPE' in item['violations']:
+                      expected.add(
+                          f"{hardware_id}/{item['kind']} fit slope must be positive"
+                      )
+                  if 'NEGATIVE_INTERCEPT' in item['violations']:
+                      expected.add(
+                          f"{hardware_id}/{item['kind']} fit intercept must be non-negative"
+                      )
+              return expected
+
+          results = []
+          for hardware_id, folder in (
+              ('a100-80gb', 'a100'),
+              ('h100-80gb', 'h100'),
+          ):
+              root = Path('/tmp/vidur') / folder
+              blobs = {
+                  'attention': (root / 'attention.csv').read_bytes(),
+                  'mlp': (root / 'mlp.csv').read_bytes(),
+                  'send_recv': (root / 'send_recv.csv').read_bytes(),
+              }
+              observed_sha256 = {
+                  name: hashlib.sha256(content).hexdigest()
+                  for name, content in blobs.items()
+              }
+              expected_sha256 = VIDUR_SOURCE_SHA256[hardware_id]
+              if observed_sha256 != expected_sha256:
+                  raise ValueError(
+                      f'source SHA-256 snapshot mismatch for {hardware_id}: '
+                      f'expected={expected_sha256}, observed={observed_sha256}'
+                  )
+
+              references = derive_vidur_reference_corpus(
+                  hardware_id,
+                  attention_csv=blobs['attention'].decode('utf-8-sig'),
+                  mlp_csv=blobs['mlp'].decode('utf-8-sig'),
+                  send_recv_csv=blobs['send_recv'].decode('utf-8-sig'),
+              )
+              diagnostics = []
+              counts = {}
+              for kind in ReferenceKind:
+                  family = [item.point for item in references if item.point.kind is kind]
+                  counts[kind.value] = len(family)
+                  diagnostics.append(raw_ols(split_reference_family(family)))
+
+              corpus_payload = {
+                  'hardware_id': hardware_id,
+                  'source_sha256': dict(sorted(observed_sha256.items())),
+                  'aggregation': C6_PROJECTION_AGGREGATION,
+                  'references': [item.to_dict() for item in references],
+              }
+              diagnostic = {
+                  'hardware_id': hardware_id,
+                  'source_sha256': dict(sorted(observed_sha256.items())),
+                  'reference_counts': counts,
+                  'corpus_fingerprint': stable_fingerprint(corpus_payload),
+                  'raw_fit_diagnostics': diagnostics,
+              }
+
+              try:
+                  bundle = build_pinned_vidur_projection(
+                      hardware_id,
+                      attention_bytes=blobs['attention'],
+                      mlp_bytes=blobs['mlp'],
+                      send_recv_bytes=blobs['send_recv'],
+                  )
+              except ValueError as exc:
+                  # Only a ValueError that exactly matches a violation produced
+                  # by the independent mirror of the frozen admissibility rule
+                  # is a scientific C6.3b outcome. Every other ValueError is a
+                  # source/implementation/CI failure and remains hard-failing.
+                  expected_errors = admissibility_errors(hardware_id, diagnostics)
+                  if str(exc) not in expected_errors:
+                      raise
+                  diagnostic['projection_status'] = 'INVALID_AFFINE_FIT'
+                  diagnostic['projection_error'] = str(exc)
+                  diagnostic['fit_fingerprint'] = None
+                  output_payload = {
+                      'diagnostic': diagnostic,
+                      'references': [item.to_dict() for item in references],
+                  }
+              else:
+                  if any(item['violations'] for item in diagnostics):
+                      raise AssertionError(
+                          'normative projection accepted a family rejected by the frozen diagnostic rule'
+                      )
+                  diagnostic['projection_status'] = 'VALID'
+                  diagnostic['projection_error'] = None
+                  diagnostic['fit_fingerprint'] = bundle.fit_fingerprint
+                  diagnostic['fits'] = [fit.to_dict() for fit in bundle.fits]
+                  output_payload = bundle.to_dict()
+
+              output = Path('projection-output') / f'{folder}.json'
+              output.write_text(
+                  json.dumps(
+                      output_payload,
+                      sort_keys=True,
+                      separators=(',', ':'),
+                      allow_nan=False,
+                  ) + '\n',
+                  encoding='utf-8',
+              )
+              results.append(diagnostic)
+              print(
+                  'C6_3B_PROJECTION=' + json.dumps(
+                      diagnostic,
+                      sort_keys=True,
+                      separators=(',', ':'),
+                      allow_nan=False,
+                  )
+              )
+
+          overall_outcome = (
+              'VALID'
+              if all(item['projection_status'] == 'VALID' for item in results)
+              else 'INVALID_AFFINE_FIT'
+          )
+          summary = {
+              'overall_outcome': overall_outcome,
+              'hardware_results': results,
+          }
+          Path('projection-output/summary.json').write_text(
+              json.dumps(summary, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n',
+              encoding='utf-8',
+          )
+          print('C6_3B_OUTCOME=' + overall_outcome)
+      - name: Upload frozen-candidate projection artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c6-3b-projection-candidate
+          path: projection-output/*.json
+          if-no-files-found: error

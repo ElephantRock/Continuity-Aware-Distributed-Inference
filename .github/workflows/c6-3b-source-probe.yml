@@ -1,0 +1,154 @@
+name: c6-3b-source-probe
+
+on:
+  push:
+    branches:
+      - c6/vidur-source-projection-fit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download pinned Vidur source files
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=abae7f63aa857300f5cdc6f5e0d27860cd24721b
+          base="https://raw.githubusercontent.com/microsoft/vidur/${commit}"
+          mkdir -p /tmp/vidur/{a100,h100}
+          for hw in a100 h100; do
+            curl --fail --location --silent --show-error "${base}/data/profiling/compute/${hw}/meta-llama/Llama-2-7b-hf/attention.csv" -o "/tmp/vidur/${hw}/attention.csv"
+            curl --fail --location --silent --show-error "${base}/data/profiling/compute/${hw}/meta-llama/Llama-2-7b-hf/mlp.csv" -o "/tmp/vidur/${hw}/mlp.csv"
+          done
+          curl --fail --location --silent --show-error "${base}/data/profiling/network/a100_dgx/send_recv.csv" -o /tmp/vidur/a100/send_recv.csv
+          curl --fail --location --silent --show-error "${base}/data/profiling/network/h100_dgx/send_recv.csv" -o /tmp/vidur/h100/send_recv.csv
+      - name: Inspect source grids before fitting
+        shell: python
+        run: |
+          import csv
+          import hashlib
+          import json
+          from collections import Counter, defaultdict
+          from pathlib import Path
+
+          def read(path):
+              raw = Path(path).read_bytes()
+              rows = list(csv.DictReader(raw.decode('utf-8-sig').splitlines()))
+              return raw, rows
+
+          def truth(value):
+              return value.strip().lower() == 'true'
+
+          report = {}
+          for hw in ('a100', 'h100'):
+              root = Path('/tmp/vidur') / hw
+              a_raw, attention = read(root / 'attention.csv')
+              m_raw, mlp = read(root / 'mlp.csv')
+              s_raw, send = read(root / 'send_recv.csv')
+
+              mlp_domain = [
+                  r for r in mlp
+                  if int(r['n_head']) == 32
+                  and int(r['n_kv_head']) == 32
+                  and int(r['n_embd']) == 4096
+                  and int(r['n_expanded_embd']) == 11008
+                  and int(r['vocab_size']) == 32768
+                  and truth(r['use_gated_mlp'])
+                  and int(r['num_tensor_parallel_workers']) == 1
+              ]
+              mlp_counts = Counter(int(r['num_tokens']) for r in mlp_domain)
+
+              attn_domain = [
+                  r for r in attention
+                  if int(r['n_embd']) == 4096
+                  and int(r['n_q_head']) == 32
+                  and int(r['n_kv_head']) == 32
+                  and int(r['block_size']) == 16
+                  and int(r['num_tensor_parallel_workers']) == 1
+                  and int(r['max_model_len']) == 4096
+                  and r['attention_backend'].endswith('FLASH_ATTENTION')
+              ]
+              cold = [
+                  r for r in attn_domain
+                  if int(r['batch_size']) == 1
+                  and int(r['kv_cache_size']) == 0
+                  and int(r['prefill_chunk_size']) > 0
+                  and truth(r['is_prefill'])
+              ]
+              decode = [
+                  r for r in attn_domain
+                  if int(r['batch_size']) == 1
+                  and int(r['prefill_chunk_size']) == 0
+                  and int(r['kv_cache_size']) > 0
+                  and not truth(r['is_prefill'])
+              ]
+              cold_counts = Counter(int(r['prefill_chunk_size']) for r in cold)
+              decode_counts = Counter(int(r['kv_cache_size']) for r in decode)
+
+              send_configs = Counter(
+                  (
+                      int(r['rank']),
+                      int(r['num_workers']),
+                      int(r['devices_per_node']),
+                      int(r['max_devices_per_node']),
+                      r['collective'],
+                  )
+                  for r in send
+              )
+              canonical_send = [
+                  r for r in send
+                  if r['collective'] == 'send_recv'
+                  and int(r['rank']) == 0
+                  and int(r['num_workers']) == 2
+                  and int(r['devices_per_node']) == 2
+              ]
+              send_counts = Counter(int(r['size']) for r in canonical_send)
+
+              report[hw] = {
+                  'sha256': {
+                      'attention': hashlib.sha256(a_raw).hexdigest(),
+                      'mlp': hashlib.sha256(m_raw).hexdigest(),
+                      'send_recv': hashlib.sha256(s_raw).hexdigest(),
+                  },
+                  'rows': {
+                      'attention_total': len(attention),
+                      'attention_domain': len(attn_domain),
+                      'cold_prefill': len(cold),
+                      'single_decode': len(decode),
+                      'mlp_total': len(mlp),
+                      'mlp_domain': len(mlp_domain),
+                      'send_recv_total': len(send),
+                      'canonical_send_recv': len(canonical_send),
+                  },
+                  'axes': {
+                      'cold_unique': len(cold_counts),
+                      'cold_duplicate_axes': {str(k): v for k, v in sorted(cold_counts.items()) if v != 1},
+                      'decode_unique': len(decode_counts),
+                      'decode_duplicate_axes': {str(k): v for k, v in sorted(decode_counts.items()) if v != 1},
+                      'mlp_unique': len(mlp_counts),
+                      'mlp_duplicate_axes_count': sum(1 for v in mlp_counts.values() if v != 1),
+                      'mlp_duplicate_examples': dict(list((str(k), v) for k, v in sorted(mlp_counts.items()) if v != 1)[:20]),
+                      'send_unique': len(send_counts),
+                      'send_duplicate_axes': {str(k): v for k, v in sorted(send_counts.items()) if v != 1},
+                  },
+                  'ranges': {
+                      'cold': [min(cold_counts) if cold_counts else None, max(cold_counts) if cold_counts else None],
+                      'decode': [min(decode_counts) if decode_counts else None, max(decode_counts) if decode_counts else None],
+                      'mlp': [min(mlp_counts) if mlp_counts else None, max(mlp_counts) if mlp_counts else None],
+                      'send_bytes': [min(send_counts) if send_counts else None, max(send_counts) if send_counts else None],
+                  },
+                  'send_configurations': [
+                      {'rank': k[0], 'num_workers': k[1], 'devices_per_node': k[2], 'max_devices_per_node': k[3], 'collective': k[4], 'rows': v}
+                      for k, v in sorted(send_configs.items())
+                  ],
+              }
+
+          print('C6_3B_SOURCE_PROBE=' + json.dumps(report, sort_keys=True, separators=(',', ':')))
