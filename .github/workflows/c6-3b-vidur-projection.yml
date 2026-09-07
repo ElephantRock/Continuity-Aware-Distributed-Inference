@@ -92,7 +92,6 @@ jobs:
               }
 
           results = []
-          scientific_failures = []
           for hardware_id, folder in (
               ('a100-80gb', 'a100'),
               ('h100-80gb', 'h100'),
@@ -149,15 +148,28 @@ jobs:
                       send_recv_bytes=blobs['send_recv'],
                   )
               except ValueError as exc:
+                  # An inadmissible affine coefficient is a scientific C6.3b
+                  # outcome, not a CI/infrastructure failure. Preserve it as
+                  # INVALID_AFFINE_FIT. Any ValueError that is not explained by
+                  # the independently mirrored frozen fit rule remains a hard
+                  # workflow failure.
+                  violating_families = [
+                      item for item in diagnostics if item['violations']
+                  ]
+                  if not violating_families:
+                      raise
                   diagnostic['projection_status'] = 'INVALID_AFFINE_FIT'
                   diagnostic['projection_error'] = str(exc)
                   diagnostic['fit_fingerprint'] = None
-                  scientific_failures.append(f'{hardware_id}: {exc}')
                   output_payload = {
                       'diagnostic': diagnostic,
                       'references': [item.to_dict() for item in references],
                   }
               else:
+                  if any(item['violations'] for item in diagnostics):
+                      raise AssertionError(
+                          'normative projection accepted a family rejected by the frozen diagnostic rule'
+                      )
                   diagnostic['projection_status'] = 'VALID'
                   diagnostic['projection_error'] = None
                   diagnostic['fit_fingerprint'] = bundle.fit_fingerprint
@@ -184,14 +196,20 @@ jobs:
                   )
               )
 
+          overall_outcome = (
+              'VALID'
+              if all(item['projection_status'] == 'VALID' for item in results)
+              else 'INVALID_AFFINE_FIT'
+          )
+          summary = {
+              'overall_outcome': overall_outcome,
+              'hardware_results': results,
+          }
           Path('projection-output/summary.json').write_text(
-              json.dumps(results, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n',
+              json.dumps(summary, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n',
               encoding='utf-8',
           )
-          if scientific_failures:
-              raise SystemExit(
-                  'C6.3b fail-closed scientific result: ' + ' | '.join(scientific_failures)
-              )
+          print('C6_3B_OUTCOME=' + overall_outcome)
       - name: Upload frozen-candidate projection artifacts
         if: always()
         uses: actions/upload-artifact@v4
