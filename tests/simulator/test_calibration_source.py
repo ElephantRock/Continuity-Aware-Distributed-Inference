@@ -14,8 +14,8 @@ from simulator.inference_cost import ParameterSourceClass
 
 
 EXPECTED_FINGERPRINTS = {
-    "vidur-llama2-7b-a100-dgx-v1": "6e1bddbbf3104b40e904e61b5202e740ba297453198d85a52af6dfeadc53e157",
-    "vidur-llama2-7b-h100-dgx-v1": "4abc162f26da0e92dff18e832114229e086462638146859c3bc41a1fb7716191",
+    "vidur-llama2-7b-a100-dgx-v1": "2b43edc3d5e5b62337cb87da4431ccbf24a0eb36a1d3914e49d2ba126766a758",
+    "vidur-llama2-7b-h100-dgx-v1": "631438ac078a01db212a005557f7fe74e4da8a03d87738afb83c9985a276b6d7",
 }
 
 
@@ -53,6 +53,13 @@ def test_every_source_has_exactly_one_required_artifact_role() -> None:
     for source in VIDUR_CALIBRATION_SOURCES:
         assert {artifact.role for artifact in source.artifacts} == expected_roles
         assert len(source.artifacts) == len(expected_roles)
+        device = next(
+            artifact
+            for artifact in source.artifacts
+            if artifact.role is CalibrationArtifactRole.DEVICE_CONFIG
+        )
+        assert device.path == "vidur/config/device_sku_config.py"
+        assert device.git_blob_sha1 == "8ac9bf57ac03070cd42cdf48792ccf8ffd73ca04"
 
 
 def test_manifest_serialization_has_frozen_cross_python_fingerprints() -> None:
