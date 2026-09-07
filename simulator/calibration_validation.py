@@ -19,6 +19,24 @@ C6_MIN_VALIDATION_POINTS = 2
 _SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
+def _require_nonempty(value: str, name: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a non-empty string")
+
+
+def _finite_nonnegative(value: float, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be numeric")
+    result = float(value)
+    if not math.isfinite(result) or result < 0:
+        raise ValueError(f"{name} must be finite and non-negative")
+    return result
+
+
+def _within_limit(value: float, limit: float) -> bool:
+    return value < limit or math.isclose(value, limit, rel_tol=1e-12, abs_tol=1e-15)
+
+
 class ReferenceKind(str, Enum):
     COLD_PREFILL = "COLD_PREFILL"
     SINGLE_TOKEN_DECODE = "SINGLE_TOKEN_DECODE"
@@ -202,10 +220,30 @@ class ReferencePartition:
             raise ValueError("hardware_id is outside the declared C6.3 Vidur domain")
         if not isinstance(self.kind, ReferenceKind):
             raise TypeError("kind must be ReferenceKind")
+        if not isinstance(self.fit, tuple) or not isinstance(self.validation, tuple):
+            raise TypeError("fit and validation must be tuples")
+        if not all(
+            isinstance(point, CalibrationReferencePoint)
+            for point in self.fit + self.validation
+        ):
+            raise TypeError("partition entries must be CalibrationReferencePoint values")
         if len(self.fit) < C6_MIN_FIT_POINTS:
             raise ValueError("reference partition requires at least two FIT points")
         if len(self.validation) < C6_MIN_VALIDATION_POINTS:
             raise ValueError("reference partition requires at least two VALIDATION points")
+
+        combined = self.fit + self.validation
+        if any(
+            point.hardware_id != self.hardware_id or point.kind is not self.kind
+            for point in combined
+        ):
+            raise ValueError("partition points must match the partition family")
+        point_ids = [point.point_id for point in combined]
+        if len(point_ids) != len(set(point_ids)):
+            raise ValueError("partition point IDs must be unique")
+        axis_values = [point.axis_value for point in combined]
+        if len(axis_values) != len(set(axis_values)):
+            raise ValueError("partition axis values must be unique")
 
 
 def split_reference_family(
@@ -231,7 +269,9 @@ def split_reference_family(
     if len(axis_values) != len(set(axis_values)):
         raise ValueError("reference axis values must be unique within a family")
 
-    ordered = tuple(sorted(materialized, key=lambda point: (point.axis_value, point.point_id)))
+    ordered = tuple(
+        sorted(materialized, key=lambda point: (point.axis_value, point.point_id))
+    )
     fit = tuple(point for index, point in enumerate(ordered) if index % 2 == 0)
     validation = tuple(point for index, point in enumerate(ordered) if index % 2 == 1)
 
@@ -342,16 +382,14 @@ def evaluate_reference_predictions(
         )
 
     mae = sum(error.absolute_error_seconds for error in errors) / len(errors)
-    mape = (
-        None if not nonzero_apes else sum(nonzero_apes) / len(nonzero_apes)
-    )
+    mape = None if not nonzero_apes else sum(nonzero_apes) / len(nonzero_apes)
     max_ape = None if not nonzero_apes else max(nonzero_apes)
 
     adequate = (
         mape is not None
         and max_ape is not None
-        and mape <= C6_VALIDATION_MAPE_LIMIT
-        and max_ape <= C6_VALIDATION_MAX_APE_LIMIT
+        and _within_limit(mape, C6_VALIDATION_MAPE_LIMIT)
+        and _within_limit(max_ape, C6_VALIDATION_MAX_APE_LIMIT)
         and not zero_reference_mismatch
     )
     decision = (
@@ -370,17 +408,3 @@ def evaluate_reference_predictions(
         zero_reference_count=zero_reference_count,
         decision=decision,
     )
-
-
-def _require_nonempty(value: str, name: str) -> None:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{name} must be a non-empty string")
-
-
-def _finite_nonnegative(value: float, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise TypeError(f"{name} must be numeric")
-    result = float(value)
-    if not math.isfinite(result) or result < 0:
-        raise ValueError(f"{name} must be finite and non-negative")
-    return result
