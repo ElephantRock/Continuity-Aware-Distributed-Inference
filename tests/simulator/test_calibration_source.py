@@ -14,8 +14,8 @@ from simulator.inference_cost import ParameterSourceClass
 
 
 EXPECTED_FINGERPRINTS = {
-    "vidur-llama2-7b-a100-dgx-v1": "2b43edc3d5e5b62337cb87da4431ccbf24a0eb36a1d3914e49d2ba126766a758",
-    "vidur-llama2-7b-h100-dgx-v1": "631438ac078a01db212a005557f7fe74e4da8a03d87738afb83c9985a276b6d7",
+    "vidur-llama2-7b-a100-dgx-v1": "a9b6000182ea9f77f868035b6a2ae9f7eddcda096e7bb80b92288bbda96c0ad0",
+    "vidur-llama2-7b-h100-dgx-v1": "53c667403903b79bec7a3b9f5c870bc4b4f0fb6da1babc8d15d78bd9bf98237f",
 }
 
 
@@ -68,6 +68,19 @@ def test_manifest_serialization_has_frozen_cross_python_fingerprints() -> None:
         assert source.fingerprint == EXPECTED_FINGERPRINTS[source.source_id]
         assert source.to_json() == source.to_json()
     assert VIDUR_LLAMA2_7B_A100_DGX.fingerprint != VIDUR_LLAMA2_7B_H100_DGX.fingerprint
+
+
+def test_manifest_fingerprint_is_invariant_to_artifact_tuple_order() -> None:
+    source = VIDUR_LLAMA2_7B_A100_DGX
+    reversed_source = replace(source, artifacts=tuple(reversed(source.artifacts)))
+    rotated_source = replace(
+        source,
+        artifacts=source.artifacts[2:] + source.artifacts[:2],
+    )
+    assert reversed_source.to_json() == source.to_json()
+    assert rotated_source.to_json() == source.to_json()
+    assert reversed_source.fingerprint == source.fingerprint
+    assert rotated_source.fingerprint == source.fingerprint
 
 
 def test_source_snapshot_accepts_exact_blob_map() -> None:
