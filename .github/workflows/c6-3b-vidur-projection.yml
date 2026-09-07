@@ -1,0 +1,79 @@
+name: c6-3b-vidur-projection
+
+on:
+  push:
+    branches:
+      - c6/vidur-source-projection-fit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  project:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download immutable Vidur inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=abae7f63aa857300f5cdc6f5e0d27860cd24721b
+          base="https://raw.githubusercontent.com/microsoft/vidur/${commit}"
+          mkdir -p /tmp/vidur/{a100,h100} projection-output
+          for hw in a100 h100; do
+            curl --fail --location --silent --show-error "${base}/data/profiling/compute/${hw}/meta-llama/Llama-2-7b-hf/attention.csv" -o "/tmp/vidur/${hw}/attention.csv"
+            curl --fail --location --silent --show-error "${base}/data/profiling/compute/${hw}/meta-llama/Llama-2-7b-hf/mlp.csv" -o "/tmp/vidur/${hw}/mlp.csv"
+          done
+          curl --fail --location --silent --show-error "${base}/data/profiling/network/a100_dgx/send_recv.csv" -o /tmp/vidur/a100/send_recv.csv
+          curl --fail --location --silent --show-error "${base}/data/profiling/network/h100_dgx/send_recv.csv" -o /tmp/vidur/h100/send_recv.csv
+      - name: Derive references and fit using FIT points only
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+
+          from simulator.calibration_projection import build_pinned_vidur_projection
+          from simulator.calibration_validation import ReferenceKind
+
+          results = []
+          for hardware_id, folder in (
+              ('a100-80gb', 'a100'),
+              ('h100-80gb', 'h100'),
+          ):
+              root = Path('/tmp/vidur') / folder
+              bundle = build_pinned_vidur_projection(
+                  hardware_id,
+                  attention_bytes=(root / 'attention.csv').read_bytes(),
+                  mlp_bytes=(root / 'mlp.csv').read_bytes(),
+                  send_recv_bytes=(root / 'send_recv.csv').read_bytes(),
+              )
+              output = Path('projection-output') / f'{folder}.json'
+              output.write_text(bundle.to_json() + '\n', encoding='utf-8')
+              counts = {
+                  kind.value: sum(1 for item in bundle.references if item.point.kind is kind)
+                  for kind in ReferenceKind
+              }
+              result = {
+                  'hardware_id': hardware_id,
+                  'reference_counts': counts,
+                  'corpus_fingerprint': bundle.corpus_fingerprint,
+                  'fit_fingerprint': bundle.fit_fingerprint,
+                  'fits': [fit.to_dict() for fit in bundle.fits],
+              }
+              results.append(result)
+              print('C6_3B_PROJECTION=' + json.dumps(result, sort_keys=True, separators=(',', ':')))
+
+          Path('projection-output/summary.json').write_text(
+              json.dumps(results, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n',
+              encoding='utf-8',
+          )
+      - name: Upload frozen-candidate projection artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: c6-3b-projection-candidate
+          path: projection-output/*.json
+          if-no-files-found: error
