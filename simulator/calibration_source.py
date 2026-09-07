@@ -16,6 +16,7 @@ _SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 
 class CalibrationArtifactRole(str, Enum):
     MODEL_CONFIG = "MODEL_CONFIG"
+    DEVICE_CONFIG = "DEVICE_CONFIG"
     COMPUTE_ATTENTION = "COMPUTE_ATTENTION"
     COMPUTE_MLP = "COMPUTE_MLP"
     NETWORK_ALL_REDUCE = "NETWORK_ALL_REDUCE"
@@ -176,6 +177,11 @@ VIDUR_LLAMA2_7B_A100_DGX = CalibrationSourceManifest(
             "722299bbb556ccbab2b82609598be6b8c2963c29",
         ),
         _artifact(
+            CalibrationArtifactRole.DEVICE_CONFIG,
+            "vidur/config/device_sku_config.py",
+            "8ac9bf57ac03070cd42cdf48792ccf8ffd73ca04",
+        ),
+        _artifact(
             CalibrationArtifactRole.COMPUTE_ATTENTION,
             "data/profiling/compute/a100/meta-llama/Llama-2-7b-hf/attention.csv",
             "6ce0a3beab1618969d429b4313666b5dff6850dd",
@@ -208,6 +214,11 @@ VIDUR_LLAMA2_7B_H100_DGX = CalibrationSourceManifest(
             CalibrationArtifactRole.MODEL_CONFIG,
             "vidur/config/model_config.py",
             "722299bbb556ccbab2b82609598be6b8c2963c29",
+        ),
+        _artifact(
+            CalibrationArtifactRole.DEVICE_CONFIG,
+            "vidur/config/device_sku_config.py",
+            "8ac9bf57ac03070cd42cdf48792ccf8ffd73ca04",
         ),
         _artifact(
             CalibrationArtifactRole.COMPUTE_ATTENTION,
