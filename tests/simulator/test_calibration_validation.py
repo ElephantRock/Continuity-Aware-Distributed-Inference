@@ -3,6 +3,7 @@ import math
 
 import pytest
 
+from simulator import C6_THRESHOLD_ULP_BUDGET as EXPORTED_C6_THRESHOLD_ULP_BUDGET
 from simulator.calibration_validation import (
     C6_THRESHOLD_ULP_BUDGET,
     C6_VALIDATION_MAPE_LIMIT,
@@ -94,6 +95,10 @@ def test_declared_vidur_reference_domain_is_narrow_and_fixed() -> None:
     assert domain.attention_block_size == 16
     assert domain.max_model_len == 4096
     assert domain.attention_backend == "FLASH_ATTENTION"
+
+
+def test_threshold_ulp_budget_is_exported_from_simulator_package() -> None:
+    assert EXPORTED_C6_THRESHOLD_ULP_BUDGET == C6_THRESHOLD_ULP_BUDGET == 8
 
 
 def test_vidur_tp1_model_time_composition_matches_execution_time_semantics() -> None:
