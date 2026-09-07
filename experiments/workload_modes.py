@@ -198,6 +198,7 @@ class FullySyntheticWorkloadConfig:
             raise ValueError("input_tokens_choices must not be empty")
         if len(set(inputs)) != len(inputs):
             raise ValueError("input_tokens_choices must not contain duplicates")
+        object.__setattr__(self, "input_tokens_choices", inputs)
 
         if not isinstance(self.output_tokens_choices, tuple):
             raise TypeError("output_tokens_choices must be a tuple")
@@ -209,6 +210,7 @@ class FullySyntheticWorkloadConfig:
             raise ValueError("output_tokens_choices must not be empty")
         if len(set(outputs)) != len(outputs):
             raise ValueError("output_tokens_choices must not contain duplicates")
+        object.__setattr__(self, "output_tokens_choices", outputs)
 
         if not isinstance(self.prefix_fraction_choices, tuple):
             raise TypeError("prefix_fraction_choices must be a tuple")
@@ -242,9 +244,7 @@ class FullySyntheticWorkloadConfig:
         }
 
     @classmethod
-    def from_dict(
-        cls, value: Mapping[str, Any]
-    ) -> "FullySyntheticWorkloadConfig":
+    def from_dict(cls, value: Mapping[str, Any]) -> "FullySyntheticWorkloadConfig":
         if not isinstance(value, Mapping):
             raise TypeError("fully synthetic workload config must be a JSON object")
         _require_exact_keys(
@@ -313,9 +313,7 @@ class FullySyntheticWorkloadRecord:
         }
 
     @classmethod
-    def from_dict(
-        cls, value: Mapping[str, Any]
-    ) -> "FullySyntheticWorkloadRecord":
+    def from_dict(cls, value: Mapping[str, Any]) -> "FullySyntheticWorkloadRecord":
         if not isinstance(value, Mapping):
             raise TypeError("fully synthetic workload record must be a JSON object")
         _require_exact_keys(
@@ -348,9 +346,7 @@ class FullySyntheticWorkloadDataset:
             raise ValueError(f"unsupported fully synthetic version: {self.version!r}")
         if not isinstance(self.records, tuple) or not self.records:
             raise ValueError("records must be a non-empty tuple")
-        if not all(
-            isinstance(record, FullySyntheticWorkloadRecord) for record in self.records
-        ):
+        if not all(isinstance(r, FullySyntheticWorkloadRecord) for r in self.records):
             raise TypeError("records must contain FullySyntheticWorkloadRecord values")
         if len(self.records) != self.config.request_count:
             raise ValueError("record count must equal config.request_count")
@@ -373,13 +369,8 @@ class FullySyntheticWorkloadDataset:
                 raise ValueError("input_tokens must come from configured choices")
             if record.output_tokens not in allowed_outputs:
                 raise ValueError("output_tokens must come from configured choices")
-            if (
-                record.prefix_group_id is not None
-                and record.prefix_group_id not in allowed_groups
-            ):
-                raise ValueError(
-                    "prefix_group_id must be a configured synthetic group"
-                )
+            if record.prefix_group_id is not None and record.prefix_group_id not in allowed_groups:
+                raise ValueError("prefix_group_id must be a configured synthetic group")
             if expected_ordinal == 0:
                 if record.arrival_time_s != 0.0:
                     raise ValueError("first synthetic arrival must be zero")
@@ -420,9 +411,7 @@ class FullySyntheticWorkloadDataset:
         decoded = _load_json_no_duplicates(value, "fully synthetic workload")
         if not isinstance(decoded, Mapping):
             raise TypeError("fully synthetic workload must be a JSON object")
-        _require_exact_keys(
-            decoded, _SYNTHETIC_DATASET_KEYS, "fully synthetic workload"
-        )
+        _require_exact_keys(decoded, _SYNTHETIC_DATASET_KEYS, "fully synthetic workload")
         if decoded["schema"] != FULLY_SYNTHETIC_WORKLOAD_SCHEMA:
             raise ValueError(
                 f"unsupported fully synthetic workload schema: {decoded['schema']!r}"
@@ -574,17 +563,9 @@ class WorkloadEnvelope:
 
         if self.mode is WorkloadMode.SOURCE_DERIVED:
             if source is None:
-                raise ValueError(
-                    "SOURCE_DERIVED requires source dataset fingerprint"
-                )
-            if (
-                augmentation is not None
-                or augmentation_source is not None
-                or synthetic is not None
-            ):
-                raise ValueError(
-                    "SOURCE_DERIVED forbids augmentation/synthetic artifacts"
-                )
+                raise ValueError("SOURCE_DERIVED requires source dataset fingerprint")
+            if augmentation is not None or augmentation_source is not None or synthetic is not None:
+                raise ValueError("SOURCE_DERIVED forbids augmentation/synthetic artifacts")
         elif self.mode is WorkloadMode.TRACE_AUGMENTED:
             if source is None or augmentation is None or augmentation_source is None:
                 raise ValueError(
@@ -595,19 +576,13 @@ class WorkloadEnvelope:
                     "TRACE_AUGMENTED augmentation source fingerprint mismatch"
                 )
             if synthetic is not None:
-                raise ValueError(
-                    "TRACE_AUGMENTED forbids fully synthetic artifact"
-                )
+                raise ValueError("TRACE_AUGMENTED forbids fully synthetic artifact")
         elif self.mode is WorkloadMode.FULLY_SYNTHETIC:
             if synthetic is None:
                 raise ValueError(
                     "FULLY_SYNTHETIC requires synthetic dataset fingerprint"
                 )
-            if (
-                source is not None
-                or augmentation is not None
-                or augmentation_source is not None
-            ):
+            if source is not None or augmentation is not None or augmentation_source is not None:
                 raise ValueError(
                     "FULLY_SYNTHETIC forbids source/trace-augmentation artifacts"
                 )
@@ -636,14 +611,12 @@ class WorkloadEnvelope:
             raise TypeError("source must be NormalizedTraceDataset")
         if not isinstance(augmentation, ContinuityAugmentationDataset):
             raise TypeError("augmentation must be ContinuityAugmentationDataset")
-        augmentation.assert_compatible_source(source)
+        augmentation.assert_reproducible(source)
         return cls(
             mode=WorkloadMode.TRACE_AUGMENTED,
             source_dataset_fingerprint=source.fingerprint,
             augmentation_fingerprint=augmentation.fingerprint,
-            augmentation_source_dataset_fingerprint=(
-                augmentation.source_dataset_fingerprint
-            ),
+            augmentation_source_dataset_fingerprint=augmentation.source_dataset_fingerprint,
             synthetic_dataset_fingerprint=None,
         )
 
@@ -668,9 +641,7 @@ class WorkloadEnvelope:
             "mode": self.mode.value,
             "source_dataset_fingerprint": self.source_dataset_fingerprint,
             "augmentation_fingerprint": self.augmentation_fingerprint,
-            "augmentation_source_dataset_fingerprint": (
-                self.augmentation_source_dataset_fingerprint
-            ),
+            "augmentation_source_dataset_fingerprint": self.augmentation_source_dataset_fingerprint,
             "synthetic_dataset_fingerprint": self.synthetic_dataset_fingerprint,
         }
 
@@ -704,9 +675,7 @@ class WorkloadEnvelope:
             mode=mode,
             source_dataset_fingerprint=decoded["source_dataset_fingerprint"],
             augmentation_fingerprint=decoded["augmentation_fingerprint"],
-            augmentation_source_dataset_fingerprint=(
-                decoded["augmentation_source_dataset_fingerprint"]
-            ),
+            augmentation_source_dataset_fingerprint=decoded["augmentation_source_dataset_fingerprint"],
             synthetic_dataset_fingerprint=decoded["synthetic_dataset_fingerprint"],
         )
 
@@ -732,7 +701,7 @@ class WorkloadEnvelope:
             raise TypeError("source must be NormalizedTraceDataset")
         if not isinstance(augmentation, ContinuityAugmentationDataset):
             raise TypeError("augmentation must be ContinuityAugmentationDataset")
-        augmentation.assert_compatible_source(source)
+        augmentation.assert_reproducible(source)
         if source.fingerprint != self.source_dataset_fingerprint:
             raise ValueError("source dataset fingerprint mismatch")
         if augmentation.fingerprint != self.augmentation_fingerprint:
