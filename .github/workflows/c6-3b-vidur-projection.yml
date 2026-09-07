@@ -35,45 +35,165 @@ jobs:
       - name: Derive references and fit using FIT points only
         shell: python
         run: |
+          import hashlib
           import json
+          import math
           from pathlib import Path
 
-          from simulator.calibration_projection import build_pinned_vidur_projection
-          from simulator.calibration_validation import ReferenceKind
+          from simulator.calibration_projection import (
+              C6_PROJECTION_AGGREGATION,
+              VIDUR_SOURCE_SHA256,
+              build_pinned_vidur_projection,
+              derive_vidur_reference_corpus,
+          )
+          from simulator.calibration_validation import ReferenceKind, split_reference_family
+
+          def stable_fingerprint(payload):
+              encoded = json.dumps(
+                  payload,
+                  sort_keys=True,
+                  separators=(',', ':'),
+                  allow_nan=False,
+              ).encode('utf-8')
+              return hashlib.sha256(encoded).hexdigest()
+
+          def raw_ols(partition):
+              # Diagnostic mirror of the frozen C6.3b affine law. It does not
+              # authorize a fit; build_pinned_vidur_projection remains the
+              # normative fail-closed acceptance path below.
+              xs = [float(point.axis_value) for point in partition.fit]
+              ys = [point.observed_seconds for point in partition.fit]
+              x_mean = math.fsum(xs) / len(xs)
+              y_mean = math.fsum(ys) / len(ys)
+              centered_x = [value - x_mean for value in xs]
+              sxx = math.fsum(value * value for value in centered_x)
+              slope = math.fsum(
+                  dx * (y - y_mean)
+                  for dx, y in zip(centered_x, ys, strict=True)
+              ) / sxx
+              intercept = y_mean - slope * x_mean
+              violations = []
+              if not math.isfinite(slope) or not math.isfinite(intercept):
+                  violations.append('NONFINITE_COEFFICIENT')
+              else:
+                  if slope <= 0:
+                      violations.append('NONPOSITIVE_SLOPE')
+                  if intercept < 0:
+                      violations.append('NEGATIVE_INTERCEPT')
+              return {
+                  'hardware_id': partition.hardware_id,
+                  'kind': partition.kind.value,
+                  'intercept_seconds': intercept if math.isfinite(intercept) else None,
+                  'slope_seconds_per_axis_unit': slope if math.isfinite(slope) else None,
+                  'fit_point_ids': [point.point_id for point in partition.fit],
+                  'validation_point_ids': [point.point_id for point in partition.validation],
+                  'violations': violations,
+                  'accepted_by_frozen_fit_rule': not violations,
+              }
 
           results = []
+          scientific_failures = []
           for hardware_id, folder in (
               ('a100-80gb', 'a100'),
               ('h100-80gb', 'h100'),
           ):
               root = Path('/tmp/vidur') / folder
-              bundle = build_pinned_vidur_projection(
+              blobs = {
+                  'attention': (root / 'attention.csv').read_bytes(),
+                  'mlp': (root / 'mlp.csv').read_bytes(),
+                  'send_recv': (root / 'send_recv.csv').read_bytes(),
+              }
+              observed_sha256 = {
+                  name: hashlib.sha256(content).hexdigest()
+                  for name, content in blobs.items()
+              }
+              expected_sha256 = VIDUR_SOURCE_SHA256[hardware_id]
+              if observed_sha256 != expected_sha256:
+                  raise ValueError(
+                      f'source SHA-256 snapshot mismatch for {hardware_id}: '
+                      f'expected={expected_sha256}, observed={observed_sha256}'
+                  )
+
+              references = derive_vidur_reference_corpus(
                   hardware_id,
-                  attention_bytes=(root / 'attention.csv').read_bytes(),
-                  mlp_bytes=(root / 'mlp.csv').read_bytes(),
-                  send_recv_bytes=(root / 'send_recv.csv').read_bytes(),
+                  attention_csv=blobs['attention'].decode('utf-8-sig'),
+                  mlp_csv=blobs['mlp'].decode('utf-8-sig'),
+                  send_recv_csv=blobs['send_recv'].decode('utf-8-sig'),
               )
-              output = Path('projection-output') / f'{folder}.json'
-              output.write_text(bundle.to_json() + '\n', encoding='utf-8')
-              counts = {
-                  kind.value: sum(1 for item in bundle.references if item.point.kind is kind)
-                  for kind in ReferenceKind
-              }
-              result = {
+              diagnostics = []
+              counts = {}
+              for kind in ReferenceKind:
+                  family = [item.point for item in references if item.point.kind is kind]
+                  counts[kind.value] = len(family)
+                  diagnostics.append(raw_ols(split_reference_family(family)))
+
+              corpus_payload = {
                   'hardware_id': hardware_id,
-                  'reference_counts': counts,
-                  'corpus_fingerprint': bundle.corpus_fingerprint,
-                  'fit_fingerprint': bundle.fit_fingerprint,
-                  'fits': [fit.to_dict() for fit in bundle.fits],
+                  'source_sha256': dict(sorted(observed_sha256.items())),
+                  'aggregation': C6_PROJECTION_AGGREGATION,
+                  'references': [item.to_dict() for item in references],
               }
-              results.append(result)
-              print('C6_3B_PROJECTION=' + json.dumps(result, sort_keys=True, separators=(',', ':')))
+              diagnostic = {
+                  'hardware_id': hardware_id,
+                  'source_sha256': dict(sorted(observed_sha256.items())),
+                  'reference_counts': counts,
+                  'corpus_fingerprint': stable_fingerprint(corpus_payload),
+                  'raw_fit_diagnostics': diagnostics,
+              }
+
+              try:
+                  bundle = build_pinned_vidur_projection(
+                      hardware_id,
+                      attention_bytes=blobs['attention'],
+                      mlp_bytes=blobs['mlp'],
+                      send_recv_bytes=blobs['send_recv'],
+                  )
+              except ValueError as exc:
+                  diagnostic['projection_status'] = 'INVALID_AFFINE_FIT'
+                  diagnostic['projection_error'] = str(exc)
+                  diagnostic['fit_fingerprint'] = None
+                  scientific_failures.append(f'{hardware_id}: {exc}')
+                  output_payload = {
+                      'diagnostic': diagnostic,
+                      'references': [item.to_dict() for item in references],
+                  }
+              else:
+                  diagnostic['projection_status'] = 'VALID'
+                  diagnostic['projection_error'] = None
+                  diagnostic['fit_fingerprint'] = bundle.fit_fingerprint
+                  diagnostic['fits'] = [fit.to_dict() for fit in bundle.fits]
+                  output_payload = bundle.to_dict()
+
+              output = Path('projection-output') / f'{folder}.json'
+              output.write_text(
+                  json.dumps(
+                      output_payload,
+                      sort_keys=True,
+                      separators=(',', ':'),
+                      allow_nan=False,
+                  ) + '\n',
+                  encoding='utf-8',
+              )
+              results.append(diagnostic)
+              print(
+                  'C6_3B_PROJECTION=' + json.dumps(
+                      diagnostic,
+                      sort_keys=True,
+                      separators=(',', ':'),
+                      allow_nan=False,
+                  )
+              )
 
           Path('projection-output/summary.json').write_text(
               json.dumps(results, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n',
               encoding='utf-8',
           )
+          if scientific_failures:
+              raise SystemExit(
+                  'C6.3b fail-closed scientific result: ' + ' | '.join(scientific_failures)
+              )
       - name: Upload frozen-candidate projection artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: c6-3b-projection-candidate
