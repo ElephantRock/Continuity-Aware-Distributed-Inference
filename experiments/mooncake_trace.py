@@ -18,6 +18,11 @@ from experiments.trace_workload import (
 
 
 MOONCAKE_SOURCE_REVISION = "3cca71daccf2a7afb8fe3f0295358f70e3a69fdb"
+MOONCAKE_DOC_REVISION = "1d0e4c7587b57b78a1997be370b349b79828c5dd"
+MOONCAKE_DOC_URI = (
+    "https://github.com/kvcache-ai/Mooncake/blob/"
+    f"{MOONCAKE_DOC_REVISION}/FAST25-release/README.md"
+)
 MOONCAKE_SOURCE_URI = (
     "https://raw.githubusercontent.com/kvcache-ai/Mooncake/"
     f"{MOONCAKE_SOURCE_REVISION}/FAST25-release/traces/conversation_trace.jsonl"
@@ -149,19 +154,23 @@ def parse_mooncake_jsonl(raw: bytes) -> tuple[MooncakeSourceRow, ...]:
     return tuple(rows)
 
 
-def mooncake_manifest(source_sha256: str = MOONCAKE_SOURCE_SHA256) -> TraceSourceManifest:
+def mooncake_manifest() -> TraceSourceManifest:
     return TraceSourceManifest(
         source_id="mooncake-fast25-conversation",
         source_name="Mooncake FAST'25 conversation trace",
         source_uri=MOONCAKE_SOURCE_URI,
         source_version=MOONCAKE_SOURCE_REVISION,
         license_id="Apache-2.0",
-        source_sha256=source_sha256,
+        source_sha256=MOONCAKE_SOURCE_SHA256,
         normalization_version=MOONCAKE_NORMALIZATION_VERSION,
         normalization_steps=(
             "preserve zero-based JSONL source ordinal and derive stable row identities",
             "convert source timestamp milliseconds to arrival_time_s by division by 1000",
             "preserve input_length and output_length as source-observed token counts",
+            (
+                "interpret hash_ids as 512-token reusable prefix blocks per "
+                f"Mooncake FAST25 trace documentation revision {MOONCAKE_DOC_REVISION}"
+            ),
             "derive longest reusable prior prefix from exact prior hash-id sequence paths",
             "map each shared 512-token hash block prefix to bounded prefix_tokens",
         ),
@@ -175,11 +184,11 @@ def mooncake_manifest(source_sha256: str = MOONCAKE_SOURCE_SHA256) -> TraceSourc
     )
 
 
-def normalize_mooncake_rows(
+def derive_mooncake_records(
     rows: Iterable[MooncakeSourceRow],
-    *,
-    source_sha256: str = MOONCAKE_SOURCE_SHA256,
-) -> NormalizedTraceDataset:
+) -> tuple[NormalizedTraceRecord, ...]:
+    """Derive normalized records without asserting source-artifact provenance."""
+
     source_rows = tuple(rows)
     if not source_rows:
         raise ValueError("Mooncake rows must not be empty")
@@ -214,14 +223,11 @@ def normalize_mooncake_rows(
         )
         trie.add(row.hash_ids)
 
-    return NormalizedTraceDataset(
-        manifest=mooncake_manifest(source_sha256),
-        records=tuple(records),
-    )
+    return tuple(records)
 
 
 def load_pinned_mooncake_trace(raw: bytes) -> NormalizedTraceDataset:
-    """Validate exact pinned bytes before parsing or normalization."""
+    """Validate exact pinned bytes before parsing, deriving, or binding provenance."""
 
     if not isinstance(raw, bytes):
         raise TypeError("Mooncake source artifact must be bytes")
@@ -231,9 +237,9 @@ def load_pinned_mooncake_trace(raw: bytes) -> NormalizedTraceDataset:
             "Mooncake source SHA-256 mismatch: "
             f"expected {MOONCAKE_SOURCE_SHA256}, got {actual_sha256}"
         )
-    return normalize_mooncake_rows(
-        parse_mooncake_jsonl(raw),
-        source_sha256=actual_sha256,
+    return NormalizedTraceDataset(
+        manifest=mooncake_manifest(),
+        records=derive_mooncake_records(parse_mooncake_jsonl(raw)),
     )
 
 
@@ -281,18 +287,9 @@ class MooncakeValidationSummary:
         }
 
 
-def summarize_pinned_mooncake_trace(
-    raw: bytes, dataset: NormalizedTraceDataset | None = None
-) -> MooncakeValidationSummary:
+def summarize_pinned_mooncake_trace(raw: bytes) -> MooncakeValidationSummary:
+    normalized = load_pinned_mooncake_trace(raw)
     actual_sha256 = hashlib.sha256(raw).hexdigest()
-    if actual_sha256 != MOONCAKE_SOURCE_SHA256:
-        raise ValueError(
-            "Mooncake source SHA-256 mismatch during summary: "
-            f"expected {MOONCAKE_SOURCE_SHA256}, got {actual_sha256}"
-        )
-    normalized = dataset if dataset is not None else load_pinned_mooncake_trace(raw)
-    if normalized.manifest.source_sha256 != MOONCAKE_SOURCE_SHA256:
-        raise ValueError("dataset manifest does not bind the pinned Mooncake source")
 
     records = normalized.source_order
     if len(records) != MOONCAKE_EXPECTED_REQUESTS:
@@ -341,8 +338,7 @@ def _main(argv: list[str]) -> int:
     if len(argv) != 2:
         raise SystemExit("usage: python -m experiments.mooncake_trace SOURCE_JSONL")
     raw = Path(argv[1]).read_bytes()
-    dataset = load_pinned_mooncake_trace(raw)
-    summary = summarize_pinned_mooncake_trace(raw, dataset)
+    summary = summarize_pinned_mooncake_trace(raw)
     print(
         json.dumps(
             summary.to_dict(),
