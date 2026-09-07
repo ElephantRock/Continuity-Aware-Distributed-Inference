@@ -180,11 +180,29 @@ class InferenceCostProfile:
                 )
             if value.value < 0:
                 raise ValueError(f"{field_name} must be non-negative")
+            if value.sensitivity is not None and value.sensitivity.low < 0:
+                raise ValueError(
+                    f"{field_name} sensitivity range must remain non-negative"
+                )
 
         if self.memory_capacity_bytes.value <= 0:
             raise ValueError("memory_capacity_bytes must be positive")
+        if (
+            self.memory_capacity_bytes.sensitivity is not None
+            and self.memory_capacity_bytes.sensitivity.low <= 0
+        ):
+            raise ValueError(
+                "memory_capacity_bytes sensitivity range must remain positive"
+            )
         if self.transfer_bandwidth_bytes_per_second.value <= 0:
             raise ValueError("transfer_bandwidth_bytes_per_second must be positive")
+        if (
+            self.transfer_bandwidth_bytes_per_second.sensitivity is not None
+            and self.transfer_bandwidth_bytes_per_second.sensitivity.low <= 0
+        ):
+            raise ValueError(
+                "transfer_bandwidth_bytes_per_second sensitivity range must remain positive"
+            )
         if self.validation is not None and not isinstance(
             self.validation, ModelValidation
         ):
