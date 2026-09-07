@@ -43,6 +43,16 @@ from .inference_cost import (
     SourcedScalar,
     estimate_inference_cost,
 )
+from .calibration_source import (
+    C6_CALIBRATION_SOURCE_SCHEMA,
+    CalibrationArtifact,
+    CalibrationArtifactRole,
+    CalibrationSourceManifest,
+    VIDUR_CALIBRATION_SOURCES,
+    VIDUR_LLAMA2_7B_A100_DGX,
+    VIDUR_LLAMA2_7B_H100_DGX,
+    assert_source_snapshot,
+)
 from .policies import (
     INFORMATION_CONTRACTS,
     POLICY_CONTRACT_SCHEMA,
@@ -154,6 +164,14 @@ __all__ = [
     "InferenceCostWorkload",
     "InferenceCostEstimate",
     "estimate_inference_cost",
+    "C6_CALIBRATION_SOURCE_SCHEMA",
+    "CalibrationArtifactRole",
+    "CalibrationArtifact",
+    "CalibrationSourceManifest",
+    "VIDUR_LLAMA2_7B_A100_DGX",
+    "VIDUR_LLAMA2_7B_H100_DGX",
+    "VIDUR_CALIBRATION_SOURCES",
+    "assert_source_snapshot",
     "POLICY_CONTRACT_SCHEMA",
     "PolicyID",
     "InformationField",
