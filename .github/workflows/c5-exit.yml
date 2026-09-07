@@ -1,0 +1,104 @@
+name: c5-exit
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/c5-exit.yml"
+      - "experiments/c5_exit.py"
+      - "experiments/mooncake_trace.py"
+      - "experiments/trace_workload.py"
+      - "experiments/continuity_augmentation.py"
+      - "experiments/workload_modes.py"
+      - "tests/experiments/test_c5_exit.py"
+      - "spec/36-c5.5-exit-reproducibility.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ev2-exit:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download immutable Mooncake FAST25 conversation trace
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            'https://raw.githubusercontent.com/kvcache-ai/Mooncake/3cca71daccf2a7afb8fe3f0295358f70e3a69fdb/FAST25-release/traces/conversation_trace.jsonl' \
+            --output /tmp/conversation_trace.jsonl
+
+      - name: Run C5 end-to-end exit reproducibility harness
+        run: |
+          set -euo pipefail
+          python -m experiments.c5_exit /tmp/conversation_trace.jsonl \
+            | tee /tmp/c5-exit-summary.json
+
+      - name: Validate established C5 exit invariants
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+
+          with open("/tmp/c5-exit-summary.json", "r", encoding="utf-8") as handle:
+              summary = json.load(handle)
+
+          assert summary["version"] == "cadi.c5.5.exit-reproducibility.v1"
+          assert summary["raw_sha256"] == "b8cbb061a85206d729d91cdc2981f43c9e0d99209dce588d3af5f7934408b9df"
+          assert summary["source_requests"] == 12031
+          assert summary["source_dataset_fingerprint"] == "22ead90d97ae218f229f94378f8f019499ede0e4050e6cbf8092b455ae047718"
+          assert summary["synthetic_dataset_fingerprint"] == "d78dbb41571aec557c2a6fc581e454a0cd50011b8f3582bcaa9eaa1c495c4051"
+          assert summary["synthetic_requests"] == 4
+          assert summary["augmentation_annotations"] == summary["source_requests"]
+          assert summary["augmentation_provenance"] == "SYNTHETIC"
+          assert summary["synthetic_provenance"] == "SYNTHETIC"
+          assert summary["modes"] == [
+              "SOURCE_DERIVED",
+              "TRACE_AUGMENTED",
+              "FULLY_SYNTHETIC",
+          ]
+          assert summary["replay_identical"] is True
+
+          for field in (
+              "source_envelope_fingerprint",
+              "augmentation_fingerprint",
+              "trace_augmented_envelope_fingerprint",
+              "synthetic_envelope_fingerprint",
+          ):
+              assert len(summary[field]) == 64
+
+          origins = summary["source_field_origins"]
+          assert origins == {
+              "arrival_time_s": "SOURCE_OBSERVED",
+              "input_tokens": "SOURCE_OBSERVED",
+              "output_tokens": "SOURCE_OBSERVED",
+              "prefix_group_id": "TRACE_DERIVED",
+              "prefix_tokens": "TRACE_DERIVED",
+          }
+
+          assert 1 <= summary["augmentation_sessions"] <= summary["augmentation_annotations"]
+          assert 0 <= summary["augmentation_tool_waits"] <= summary["augmentation_annotations"]
+          assert 0 <= summary["augmentation_branches"] <= summary["augmentation_annotations"]
+          assert 0 <= summary["augmentation_faults"] <= summary["augmentation_annotations"]
+          PY
+
+      - name: Publish C5 exit provenance summary
+        if: always()
+        run: |
+          if [ -f /tmp/c5-exit-summary.json ]; then
+            {
+              echo '## C5.5 end-to-end EV2 reproducibility'
+              echo
+              echo '```json'
+              cat /tmp/c5-exit-summary.json
+              echo
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
