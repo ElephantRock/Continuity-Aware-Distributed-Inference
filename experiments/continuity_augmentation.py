@@ -195,10 +195,7 @@ class ContinuityAugmentationConfig:
         )
         if lookback < 2:
             raise ValueError("branch_lookback_records must be at least 2")
-        if (
-            self.branch_probability > 0.0
-            and self.session_length_records <= lookback
-        ):
+        if self.branch_probability > 0.0 and self.session_length_records <= lookback:
             raise ValueError(
                 "nonzero branch_probability requires session_length_records "
                 "greater than branch_lookback_records"
@@ -231,21 +228,18 @@ class ContinuityAugmentationConfig:
         if not isinstance(value, Mapping):
             raise TypeError("augmentation config must be a JSON object")
         _require_exact_keys(value, _CONFIG_KEYS, "augmentation config")
-
         raw_waits = value["tool_wait_seconds"]
         if not isinstance(raw_waits, list):
             raise TypeError("tool_wait_seconds must be a JSON array")
         raw_faults = value["fault_classes"]
         if not isinstance(raw_faults, list):
             raise TypeError("fault_classes must be a JSON array")
-
         fault_classes: list[FaultClass] = []
         for raw_fault in raw_faults:
             try:
                 fault_classes.append(FaultClass(raw_fault))
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"invalid FaultClass: {raw_fault!r}") from exc
-
         return cls(
             seed=value["seed"],
             session_length_records=value["session_length_records"],
@@ -280,9 +274,7 @@ class ContinuityAnnotation:
             object.__setattr__(
                 self,
                 "tool_wait_before_s",
-                _require_positive_finite(
-                    self.tool_wait_before_s, "tool_wait_before_s"
-                ),
+                _require_positive_finite(self.tool_wait_before_s, "tool_wait_before_s"),
             )
         if self.fault_class is not None and not isinstance(
             self.fault_class, FaultClass
@@ -306,7 +298,6 @@ class ContinuityAnnotation:
             raise TypeError("augmentation annotation must be a JSON object")
         _require_exact_keys(value, _ANNOTATION_KEYS, "augmentation annotation")
         raw_fault = value["fault_class"]
-        fault_class: FaultClass | None
         if raw_fault is None:
             fault_class = None
         else:
@@ -334,9 +325,7 @@ class ContinuityAugmentationDataset:
     augmentation_version: str = CONTINUITY_AUGMENTATION_VERSION
 
     def __post_init__(self) -> None:
-        _require_sha256(
-            self.source_dataset_fingerprint, "source_dataset_fingerprint"
-        )
+        _require_sha256(self.source_dataset_fingerprint, "source_dataset_fingerprint")
         if not isinstance(self.config, ContinuityAugmentationConfig):
             raise TypeError("config must be ContinuityAugmentationConfig")
         if self.provenance is not AugmentationProvenance.SYNTHETIC:
@@ -347,27 +336,37 @@ class ContinuityAugmentationDataset:
             )
         if not isinstance(self.annotations, tuple) or not self.annotations:
             raise ValueError("annotations must be a non-empty tuple")
-        if not all(
-            isinstance(annotation, ContinuityAnnotation)
-            for annotation in self.annotations
-        ):
+        if not all(isinstance(a, ContinuityAnnotation) for a in self.annotations):
             raise TypeError("annotations must contain ContinuityAnnotation values")
 
-        record_ids = [annotation.record_id for annotation in self.annotations]
-        continuation_ids = [
-            annotation.continuation_id for annotation in self.annotations
-        ]
+        record_ids = [a.record_id for a in self.annotations]
+        continuation_ids = [a.continuation_id for a in self.annotations]
         if len(set(record_ids)) != len(record_ids):
             raise ValueError("duplicate augmentation record_id")
         if len(set(continuation_ids)) != len(continuation_ids):
             raise ValueError("duplicate continuation_id")
 
+        allowed_waits = set(self.config.tool_wait_seconds)
+        allowed_faults = set(self.config.fault_classes)
         seen_continuations: dict[str, str] = {}
         current_session: str | None = None
         closed_sessions: set[str] = set()
         last_continuation_by_session: dict[str, str] = {}
 
         for annotation in self.annotations:
+            if (
+                annotation.tool_wait_before_s is not None
+                and annotation.tool_wait_before_s not in allowed_waits
+            ):
+                raise ValueError(
+                    "tool_wait_before_s must be one of configured tool_wait_seconds"
+                )
+            if (
+                annotation.fault_class is not None
+                and annotation.fault_class not in allowed_faults
+            ):
+                raise ValueError("fault_class must be one of configured fault_classes")
+
             if annotation.session_id != current_session:
                 if current_session is not None:
                     closed_sessions.add(current_session)
@@ -388,7 +387,6 @@ class ContinuityAugmentationDataset:
                     raise ValueError("parent Continuation must precede child")
                 if seen_continuations[parent] != annotation.session_id:
                     raise ValueError("parent Continuation must belong to same Session")
-
                 previous = last_continuation_by_session[annotation.session_id]
                 is_branch = parent != previous
                 if is_branch and annotation.branch_group_id is None:
@@ -397,9 +395,7 @@ class ContinuityAugmentationDataset:
                     raise ValueError("linear continuation cannot have branch_group_id")
 
             seen_continuations[annotation.continuation_id] = annotation.session_id
-            last_continuation_by_session[annotation.session_id] = (
-                annotation.continuation_id
-            )
+            last_continuation_by_session[annotation.session_id] = annotation.continuation_id
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -446,11 +442,9 @@ class ContinuityAugmentationDataset:
             ) from exc
         if provenance is not AugmentationProvenance.SYNTHETIC:
             raise ValueError("augmentation provenance must be SYNTHETIC")
-
         raw_annotations = decoded["annotations"]
         if not isinstance(raw_annotations, list):
             raise TypeError("annotations must be a JSON array")
-
         return cls(
             source_dataset_fingerprint=decoded["source_dataset_fingerprint"],
             config=ContinuityAugmentationConfig.from_dict(decoded["config"]),
@@ -469,9 +463,7 @@ class ContinuityAugmentationDataset:
         if source.fingerprint != self.source_dataset_fingerprint:
             raise ValueError("source dataset fingerprint mismatch")
         source_ids = tuple(record.record_id for record in source.source_order)
-        annotation_ids = tuple(
-            annotation.record_id for annotation in self.annotations
-        )
+        annotation_ids = tuple(annotation.record_id for annotation in self.annotations)
         if annotation_ids != source_ids:
             raise ValueError("augmentation record linkage does not match source order")
         return self
@@ -487,11 +479,7 @@ class ContinuityAugmentationDataset:
 
 
 def _decision_digest(
-    *,
-    seed: int,
-    source_fingerprint: str,
-    record_id: str,
-    channel: str,
+    *, seed: int, source_fingerprint: str, record_id: str, channel: str
 ) -> bytes:
     payload = "\x1f".join(
         (str(seed), source_fingerprint, record_id, channel)
@@ -500,11 +488,7 @@ def _decision_digest(
 
 
 def _draw(
-    *,
-    seed: int,
-    source_fingerprint: str,
-    record_id: str,
-    channel: str,
+    *, seed: int, source_fingerprint: str, record_id: str, channel: str
 ) -> float:
     digest = _decision_digest(
         seed=seed,
@@ -570,14 +554,11 @@ def augment_trace(
 
     source_fingerprint = source.fingerprint
     annotations: list[ContinuityAnnotation] = []
-
     for position, record in enumerate(source.source_order):
         session_index = position // config.session_length_records
         local_index = position % config.session_length_records
         session_id = f"syn-session:{session_index:06d}"
         continuation_id = f"{session_id}:c:{local_index:04d}"
-
-        parent_continuation_id: str | None
         branch_group_id: str | None = None
         tool_wait_before_s: float | None = None
 
@@ -596,9 +577,7 @@ def augment_trace(
                 )
             ):
                 parent_index = local_index - config.branch_lookback_records
-                branch_group_id = (
-                    f"{session_id}:fork:{parent_index:04d}"
-                )
+                branch_group_id = f"{session_id}:fork:{parent_index:04d}"
             parent_continuation_id = f"{session_id}:c:{parent_index:04d}"
 
             if _selected(
