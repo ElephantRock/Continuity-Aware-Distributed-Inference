@@ -62,6 +62,54 @@ def _patch_source(monkeypatch: pytest.MonkeyPatch) -> tuple[bytes, NormalizedTra
         source.fingerprint,
     )
     monkeypatch.setattr(c5_exit, "load_pinned_mooncake_trace", lambda candidate: source)
+
+    artifacts = c5_exit._construct(raw)
+    annotations = artifacts.augmentation.annotations
+    monkeypatch.setattr(
+        c5_exit,
+        "C5_EXIT_EXPECTED_SOURCE_ENVELOPE_FINGERPRINT",
+        artifacts.source_envelope.fingerprint,
+    )
+    monkeypatch.setattr(
+        c5_exit,
+        "C5_EXIT_EXPECTED_AUGMENTATION_FINGERPRINT",
+        artifacts.augmentation.fingerprint,
+    )
+    monkeypatch.setattr(
+        c5_exit,
+        "C5_EXIT_EXPECTED_AUGMENTATION_ANNOTATIONS",
+        len(annotations),
+    )
+    monkeypatch.setattr(
+        c5_exit,
+        "C5_EXIT_EXPECTED_AUGMENTATION_SESSIONS",
+        len({annotation.session_id for annotation in annotations}),
+    )
+    monkeypatch.setattr(
+        c5_exit,
+        "C5_EXIT_EXPECTED_AUGMENTATION_TOOL_WAITS",
+        sum(annotation.tool_wait_before_s is not None for annotation in annotations),
+    )
+    monkeypatch.setattr(
+        c5_exit,
+        "C5_EXIT_EXPECTED_AUGMENTATION_BRANCHES",
+        sum(annotation.branch_group_id is not None for annotation in annotations),
+    )
+    monkeypatch.setattr(
+        c5_exit,
+        "C5_EXIT_EXPECTED_AUGMENTATION_FAULTS",
+        sum(annotation.fault_class is not None for annotation in annotations),
+    )
+    monkeypatch.setattr(
+        c5_exit,
+        "C5_EXIT_EXPECTED_TRACE_AUGMENTED_ENVELOPE_FINGERPRINT",
+        artifacts.trace_envelope.fingerprint,
+    )
+    monkeypatch.setattr(
+        c5_exit,
+        "C5_EXIT_EXPECTED_SYNTHETIC_ENVELOPE_FINGERPRINT",
+        artifacts.synthetic_envelope.fingerprint,
+    )
     return raw, source
 
 
@@ -130,6 +178,15 @@ def test_bounded_exit_summary_counts_are_internally_consistent(
         TraceField.PREFIX_GROUP_ID.value: TraceFieldOrigin.TRACE_DERIVED.value,
         TraceField.PREFIX_TOKENS.value: TraceFieldOrigin.TRACE_DERIVED.value,
     }
+
+
+def test_frozen_exit_vector_drift_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw, _ = _patch_source(monkeypatch)
+    monkeypatch.setattr(c5_exit, "C5_EXIT_EXPECTED_AUGMENTATION_FAULTS", -1)
+    with pytest.raises(ValueError, match="frozen augmentation_faults drift"):
+        c5_exit.run_c5_exit(raw)
 
 
 def test_non_pinned_raw_bytes_fail_before_exit_construction(
