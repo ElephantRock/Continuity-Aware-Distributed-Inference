@@ -1,0 +1,67 @@
+name: c5-mooncake-source
+
+on:
+  push:
+    branches:
+      - c5/mooncake-trace-adapter
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download immutable Mooncake FAST25 conversation trace
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            'https://raw.githubusercontent.com/kvcache-ai/Mooncake/3cca71daccf2a7afb8fe3f0295358f70e3a69fdb/FAST25-release/traces/conversation_trace.jsonl' \
+            --output /tmp/conversation_trace.jsonl
+      - name: Record exact source digest and bounded source statistics
+        run: |
+          set -euo pipefail
+          sha256sum /tmp/conversation_trace.jsonl
+          wc -l -c /tmp/conversation_trace.jsonl
+          python - <<'PY'
+          import json
+          from statistics import fmean
+
+          path = '/tmp/conversation_trace.jsonl'
+          rows = []
+          with open(path, 'r', encoding='utf-8') as handle:
+              for line in handle:
+                  rows.append(json.loads(line))
+
+          timestamps = [row['timestamp'] for row in rows]
+          inputs = [row['input_length'] for row in rows]
+          outputs = [row['output_length'] for row in rows]
+
+          seen = set()
+          reusable = 0
+          prefix_tokens = []
+          block_size = 512
+          for row in rows:
+              shared = 0
+              for position, hash_id in enumerate(row['hash_ids']):
+                  if (position, hash_id) not in seen:
+                      break
+                  shared = position + 1
+              tokens = min(row['input_length'], block_size * shared)
+              prefix_tokens.append(tokens)
+              if tokens > 0:
+                  reusable += 1
+              for position, hash_id in enumerate(row['hash_ids']):
+                  seen.add((position, hash_id))
+
+          print(f'requests={len(rows)}')
+          print(f'timestamp_min_ms={min(timestamps)}')
+          print(f'timestamp_max_ms={max(timestamps)}')
+          print(f'input_min={min(inputs)} input_max={max(inputs)} input_mean={fmean(inputs):.12f}')
+          print(f'output_min={min(outputs)} output_max={max(outputs)} output_mean={fmean(outputs):.12f}')
+          print(f'reusable_requests={reusable}')
+          print(f'reuse_fraction={reusable / len(rows):.12f}')
+          print(f'prefix_tokens_mean={fmean(prefix_tokens):.12f}')
+          print(f'prefix_tokens_max={max(prefix_tokens)}')
+          PY
