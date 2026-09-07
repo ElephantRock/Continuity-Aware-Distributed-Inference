@@ -94,6 +94,9 @@ class CalibrationSourceManifest:
             raise ValueError("manifest must contain exactly one artifact for every required role")
 
     def to_dict(self) -> dict[str, object]:
+        # Artifact tuple ordering is not semantically meaningful. Canonicalize by
+        # role/path so equivalent source manifests have one stable fingerprint.
+        artifacts = sorted(self.artifacts, key=lambda item: (item.role.value, item.path))
         return {
             "schema": C6_CALIBRATION_SOURCE_SCHEMA,
             "source_id": self.source_id,
@@ -106,7 +109,7 @@ class CalibrationSourceManifest:
             "model_id": self.model_id,
             "hardware_id": self.hardware_id,
             "network_id": self.network_id,
-            "artifacts": [item.to_dict() for item in self.artifacts],
+            "artifacts": [item.to_dict() for item in artifacts],
         }
 
     def to_json(self) -> str:
