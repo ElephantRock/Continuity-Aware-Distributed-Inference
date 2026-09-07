@@ -1,0 +1,81 @@
+name: c5-mooncake-source
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/c5-mooncake-source.yml"
+      - "experiments/mooncake_trace.py"
+      - "experiments/trace_workload.py"
+      - "tests/experiments/test_mooncake_trace.py"
+      - "spec/33-c5.2-mooncake-trace.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-validation:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download immutable Mooncake FAST25 conversation trace
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            'https://raw.githubusercontent.com/kvcache-ai/Mooncake/3cca71daccf2a7afb8fe3f0295358f70e3a69fdb/FAST25-release/traces/conversation_trace.jsonl' \
+            --output /tmp/conversation_trace.jsonl
+
+      - name: Run pinned-source adapter validation
+        run: |
+          set -euo pipefail
+          python -m experiments.mooncake_trace /tmp/conversation_trace.jsonl \
+            | tee /tmp/mooncake-summary.json
+          python - <<'PY'
+          import json
+
+          with open("/tmp/mooncake-summary.json", "r", encoding="utf-8") as handle:
+              summary = json.load(handle)
+
+          expected_sha = "b8cbb061a85206d729d91cdc2981f43c9e0d99209dce588d3af5f7934408b9df"
+          assert summary["raw_sha256"] == expected_sha
+          assert summary["raw_bytes"] == 3029533
+          assert summary["request_count"] == 12031
+          assert summary["arrival_min_s"] == 0.0
+          assert summary["arrival_max_s"] == 3536.999
+          assert summary["input_min"] == 891
+          assert summary["input_max"] == 126195
+          assert summary["output_min"] == 1
+          assert summary["output_max"] == 2000
+
+          coverage = summary["field_coverage"]
+          assert coverage["arrival_time_s"] == [12031, 12031]
+          assert coverage["input_tokens"] == [12031, 12031]
+          assert coverage["output_tokens"] == [12031, 12031]
+          assert coverage["prefix_tokens"] == [12031, 12031]
+          assert coverage["prefix_group_id"][0] == summary["reusable_requests"]
+          assert 0 < summary["reusable_requests"] < summary["request_count"]
+          assert 0.0 < summary["reuse_fraction"] < 1.0
+          assert summary["prefix_tokens_max"] <= summary["input_max"]
+          assert len(summary["dataset_fingerprint"]) == 64
+          PY
+
+      - name: Publish validation summary
+        if: always()
+        run: |
+          if [ -f /tmp/mooncake-summary.json ]; then
+            {
+              echo '## C5.2 Mooncake pinned-source validation'
+              echo
+              echo '```json'
+              cat /tmp/mooncake-summary.json
+              echo
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
