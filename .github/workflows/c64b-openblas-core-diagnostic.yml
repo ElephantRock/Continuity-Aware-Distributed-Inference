@@ -61,8 +61,6 @@ jobs:
           import numpy as np
           from threadpoolctl import threadpool_info
 
-          # Import and exercise NumPy before inspection so its bundled
-          # OpenBLAS runtime is loaded into this process.
           np.dot(np.ones((2, 2)), np.ones((2, 2)))
           print('python=', platform.python_version())
           print('packages=', json.dumps({
@@ -77,10 +75,20 @@ jobs:
           openblas = [item for item in info if item.get('internal_api') == 'openblas']
           if len(openblas) != 1:
               raise SystemExit(f'expected exactly one OpenBLAS runtime, got {openblas!r}')
-          if str(openblas[0].get('architecture', '')).lower() != 'haswell':
-              raise SystemExit(f'OPENBLAS_CORETYPE did not select Haswell: {openblas[0]!r}')
-          if int(openblas[0].get('num_threads', -1)) != 1:
-              raise SystemExit(f'OpenBLAS thread count drift: {openblas[0]!r}')
+          observed = {
+              'version': str(openblas[0].get('version')),
+              'coretype': str(openblas[0].get('architecture')),
+              'threading_layer': str(openblas[0].get('threading_layer')),
+              'num_threads': int(openblas[0].get('num_threads', -1)),
+          }
+          expected = {
+              'version': '0.3.23.dev',
+              'coretype': 'Haswell',
+              'threading_layer': 'pthreads',
+              'num_threads': 1,
+          }
+          if observed != expected:
+              raise SystemExit(f'OpenBLAS substrate drift: expected={expected}, observed={observed}')
           PY
       - name: Checkout pinned Vidur source
         shell: bash
@@ -89,7 +97,7 @@ jobs:
           git clone --filter=blob:none https://github.com/microsoft/vidur.git .c64b_vidur
           git -C .c64b_vidur checkout --detach abae7f63aa857300f5cdc6f5e0d27860cd24721b
           test "$(git -C .c64b_vidur rev-parse HEAD)" = "abae7f63aa857300f5cdc6f5e0d27860cd24721b"
-      - name: Evaluate exact source model once
+      - name: Verify canonical protocol-v2 scientific output
         shell: bash
         env:
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/.c64b_vidur
@@ -97,13 +105,25 @@ jobs:
           set -euo pipefail
           python experiments/c64b_fresh_adequacy.py \
             --vidur-root .c64b_vidur \
-            --output /tmp/c64b-fixed-core.json > /tmp/c64b-fixed-core.log
+            --output /tmp/c64b-v2-cross-host.json > /tmp/c64b-v2-cross-host.log
           python - <<'PY'
           import json
           from pathlib import Path
-          result = json.loads(Path('/tmp/c64b-fixed-core.json').read_text())
-          print('protocol_fingerprint=', result['protocol_fingerprint'])
-          print('scientific_fingerprint=', result['scientific_fingerprint'])
+
+          expected = {
+              'protocol_id': 'cadi.c6.4b.vidur-linear-regression-source-model.v2',
+              'protocol_fingerprint': '9decab129b64921d59696c58242f0047ad986c76b82a22819eb93166b5d3a717',
+              'scientific_fingerprint': '6efc18490f1df94353c5a42143ba388d49f35947da334563d2b98fc05421af90',
+              'decision': 'INADEQUATE_REVISE_REPRESENTATION',
+          }
+          result = json.loads(Path('/tmp/c64b-v2-cross-host.json').read_text())
+          observed = {key: result[key] for key in expected}
+          print('expected=', json.dumps(expected, sort_keys=True))
+          print('observed=', json.dumps(observed, sort_keys=True))
+          if observed != expected:
+              raise SystemExit(
+                  f'C6.4b protocol-v2 cross-host reproduction failed: expected={expected}, observed={observed}'
+              )
           for hw in result['hardware']:
               print('hardware=', hw['hardware_id'])
               print('prefill_refs=', [p['reference_seconds'] for p in hw['fresh_prefill']['points']])
