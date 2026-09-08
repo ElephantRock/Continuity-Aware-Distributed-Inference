@@ -38,22 +38,32 @@ C64A_FRESH_TRANSFER_AXES = (
     58728448,
 )
 
+_CURVE_KINDS = {
+    ReferenceKind.COLD_PREFILL,
+    ReferenceKind.POINT_TO_POINT_TRANSFER,
+}
+
 
 @dataclass(frozen=True, slots=True)
 class CurveKnot:
     """One source-backed knot admitted to a C6.4 replacement curve.
 
-    C6.4a deliberately permits only the already-designated C6.3 FIT partition as
-    knot evidence. A C6.3 VALIDATION point cannot be converted into a knot by
-    changing a label at a later stage.
+    C6.4a permits only already-designated C6.3 FIT evidence. Hardware and
+    reference-family identity are carried explicitly so source evidence cannot be
+    mixed across otherwise shape-compatible curves.
     """
 
+    hardware_id: str
+    reference_kind: ReferenceKind
     axis_value: int
     seconds: SourcedScalar
     source_point_id: str
     source_partition: str = C64A_KNOT_PARTITION
 
     def __post_init__(self) -> None:
+        _require_nonempty(self.hardware_id, "hardware_id")
+        if self.reference_kind not in _CURVE_KINDS:
+            raise ValueError("curve knot reference_kind must be a revised C6.4a family")
         if not isinstance(self.axis_value, int) or isinstance(self.axis_value, bool):
             raise TypeError("axis_value must be an integer")
         if self.axis_value <= 0:
@@ -80,6 +90,8 @@ class CurveKnot:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "hardware_id": self.hardware_id,
+            "reference_kind": self.reference_kind.value,
             "axis_value": self.axis_value,
             "seconds": self.seconds.to_dict(),
             "source_point_id": self.source_point_id,
@@ -90,17 +102,33 @@ class CurveKnot:
 @dataclass(frozen=True, slots=True)
 class PiecewiseLinearCostCurve:
     curve_id: str
+    hardware_id: str
+    reference_kind: ReferenceKind
     axis_unit: str
     knots: tuple[CurveKnot, ...]
 
     def __post_init__(self) -> None:
         _require_nonempty(self.curve_id, "curve_id")
-        if self.axis_unit not in {"input-tokens", "bytes"}:
-            raise ValueError("axis_unit must be 'input-tokens' or 'bytes'")
+        _require_nonempty(self.hardware_id, "hardware_id")
+        if self.reference_kind not in _CURVE_KINDS:
+            raise ValueError("curve reference_kind must be a revised C6.4a family")
+        expected_unit = (
+            "input-tokens"
+            if self.reference_kind is ReferenceKind.COLD_PREFILL
+            else "bytes"
+        )
+        if self.axis_unit != expected_unit:
+            raise ValueError(f"curve axis_unit must be {expected_unit!r}")
         if not isinstance(self.knots, tuple) or len(self.knots) < 2:
             raise ValueError("piecewise-linear curve requires at least two knots")
         if not all(isinstance(item, CurveKnot) for item in self.knots):
             raise TypeError("knots must contain CurveKnot values")
+        if any(
+            item.hardware_id != self.hardware_id
+            or item.reference_kind is not self.reference_kind
+            for item in self.knots
+        ):
+            raise ValueError("all curve knots must match curve hardware and family")
         axes = [item.axis_value for item in self.knots]
         if axes != sorted(axes) or len(axes) != len(set(axes)):
             raise ValueError("curve knot axes must be strictly increasing and unique")
@@ -149,6 +177,8 @@ class PiecewiseLinearCostCurve:
         return {
             "schema": C64A_CURVE_SCHEMA,
             "curve_id": self.curve_id,
+            "hardware_id": self.hardware_id,
+            "reference_kind": self.reference_kind.value,
             "axis_unit": self.axis_unit,
             "interpolation": "piecewise-linear",
             "extrapolation": "forbidden",
@@ -174,10 +204,7 @@ class FreshAdequacyBoundary:
     evidence_class: str = C64A_FRESH_REFERENCE_EVIDENCE
 
     def __post_init__(self) -> None:
-        if self.reference_kind not in {
-            ReferenceKind.COLD_PREFILL,
-            ReferenceKind.POINT_TO_POINT_TRANSFER,
-        }:
+        if self.reference_kind not in _CURVE_KINDS:
             raise ValueError("fresh boundary exists only for revised C6.4a families")
         expected_unit = (
             "input-tokens"
@@ -295,12 +322,16 @@ class RevisedInferenceCostProfile:
             raise ValueError("representation_id must equal the frozen C6.4a representation")
         if not isinstance(self.prefill_curve, PiecewiseLinearCostCurve):
             raise TypeError("prefill_curve must be PiecewiseLinearCostCurve")
-        if self.prefill_curve.axis_unit != "input-tokens":
-            raise ValueError("prefill_curve axis must use input-tokens")
+        if self.prefill_curve.reference_kind is not ReferenceKind.COLD_PREFILL:
+            raise ValueError("prefill_curve must be the cold-prefill family")
+        if self.prefill_curve.hardware_id != self.hardware_id:
+            raise ValueError("prefill_curve hardware must match profile hardware")
         if not isinstance(self.transfer_curve, PiecewiseLinearCostCurve):
             raise TypeError("transfer_curve must be PiecewiseLinearCostCurve")
-        if self.transfer_curve.axis_unit != "bytes":
-            raise ValueError("transfer_curve axis must use bytes")
+        if self.transfer_curve.reference_kind is not ReferenceKind.POINT_TO_POINT_TRANSFER:
+            raise ValueError("transfer_curve must be the point-to-point transfer family")
+        if self.transfer_curve.hardware_id != self.hardware_id:
+            raise ValueError("transfer_curve hardware must match profile hardware")
 
         expected_units = {
             "decode_fixed_seconds_per_output_token": "seconds/output-token",
@@ -478,6 +509,8 @@ def assert_knots_match_c63_fit(
         raise TypeError("curve must be PiecewiseLinearCostCurve")
     if not isinstance(partition, ReferencePartition):
         raise TypeError("partition must be ReferencePartition")
+    if curve.hardware_id != partition.hardware_id or curve.reference_kind is not partition.kind:
+        raise ValueError("curve hardware/family must match the C6.3 partition")
     expected_fit = {point.point_id for point in partition.fit}
     supplied = set(knot_point_ids(curve))
     validation_ids = {point.point_id for point in partition.validation}
