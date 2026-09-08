@@ -20,6 +20,7 @@ jobs:
       PYTHONHASHSEED: '0'
       OMP_NUM_THREADS: '1'
       OPENBLAS_NUM_THREADS: '1'
+      OPENBLAS_CORETYPE: 'Haswell'
       MKL_NUM_THREADS: '1'
       NUMEXPR_NUM_THREADS: '1'
     steps:
@@ -30,39 +31,62 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12.14'
-      - name: Verify frozen numerical platform
+      - name: Verify frozen platform contract
         shell: bash
         run: |
           python - <<'PY'
+          import json
           import os
           import platform
           import sys
 
-          expected = {
+          expected_platform = {
               "python": "3.12.14",
               "runner_os": "Linux",
               "runner_arch": "X64",
               "machine": "x86_64",
               "image_os": "ubuntu24",
-              "image_version": "20260831.293.1",
           }
-          observed = {
+          observed_platform = {
               "python": platform.python_version(),
               "runner_os": os.environ.get("RUNNER_OS"),
               "runner_arch": os.environ.get("RUNNER_ARCH"),
               "machine": platform.machine(),
               "image_os": os.environ.get("ImageOS"),
-              "image_version": os.environ.get("ImageVersion"),
           }
-          if observed != expected:
+          if observed_platform != expected_platform:
               raise SystemExit(
-                  f"C6.4b numerical platform drift: expected={expected}, observed={observed}"
+                  "C6.4b platform drift: "
+                  f"expected={expected_platform}, observed={observed_platform}"
               )
           if sys.implementation.name != "cpython":
               raise SystemExit(
                   f"C6.4b requires CPython, observed={sys.implementation.name}"
               )
-          print("frozen_platform=", observed)
+
+          expected_env = {
+              "PYTHONHASHSEED": "0",
+              "OMP_NUM_THREADS": "1",
+              "OPENBLAS_NUM_THREADS": "1",
+              "OPENBLAS_CORETYPE": "Haswell",
+              "MKL_NUM_THREADS": "1",
+              "NUMEXPR_NUM_THREADS": "1",
+          }
+          observed_env = {name: os.environ.get(name) for name in expected_env}
+          if observed_env != expected_env:
+              raise SystemExit(
+                  f"C6.4b numerical environment drift: expected={expected_env}, observed={observed_env}"
+              )
+
+          provenance = {
+              "ImageOS": os.environ.get("ImageOS"),
+              "ImageVersion": os.environ.get("ImageVersion"),
+              "RUNNER_OS": os.environ.get("RUNNER_OS"),
+              "RUNNER_ARCH": os.environ.get("RUNNER_ARCH"),
+          }
+          print("frozen_platform=", json.dumps(observed_platform, sort_keys=True))
+          print("frozen_environment=", json.dumps(observed_env, sort_keys=True))
+          print("runner_provenance=", json.dumps(provenance, sort_keys=True))
           PY
       - name: Install frozen evaluator runtime
         run: >-
@@ -74,13 +98,17 @@ jobs:
           joblib==1.4.2
           threadpoolctl==3.5.0
           fasteners==0.19
-      - name: Verify frozen package runtime
+      - name: Verify frozen package and BLAS runtime
         shell: bash
         run: |
           python - <<'PY'
+          import json
           from importlib.metadata import version
 
-          expected = {
+          import numpy as np
+          from threadpoolctl import threadpool_info
+
+          expected_packages = {
               "numpy": "1.26.4",
               "pandas": "2.2.3",
               "scikit-learn": "1.5.2",
@@ -89,12 +117,42 @@ jobs:
               "threadpoolctl": "3.5.0",
               "fasteners": "0.19",
           }
-          observed = {name: version(name) for name in expected}
-          if observed != expected:
+          observed_packages = {name: version(name) for name in expected_packages}
+          if observed_packages != expected_packages:
               raise SystemExit(
-                  f"C6.4b package runtime drift: expected={expected}, observed={observed}"
+                  "C6.4b package runtime drift: "
+                  f"expected={expected_packages}, observed={observed_packages}"
               )
-          print("frozen_packages=", observed)
+
+          # Exercise NumPy before inspection so its bundled OpenBLAS library is
+          # loaded and threadpoolctl can verify the actual dispatched kernel.
+          np.dot(np.ones((2, 2)), np.ones((2, 2)))
+          openblas = [
+              item for item in threadpool_info()
+              if item.get("internal_api") == "openblas"
+          ]
+          if len(openblas) != 1:
+              raise SystemExit(
+                  f"C6.4b expected exactly one OpenBLAS runtime, observed={openblas!r}"
+              )
+          observed_blas = {
+              "version": str(openblas[0].get("version")),
+              "coretype": str(openblas[0].get("architecture")),
+              "threading_layer": str(openblas[0].get("threading_layer")),
+              "num_threads": int(openblas[0].get("num_threads", -1)),
+          }
+          expected_blas = {
+              "version": "0.3.23.dev",
+              "coretype": "Haswell",
+              "threading_layer": "pthreads",
+              "num_threads": 1,
+          }
+          if observed_blas != expected_blas:
+              raise SystemExit(
+                  f"C6.4b BLAS runtime drift: expected={expected_blas}, observed={observed_blas}"
+              )
+          print("frozen_packages=", json.dumps(observed_packages, sort_keys=True))
+          print("frozen_openblas=", json.dumps(observed_blas, sort_keys=True))
           PY
       - name: Checkout pinned Vidur source
         shell: bash
@@ -110,7 +168,6 @@ jobs:
           python experiments/c64b_fresh_adequacy.py \
             --vidur-root .c64b_vidur \
             --output /tmp/c64b-run-1.json > /tmp/c64b-run-1.log
-          rm -rf /tmp/c64b-second
           python experiments/c64b_fresh_adequacy.py \
             --vidur-root .c64b_vidur \
             --output /tmp/c64b-run-2.json > /tmp/c64b-run-2.log
