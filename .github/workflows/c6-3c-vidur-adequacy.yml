@@ -1,0 +1,153 @@
+name: c6-3c-vidur-adequacy
+
+on:
+  push:
+    branches:
+      - c6/vidur-representation-adequacy
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependency
+        run: python -m pip install --upgrade pip pytest
+      - name: Test C6.3c semantics
+        run: python -m pytest tests/simulator/test_calibration_adequacy.py
+      - name: Download immutable Vidur inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=abae7f63aa857300f5cdc6f5e0d27860cd24721b
+          base="https://raw.githubusercontent.com/microsoft/vidur/${commit}"
+          mkdir -p /tmp/vidur/{a100,h100} adequacy-output
+          for hw in a100 h100; do
+            curl --fail --location --silent --show-error "${base}/data/profiling/compute/${hw}/meta-llama/Llama-2-7b-hf/attention.csv" -o "/tmp/vidur/${hw}/attention.csv"
+            curl --fail --location --silent --show-error "${base}/data/profiling/compute/${hw}/meta-llama/Llama-2-7b-hf/mlp.csv" -o "/tmp/vidur/${hw}/mlp.csv"
+          done
+          curl --fail --location --silent --show-error "${base}/data/profiling/network/a100_dgx/send_recv.csv" -o /tmp/vidur/a100/send_recv.csv
+          curl --fail --location --silent --show-error "${base}/data/profiling/network/h100_dgx/send_recv.csv" -o /tmp/vidur/h100/send_recv.csv
+      - name: Evaluate frozen C6.3c held-out oracle
+        shell: python
+        run: |
+          import hashlib
+          import json
+          from pathlib import Path
+
+          from simulator.calibration_adequacy import evaluate_vidur_hardware_adequacy
+          from simulator.calibration_validation import AdequacyDecision
+
+          records = []
+          for hardware_id, folder in (
+              ('a100-80gb', 'a100'),
+              ('h100-80gb', 'h100'),
+          ):
+              root = Path('/tmp/vidur') / folder
+              record = evaluate_vidur_hardware_adequacy(
+                  hardware_id,
+                  attention_bytes=(root / 'attention.csv').read_bytes(),
+                  mlp_bytes=(root / 'mlp.csv').read_bytes(),
+                  send_recv_bytes=(root / 'send_recv.csv').read_bytes(),
+              )
+              payload = record.to_dict()
+              output = Path('adequacy-output') / f'{folder}.json'
+              output.write_text(
+                  json.dumps(
+                      payload,
+                      sort_keys=True,
+                      separators=(',', ':'),
+                      allow_nan=False,
+                  ) + '\n',
+                  encoding='utf-8',
+              )
+              records.append(payload)
+              compact = {
+                  'hardware_id': hardware_id,
+                  'corpus_fingerprint': record.corpus_fingerprint,
+                  'family_results': [
+                      {
+                          'kind': family.fit.kind.value,
+                          'validation_status': family.validation_status.value,
+                          'fit_intercept_seconds': family.fit.intercept_seconds,
+                          'fit_slope_seconds_per_axis_unit': family.fit.slope_seconds_per_axis_unit,
+                          'fit_violations': list(family.fit.violations),
+                          'mae_seconds': (
+                              None
+                              if family.validation_report is None
+                              else family.validation_report.mae_seconds
+                          ),
+                          'mape': (
+                              None
+                              if family.validation_report is None
+                              else family.validation_report.mape
+                          ),
+                          'max_ape': (
+                              None
+                              if family.validation_report is None
+                              else family.validation_report.max_ape
+                          ),
+                          'decision': family.decision.value,
+                      }
+                      for family in record.families
+                  ],
+                  'decode_composition': {
+                      'mae_seconds': record.decode_composition.mae_seconds,
+                      'mape': record.decode_composition.mape,
+                      'max_ape': record.decode_composition.max_ape,
+                      'decision': record.decode_composition.decision.value,
+                  },
+                  'hardware_decision': record.decision.value,
+              }
+              print(
+                  'C6_3C_HARDWARE=' + json.dumps(
+                      compact,
+                      sort_keys=True,
+                      separators=(',', ':'),
+                      allow_nan=False,
+                  )
+              )
+
+          parent_decision = (
+              AdequacyDecision.ADEQUATE_WITHIN_DECLARED_DOMAIN.value
+              if all(
+                  item['decision']
+                  == AdequacyDecision.ADEQUATE_WITHIN_DECLARED_DOMAIN.value
+                  for item in records
+              )
+              else AdequacyDecision.INADEQUATE_REVISE_REPRESENTATION.value
+          )
+          summary = {
+              'schema': 'cadi.c6.3c.parent-adequacy.v1',
+              'hardware_results': records,
+              'parent_c6_3_decision': parent_decision,
+          }
+          summary_json = json.dumps(
+              summary,
+              sort_keys=True,
+              separators=(',', ':'),
+              allow_nan=False,
+          )
+          Path('adequacy-output/summary.json').write_text(
+              summary_json + '\n', encoding='utf-8'
+          )
+          print('C6_3C_PARENT_DECISION=' + parent_decision)
+          print(
+              'C6_3C_SUMMARY_SHA256='
+              + hashlib.sha256(summary_json.encode('utf-8')).hexdigest()
+          )
+      - name: Upload C6.3c adequacy artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c6-3c-adequacy
+          path: adequacy-output/*.json
+          if-no-files-found: error
