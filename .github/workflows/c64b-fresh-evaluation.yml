@@ -130,11 +130,15 @@ jobs:
                   r = hw[name]
                   print(name, r['decision'], r['evaluated_subset_mape'], r['evaluated_subset_max_ape'], r['all_frozen_axes_evaluated'])
           PY
-      - name: Commit canonical scientific result
+      - name: Record canonical scientific result if changed
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add artifacts/c6.4b/fresh-adequacy.json
-          git commit -m "C6.4b: record fresh adequacy result"
-          git push origin HEAD:c6/replacement-calibration-fresh-adequacy
+          if git diff --cached --quiet; then
+            echo "canonical scientific result unchanged"
+          else
+            git commit -m "C6.4b: record fresh adequacy result"
+            git push origin HEAD:c6/replacement-calibration-fresh-adequacy
+          fi
