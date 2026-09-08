@@ -62,6 +62,47 @@ def test_protocol_selects_deterministic_upstream_linear_regression() -> None:
     assert C64B_RUNTIME["environment"]["OMP_NUM_THREADS"] == "1"
 
 
+def test_protocol_manifest_returns_isolated_mutable_configuration() -> None:
+    fingerprint = c64b_protocol_fingerprint()
+    first = c64b_protocol_manifest()
+    first["predictor_config"]["prediction_max_tokens_per_request"] = 1
+    first["runtime"]["environment"]["OMP_NUM_THREADS"] = "99"
+    first["hardware"]["a100-80gb"]["vidur_device"] = "mutated"
+
+    second = c64b_protocol_manifest()
+    assert second["predictor_config"]["prediction_max_tokens_per_request"] == 4096
+    assert second["runtime"]["environment"]["OMP_NUM_THREADS"] == "1"
+    assert second["hardware"]["a100-80gb"]["vidur_device"] == "a100"
+    assert c64b_protocol_fingerprint() == fingerprint
+
+
+def test_cold_prefill_request_state_is_fully_frozen() -> None:
+    state = c64b_protocol_manifest()["prefill"]
+    assert state["request_state"] == {
+        "arrived_at": 0.0,
+        "num_prefill_tokens": "axis",
+        "num_decode_tokens": 1,
+        "num_processed_tokens": 0,
+        "is_prefill_complete_before_evaluation": False,
+    }
+    assert state["batch_state"] == {
+        "replica_id": 0,
+        "requests": 1,
+        "num_tokens": "[axis]",
+    }
+
+
+def test_numerical_execution_platform_is_exactly_frozen() -> None:
+    assert C64B_RUNTIME["python"] == "3.12.14"
+    assert C64B_RUNTIME["os"] == "ubuntu-24.04"
+    assert C64B_RUNTIME["architecture"] == "x86_64"
+    assert C64B_RUNTIME["github_actions_image_os"] == "ubuntu24"
+    assert C64B_RUNTIME["github_actions_image_version"] == "20260831.293.1"
+    assert C64B_RUNTIME["numpy"] == "1.26.4"
+    assert C64B_RUNTIME["scikit-learn"] == "1.5.2"
+    assert C64B_RUNTIME["scipy"] == "1.14.1"
+
+
 def test_upstream_behavioral_files_are_sha_fenced() -> None:
     expected_paths = {
         "vidur/config/config.py",
