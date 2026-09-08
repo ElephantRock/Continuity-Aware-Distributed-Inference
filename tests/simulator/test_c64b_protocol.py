@@ -5,6 +5,7 @@ import json
 from simulator.c64b_protocol import (
     C64B_PREDICTOR_CLASS,
     C64B_PROTOCOL_ID,
+    C64B_PROTOCOL_SCHEMA,
     C64B_REFERENCE_EVIDENCE,
     C64B_RUNTIME,
     C64B_UPSTREAM_CODE_BLOBS,
@@ -35,7 +36,10 @@ def _all_keys(value: object) -> set[str]:
 
 def test_protocol_is_timing_free_and_binds_frozen_axes() -> None:
     manifest = c64b_protocol_manifest()
+    assert manifest["schema"] == C64B_PROTOCOL_SCHEMA
     assert manifest["protocol_id"] == C64B_PROTOCOL_ID
+    assert C64B_PROTOCOL_SCHEMA.endswith(".v2")
+    assert C64B_PROTOCOL_ID.endswith(".v2")
     assert manifest["reference_evidence"] == C64B_REFERENCE_EVIDENCE
     assert manifest["contains_reference_timings"] is False
     assert manifest["prefill"]["axes_input_tokens"] == list(C64A_FRESH_PREFILL_AXES)
@@ -67,11 +71,13 @@ def test_protocol_manifest_returns_isolated_mutable_configuration() -> None:
     first = c64b_protocol_manifest()
     first["predictor_config"]["prediction_max_tokens_per_request"] = 1
     first["runtime"]["environment"]["OMP_NUM_THREADS"] = "99"
+    first["runtime"]["openblas"]["coretype"] = "mutated"
     first["hardware"]["a100-80gb"]["vidur_device"] = "mutated"
 
     second = c64b_protocol_manifest()
     assert second["predictor_config"]["prediction_max_tokens_per_request"] == 4096
     assert second["runtime"]["environment"]["OMP_NUM_THREADS"] == "1"
+    assert second["runtime"]["openblas"]["coretype"] == "Haswell"
     assert second["hardware"]["a100-80gb"]["vidur_device"] == "a100"
     assert c64b_protocol_fingerprint() == fingerprint
 
@@ -92,15 +98,28 @@ def test_cold_prefill_request_state_is_fully_frozen() -> None:
     }
 
 
-def test_numerical_execution_platform_is_exactly_frozen() -> None:
+def test_numerical_execution_substrate_freezes_blas_not_host_image_version() -> None:
     assert C64B_RUNTIME["python"] == "3.12.14"
+    assert C64B_RUNTIME["python_implementation"] == "CPython"
     assert C64B_RUNTIME["os"] == "ubuntu-24.04"
     assert C64B_RUNTIME["architecture"] == "x86_64"
     assert C64B_RUNTIME["github_actions_image_os"] == "ubuntu24"
-    assert C64B_RUNTIME["github_actions_image_version"] == "20260831.293.1"
+    assert (
+        C64B_RUNTIME["github_actions_image_version_policy"]
+        == "record_only_not_equivalence"
+    )
+    assert "github_actions_image_version" not in C64B_RUNTIME
     assert C64B_RUNTIME["numpy"] == "1.26.4"
     assert C64B_RUNTIME["scikit-learn"] == "1.5.2"
     assert C64B_RUNTIME["scipy"] == "1.14.1"
+    assert C64B_RUNTIME["openblas"] == {
+        "version": "0.3.23.dev",
+        "coretype": "Haswell",
+        "threading_layer": "pthreads",
+        "num_threads": 1,
+    }
+    assert C64B_RUNTIME["environment"]["OPENBLAS_CORETYPE"] == "Haswell"
+    assert C64B_RUNTIME["environment"]["OPENBLAS_NUM_THREADS"] == "1"
 
 
 def test_upstream_behavioral_files_are_sha_fenced() -> None:
