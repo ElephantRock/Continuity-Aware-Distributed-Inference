@@ -82,6 +82,15 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def verify_upstream_snapshot(vidur_root: Path) -> dict[str, Any]:
+    worktree_status = _git(
+        vidur_root, "status", "--porcelain", "--untracked-files=all"
+    )
+    if worktree_status:
+        raise ValueError(
+            "Vidur working tree must be clean before source-model evaluation: "
+            f"status={worktree_status!r}"
+        )
+
     head = _git(vidur_root, "rev-parse", "HEAD")
     if head != VIDUR_PINNED_COMMIT:
         raise ValueError(f"Vidur HEAD drift: expected={VIDUR_PINNED_COMMIT}, observed={head}")
