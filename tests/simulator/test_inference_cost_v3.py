@@ -38,8 +38,10 @@ P_SRC2 = ParameterProvenance(
     reference="test-only pinned source fixture",
 )
 HYPERPARAMETERS = (
-    ("fit_intercept", "true"),
-    ("polynomial_degree", "1"),
+    ("linearregression__fit_intercept", "true"),
+    ("polynomialfeatures__degree", "1"),
+    ("polynomialfeatures__include_bias", "true"),
+    ("polynomialfeatures__interaction_only", "false"),
 )
 PREFILL_COMPONENT_IDS = (
     "add",
@@ -150,6 +152,25 @@ def test_canonical_polynomial_rejects_ambiguous_or_invalid_basis() -> None:
         _poly("nonfinite", coefficients=(math.inf,))
 
 
+def test_canonical_polynomial_binds_frozen_hardware_and_grid_search_metadata() -> None:
+    with pytest.raises(ValueError, match="frozen C6.4c source family"):
+        _poly("wrong-hardware", hardware_id="other-hardware")
+
+    model = _poly("metadata")
+    with pytest.raises(ValueError, match="exact frozen Vidur grid-search keys"):
+        replace(model, upstream_hyperparameters=HYPERPARAMETERS[:-1])
+    with pytest.raises(ValueError, match="canonical true/false"):
+        replace(
+            model,
+            upstream_hyperparameters=(
+                ("linearregression__fit_intercept", "1"),
+                ("polynomialfeatures__degree", "1"),
+                ("polynomialfeatures__include_bias", "true"),
+                ("polynomialfeatures__interaction_only", "false"),
+            ),
+        )
+
+
 def test_component_predictions_are_not_clipped_before_composition() -> None:
     negative = _poly("negative", coefficients=(-1.0,))
     assert negative.evaluate((3.0,)) == -3.0
@@ -165,8 +186,17 @@ def test_profile_binds_source_semantics_and_component_identity() -> None:
     with pytest.raises(ValueError, match="exact canonical Vidur component order"):
         replace(profile, prefill_components=tuple(swapped))
 
+    with pytest.raises(TypeError, match="CanonicalPolynomialModel"):
+        replace(profile, prefill_components=("not-a-model",))
+
     with pytest.raises(ValueError, match="cold-prefill model"):
         replace(profile, prefill_attention=_poly("wrong-attention"))
+
+    with pytest.raises(ValueError, match="frozen C6.4c source model"):
+        replace(profile, model_id="other-model")
+
+    with pytest.raises(ValueError, match="frozen C6.4c source family"):
+        replace(profile, hardware_id="other-hardware")
 
 
 def test_cold_prefill_composes_rounded_compute_exact_kv_save_and_attention() -> None:
