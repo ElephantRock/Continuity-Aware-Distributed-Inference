@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 import hashlib
 import json
@@ -60,12 +61,15 @@ C64B_SARATHI_CONFIG: dict[str, Any] = {
     "chunk_size": 512,
 }
 
-# Runtime package versions are frozen because the pinned Vidur requirements file
-# leaves these dependencies unconstrained. Single-threaded numerical execution
-# is part of the protocol so repeated source-model fits do not depend on worker
-# scheduling or BLAS thread interleavings.
+# The numerical execution platform is part of the scientific protocol. Hosted
+# runner labels alone are insufficient because they can advance to new images.
+# The evaluator must fail closed if these exact platform identifiers drift.
 C64B_RUNTIME: dict[str, Any] = {
-    "python": "3.12",
+    "python": "3.12.14",
+    "os": "ubuntu-24.04",
+    "architecture": "x86_64",
+    "github_actions_image_os": "ubuntu24",
+    "github_actions_image_version": "20260831.293.1",
     "numpy": "1.26.4",
     "pandas": "2.2.3",
     "scikit-learn": "1.5.2",
@@ -134,13 +138,7 @@ class TransferLookupDomain:
 
 
 def transfer_lookup_domain(axis_bytes: int) -> TransferLookupDomain:
-    """Resolve one byte axis against Vidur's frozen send/recv lookup domain.
-
-    Vidur derives the send/recv predictor feature as ``size / embedding_dim / 2``
-    and, under the frozen Sarathi configuration, materializes lookup keys only for
-    integer ``num_tokens`` in [1, prediction_max_tokens_per_request]. This helper
-    performs no timing evaluation.
-    """
+    """Resolve one byte axis against Vidur's frozen send/recv lookup domain."""
 
     if not isinstance(axis_bytes, int) or isinstance(axis_bytes, bool) or axis_bytes <= 0:
         raise ValueError("axis_bytes must be a positive integer")
@@ -169,6 +167,8 @@ def transfer_lookup_domain(axis_bytes: int) -> TransferLookupDomain:
 
 
 def c64b_protocol_manifest() -> dict[str, Any]:
+    """Return an isolated, timing-free copy of the frozen C6.4b protocol."""
+
     transfer_domain = [
         transfer_lookup_domain(axis).to_dict() for axis in C64A_FRESH_TRANSFER_AXES
     ]
@@ -180,21 +180,33 @@ def c64b_protocol_manifest() -> dict[str, Any]:
         "source_commit": VIDUR_PINNED_COMMIT,
         "model_id": VIDUR_LLAMA2_7B_TP1_DOMAIN.model_id,
         "predictor_class": C64B_PREDICTOR_CLASS,
-        "predictor_config": C64B_PREDICTOR_CONFIG,
+        "predictor_config": copy.deepcopy(C64B_PREDICTOR_CONFIG),
         "replica_scheduler": C64B_REPLICA_SCHEDULER,
-        "replica_scheduler_config": C64B_SARATHI_CONFIG,
-        "runtime": C64B_RUNTIME,
+        "replica_scheduler_config": copy.deepcopy(C64B_SARATHI_CONFIG),
+        "runtime": copy.deepcopy(C64B_RUNTIME),
         "upstream_code_blobs": dict(sorted(C64B_UPSTREAM_CODE_BLOBS.items())),
-        "hardware": C64B_HARDWARE_CONFIG,
+        "hardware": copy.deepcopy(C64B_HARDWARE_CONFIG),
         "prefill": {
             "pipeline_stages": 1,
             "tensor_parallel_size": 1,
             "axes_input_tokens": list(C64A_FRESH_PREFILL_AXES),
             "result_field": C64B_PREFILL_RESULT_FIELD,
+            "request_state": {
+                "arrived_at": 0.0,
+                "num_prefill_tokens": "axis",
+                "num_decode_tokens": 1,
+                "num_processed_tokens": 0,
+                "is_prefill_complete_before_evaluation": False,
+            },
+            "batch_state": {
+                "replica_id": 0,
+                "requests": 1,
+                "num_tokens": "[axis]",
+            },
             "batch_semantics": (
-                "one unfinished request; num_tokens=[axis]; Vidur Batch rounds only "
-                "compute-component lookup to multiples of 8 while attention/KV-save "
-                "use the source predictor's exact request semantics"
+                "fresh cold prefill starts from zero processed/KV-cache tokens; "
+                "Vidur Batch rounds compute-component lookup to multiples of 8 while "
+                "attention/KV-save use the exact frozen Request state"
             ),
         },
         "transfer": {
