@@ -321,6 +321,28 @@ def _c63_family_identity(partition: ReferencePartition) -> tuple[int, str]:
     return len(ordered), hashlib.sha256(encoded).hexdigest()
 
 
+def _assert_complete_frozen_c63_family(partition: ReferencePartition) -> None:
+    """Require the exact complete C6.3 family before using its partition.
+
+    The identity fence is timing-free: it binds hardware, family, exact point
+    count, and the canonical ``(point_id, axis_value)`` set only.
+    """
+
+    if not isinstance(partition, ReferencePartition):
+        raise TypeError("partition must be ReferencePartition")
+    expected_identity = _C64A_FROZEN_C63_FAMILY_IDENTITIES.get(
+        (partition.hardware_id, partition.kind)
+    )
+    if expected_identity is None:
+        raise ValueError("partition is outside the frozen C6.3 revised-family domain")
+    observed_identity = _c63_family_identity(partition)
+    if observed_identity != expected_identity:
+        raise ValueError(
+            "partition does not match the complete frozen C6.3 family identity: "
+            f"expected={expected_identity}, observed={observed_identity}"
+        )
+
+
 def verify_fresh_boundary_against_c63_partition(
     boundary: FreshAdequacyBoundary,
     partition: ReferencePartition,
@@ -340,17 +362,7 @@ def verify_fresh_boundary_against_c63_partition(
     if partition.kind is not boundary.reference_kind:
         raise ValueError("boundary reference kind does not match partition")
 
-    expected_identity = _C64A_FROZEN_C63_FAMILY_IDENTITIES.get(
-        (partition.hardware_id, partition.kind)
-    )
-    if expected_identity is None:
-        raise ValueError("partition is outside the frozen C6.3 revised-family domain")
-    observed_identity = _c63_family_identity(partition)
-    if observed_identity != expected_identity:
-        raise ValueError(
-            "partition does not match the complete frozen C6.3 family identity: "
-            f"expected={expected_identity}, observed={observed_identity}"
-        )
+    _assert_complete_frozen_c63_family(partition)
 
     observed_axes = {point.axis_value for point in partition.fit + partition.validation}
     fit_axes = tuple(sorted(point.axis_value for point in partition.fit))
@@ -581,6 +593,7 @@ def assert_knots_match_c63_fit(
         raise TypeError("partition must be ReferencePartition")
     if curve.hardware_id != partition.hardware_id or curve.reference_kind is not partition.kind:
         raise ValueError("curve hardware/family must match the C6.3 partition")
+    _assert_complete_frozen_c63_family(partition)
     expected_fit = {point.point_id for point in partition.fit}
     supplied = set(knot_point_ids(curve))
     validation_ids = {point.point_id for point in partition.validation}
