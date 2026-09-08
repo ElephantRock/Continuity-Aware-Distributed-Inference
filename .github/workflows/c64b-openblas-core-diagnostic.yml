@@ -58,8 +58,12 @@ jobs:
           import json
           import platform
           from importlib.metadata import version
+          import numpy as np
           from threadpoolctl import threadpool_info
 
+          # Import and exercise NumPy before inspection so its bundled
+          # OpenBLAS runtime is loaded into this process.
+          np.dot(np.ones((2, 2)), np.ones((2, 2)))
           print('python=', platform.python_version())
           print('packages=', json.dumps({
               name: version(name)
