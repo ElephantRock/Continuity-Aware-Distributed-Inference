@@ -13,6 +13,7 @@ from simulator.inference_cost import (
     InferenceCostWorkload,
     ParameterProvenance,
     ParameterSourceClass,
+    SensitivityRange,
     SourcedScalar,
 )
 from simulator.inference_cost_v2 import (
@@ -60,9 +61,11 @@ def _scalar(value: float, unit: str) -> SourcedScalar:
 
 
 def _artifacts(kind: ReferenceKind) -> tuple[SourceArtifactRef, ...]:
-    if kind is ReferenceKind.POINT_TO_POINT_TRANSFER:
-        return (A100_SEND_RECV,)
-    return (MODEL_CONFIG, A100_ATTENTION, A100_MLP)
+    return (
+        (A100_SEND_RECV,)
+        if kind is ReferenceKind.POINT_TO_POINT_TRANSFER
+        else (MODEL_CONFIG, A100_ATTENTION, A100_MLP)
+    )
 
 
 def _point(kind: ReferenceKind, axis: int, index: int) -> CalibrationReferencePoint:
@@ -84,8 +87,17 @@ def _partition(kind: ReferenceKind, axes: list[int]):
     )
 
 
-def _knot(axis: int, seconds: float, point_id: str) -> CurveKnot:
+def _knot(
+    axis: int,
+    seconds: float,
+    point_id: str,
+    *,
+    kind: ReferenceKind,
+    hardware: str = "a100-80gb",
+) -> CurveKnot:
     return CurveKnot(
+        hardware_id=hardware,
+        reference_kind=kind,
         axis_value=axis,
         seconds=_scalar(seconds, "seconds"),
         source_point_id=point_id,
@@ -94,14 +106,29 @@ def _knot(axis: int, seconds: float, point_id: str) -> CurveKnot:
 
 def _curve(
     curve_id: str,
-    axis_unit: str,
+    kind: ReferenceKind,
     axes_seconds: list[tuple[int, float]],
+    *,
+    hardware: str = "a100-80gb",
 ) -> PiecewiseLinearCostCurve:
+    axis_unit = (
+        "input-tokens"
+        if kind is ReferenceKind.COLD_PREFILL
+        else "bytes"
+    )
     return PiecewiseLinearCostCurve(
         curve_id=curve_id,
+        hardware_id=hardware,
+        reference_kind=kind,
         axis_unit=axis_unit,
         knots=tuple(
-            _knot(axis, seconds, f"fit:{curve_id}:{axis}")
+            _knot(
+                axis,
+                seconds,
+                f"fit:{curve_id}:{axis}",
+                kind=kind,
+                hardware=hardware,
+            )
             for axis, seconds in axes_seconds
         ),
     )
@@ -114,7 +141,7 @@ def _profile() -> RevisedInferenceCostProfile:
         hardware_id="a100-80gb",
         prefill_curve=_curve(
             "prefill",
-            "input-tokens",
+            ReferenceKind.COLD_PREFILL,
             [(1, 0.1), (10, 1.0), (100, 10.0)],
         ),
         decode_fixed_seconds_per_output_token=_scalar(
@@ -128,92 +155,86 @@ def _profile() -> RevisedInferenceCostProfile:
         memory_capacity_bytes=_scalar(10_000.0, "bytes"),
         transfer_curve=_curve(
             "transfer",
-            "bytes",
+            ReferenceKind.POINT_TO_POINT_TRANSFER,
             [(10, 0.1), (100, 1.0), (1000, 10.0)],
         ),
     )
 
 
 def test_piecewise_curve_interpolates_and_forbids_extrapolation() -> None:
-    curve = _curve("curve", "input-tokens", [(10, 1.0), (20, 3.0), (40, 7.0)])
-
+    curve = _curve(
+        "curve",
+        ReferenceKind.COLD_PREFILL,
+        [(10, 1.0), (20, 3.0), (40, 7.0)],
+    )
     assert curve.evaluate(10) == pytest.approx(1.0)
     assert curve.evaluate(15) == pytest.approx(2.0)
     assert curve.evaluate(30) == pytest.approx(5.0)
     assert curve.evaluate(40) == pytest.approx(7.0)
-
     with pytest.raises(ValueError, match="extrapolate"):
         curve.evaluate(9)
     with pytest.raises(ValueError, match="extrapolate"):
         curve.evaluate(41)
 
 
-def test_curve_knots_are_strict_fit_only_psrc2_evidence() -> None:
-    knot = _knot(64, 0.1, "fit-point")
+def test_curve_knots_are_fit_only_psrc2_and_hardware_bound() -> None:
+    knot = _knot(
+        64, 0.1, "fit-point", kind=ReferenceKind.COLD_PREFILL
+    )
     assert knot.source_partition == C64A_KNOT_PARTITION
-
     with pytest.raises(ValueError, match="only from C6.3 FIT"):
         replace(knot, source_partition="VALIDATION")
 
-    synthetic_provenance = ParameterProvenance(
-        source_class=ParameterSourceClass.SYNTHETIC_SENSITIVITY,
-        reference="test synthetic",
-    )
-    synthetic_seconds = SourcedScalar(
+    synthetic = SourcedScalar(
         value=0.1,
         unit="seconds",
-        provenance=synthetic_provenance,
-        sensitivity=replace(
-            __import__("simulator.inference_cost", fromlist=["SensitivityRange"]).SensitivityRange(
-                low=0.05, high=0.2
-            )
+        provenance=ParameterProvenance(
+            source_class=ParameterSourceClass.SYNTHETIC_SENSITIVITY,
+            reference="test synthetic",
         ),
+        sensitivity=SensitivityRange(low=0.05, high=0.2),
     )
     with pytest.raises(ValueError, match="P-SRC2"):
-        CurveKnot(
-            axis_value=64,
-            seconds=synthetic_seconds,
-            source_point_id="synthetic",
-        )
+        replace(knot, seconds=synthetic)
 
-    with pytest.raises(ValueError, match="strictly increasing"):
+    mixed = replace(knot, hardware_id="h100-80gb", source_point_id="h100")
+    with pytest.raises(ValueError, match="match curve hardware and family"):
         PiecewiseLinearCostCurve(
-            curve_id="bad",
+            curve_id="mixed",
+            hardware_id="a100-80gb",
+            reference_kind=ReferenceKind.COLD_PREFILL,
             axis_unit="input-tokens",
-            knots=(
-                _knot(64, 0.1, "a"),
-                _knot(64, 0.2, "b"),
-            ),
+            knots=(knot, replace(mixed, axis_value=128)),
         )
 
 
 def test_revised_decode_composes_fixed_term_per_output_token() -> None:
-    profile = _profile()
-    workload = InferenceCostWorkload(
-        input_tokens=10,
-        output_tokens=4,
-        reusable_prefix_tokens=5,
-        state_tokens=10,
+    estimate = estimate_revised_inference_cost(
+        _profile(),
+        InferenceCostWorkload(
+            input_tokens=10,
+            output_tokens=4,
+            reusable_prefix_tokens=5,
+            state_tokens=10,
+        ),
     )
-    estimate = estimate_revised_inference_cost(profile, workload)
-
     steps = 4 * 10 + 4 * 3 // 2
-    assert steps == 46
-    assert estimate.decode_context_token_steps == 46
+    assert estimate.decode_context_token_steps == 46 == steps
     assert estimate.decode_seconds == pytest.approx(4 * 0.01 + 0.001 * 46)
     assert estimate.decode_seconds != pytest.approx(0.01 + 0.001 * 46)
 
 
 def test_recompute_uses_same_prefill_curve_and_zero_work_is_zero() -> None:
     profile = _profile()
-    workload = InferenceCostWorkload(
-        input_tokens=10,
-        output_tokens=0,
-        reusable_prefix_tokens=5,
-        state_tokens=10,
+    estimate = estimate_revised_inference_cost(
+        profile,
+        InferenceCostWorkload(
+            input_tokens=10,
+            output_tokens=0,
+            reusable_prefix_tokens=5,
+            state_tokens=10,
+        ),
     )
-    estimate = estimate_revised_inference_cost(profile, workload)
-
     assert estimate.prefill_seconds == pytest.approx(1.0)
     assert estimate.recompute_tokens == 5
     assert estimate.recompute_seconds == pytest.approx(0.5)
@@ -231,7 +252,7 @@ def test_recompute_uses_same_prefill_curve_and_zero_work_is_zero() -> None:
     assert no_recompute.recompute_seconds == 0.0
 
 
-def test_profile_keeps_memory_mechanics_and_curve_transfer() -> None:
+def test_profile_keeps_memory_mechanics_and_binds_curve_hardware() -> None:
     profile = _profile()
     estimate = estimate_revised_inference_cost(
         profile,
@@ -242,12 +263,22 @@ def test_profile_keeps_memory_mechanics_and_curve_transfer() -> None:
             state_tokens=10,
         ),
     )
-
     assert profile.representation_id == C64A_REPRESENTATION_ID
     assert estimate.state_bytes == pytest.approx(100.0)
     assert estimate.transfer_seconds == pytest.approx(1.0)
     assert estimate.memory_capacity_fraction == pytest.approx(0.01)
     assert profile.fingerprint == profile.fingerprint
+
+    with pytest.raises(ValueError, match="transfer_curve hardware"):
+        replace(
+            profile,
+            transfer_curve=_curve(
+                "h100-transfer",
+                ReferenceKind.POINT_TO_POINT_TRANSFER,
+                [(10, 0.1), (100, 1.0)],
+                hardware="h100-80gb",
+            ),
+        )
 
 
 def test_fresh_boundary_is_identity_only_and_exactly_frozen() -> None:
@@ -273,36 +304,21 @@ def test_fresh_boundary_is_identity_only_and_exactly_frozen() -> None:
 
 
 def test_prefill_fresh_boundary_is_unseen_and_fit_bracketed() -> None:
-    # Even ordinals are FIT. These identities bracket every frozen fresh point.
     axes = [
-        64,
-        80,
-        128,
-        160,
-        320,
-        352,
-        512,
-        544,
-        1024,
-        1088,
-        2048,
-        2112,
-        3200,
-        3264,
-        4096,
-        4160,
+        64, 80, 128, 160, 320, 352, 512, 544,
+        1024, 1088, 2048, 2112, 3200, 3264, 4096, 4160,
     ]
-    partition = _partition(ReferenceKind.COLD_PREFILL, axes)
     verify_fresh_boundary_against_c63_partition(
-        C64A_FRESH_PREFILL_BOUNDARY, partition
+        C64A_FRESH_PREFILL_BOUNDARY,
+        _partition(ReferenceKind.COLD_PREFILL, axes),
     )
 
 
 def test_fresh_boundary_collision_fails_closed() -> None:
-    # 127 is an exact frozen fresh axis. Put it into the source partition and
-    # verify that the boundary checker rejects reuse, independent of timing data.
-    axes = [64, 80, 127, 160, 320, 352, 4096, 4160]
-    partition = _partition(ReferenceKind.COLD_PREFILL, axes)
+    partition = _partition(
+        ReferenceKind.COLD_PREFILL,
+        [64, 80, 127, 160, 320, 352, 4096, 4160],
+    )
     with pytest.raises(ValueError, match="already present in C6.3"):
         verify_fresh_boundary_against_c63_partition(
             C64A_FRESH_PREFILL_BOUNDARY, partition
@@ -327,9 +343,9 @@ def test_transfer_fresh_boundary_is_unseen_and_fit_bracketed() -> None:
         axes.append(fit_axis)
         if index + 1 < len(fit_axes):
             axes.append((fit_axis + fit_axes[index + 1]) // 2)
-    partition = _partition(ReferenceKind.POINT_TO_POINT_TRANSFER, axes)
     verify_fresh_boundary_against_c63_partition(
-        C64A_FRESH_TRANSFER_BOUNDARY, partition
+        C64A_FRESH_TRANSFER_BOUNDARY,
+        _partition(ReferenceKind.POINT_TO_POINT_TRANSFER, axes),
     )
 
 
@@ -337,6 +353,8 @@ def test_validation_point_ids_cannot_enter_curve_knots() -> None:
     partition = _partition(ReferenceKind.COLD_PREFILL, [64, 80, 128, 160])
     fit_knots = tuple(
         CurveKnot(
+            hardware_id=point.hardware_id,
+            reference_kind=point.kind,
             axis_value=point.axis_value,
             seconds=_scalar(point.observed_seconds, "seconds"),
             source_point_id=point.point_id,
@@ -345,6 +363,8 @@ def test_validation_point_ids_cannot_enter_curve_knots() -> None:
     )
     curve = PiecewiseLinearCostCurve(
         curve_id="fit-only",
+        hardware_id="a100-80gb",
+        reference_kind=ReferenceKind.COLD_PREFILL,
         axis_unit="input-tokens",
         knots=fit_knots,
     )
@@ -352,10 +372,14 @@ def test_validation_point_ids_cannot_enter_curve_knots() -> None:
 
     leaked = PiecewiseLinearCostCurve(
         curve_id="leaked",
+        hardware_id="a100-80gb",
+        reference_kind=ReferenceKind.COLD_PREFILL,
         axis_unit="input-tokens",
         knots=(
             fit_knots[0],
             CurveKnot(
+                hardware_id="a100-80gb",
+                reference_kind=ReferenceKind.COLD_PREFILL,
                 axis_value=partition.validation[0].axis_value,
                 seconds=_scalar(partition.validation[0].observed_seconds, "seconds"),
                 source_point_id=partition.validation[0].point_id,
