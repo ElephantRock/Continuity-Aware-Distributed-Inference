@@ -43,6 +43,24 @@ HYPERPARAMETERS = (
     ("polynomialfeatures__include_bias", "true"),
     ("polynomialfeatures__interaction_only", "false"),
 )
+DEGREE2_HYPERPARAMETERS = (
+    ("linearregression__fit_intercept", "true"),
+    ("polynomialfeatures__degree", "2"),
+    ("polynomialfeatures__include_bias", "true"),
+    ("polynomialfeatures__interaction_only", "false"),
+)
+INTERACTION_ONLY_HYPERPARAMETERS = (
+    ("linearregression__fit_intercept", "true"),
+    ("polynomialfeatures__degree", "2"),
+    ("polynomialfeatures__include_bias", "true"),
+    ("polynomialfeatures__interaction_only", "true"),
+)
+NO_CONSTANT_HYPERPARAMETERS = (
+    ("linearregression__fit_intercept", "false"),
+    ("polynomialfeatures__degree", "1"),
+    ("polynomialfeatures__include_bias", "false"),
+    ("polynomialfeatures__interaction_only", "false"),
+)
 PREFILL_COMPONENT_IDS = (
     "add",
     "attn_kv_cache_save",
@@ -69,6 +87,7 @@ def _poly(
     powers: tuple[tuple[int, ...], ...] = ((1,),),
     coefficients: tuple[float, ...] = (1.0,),
     intercept: float = 0.0,
+    upstream_hyperparameters: tuple[tuple[str, str], ...] = HYPERPARAMETERS,
 ) -> CanonicalPolynomialModel:
     return CanonicalPolynomialModel(
         component_id=component_id,
@@ -77,7 +96,7 @@ def _poly(
         powers=powers,
         coefficients=coefficients,
         intercept=intercept,
-        upstream_hyperparameters=HYPERPARAMETERS,
+        upstream_hyperparameters=upstream_hyperparameters,
         source_reference="synthetic contract-only source model fixture",
     )
 
@@ -92,7 +111,8 @@ def _profile() -> SourcePolynomialCostProfile:
         prefill_attention=_poly(
             "attn_prefill",
             feature_names=("kv_cache_size", "prefill_chunk_size_squared"),
-            powers=((0, 1),),
+            powers=((0, 1), (1, 0)),
+            coefficients=(1.0, 0.0),
         ),
         transfer=_poly("send_recv"),
         decode_fixed_seconds_per_output_token=_scalar(
@@ -133,6 +153,7 @@ def test_canonical_polynomial_has_fixed_expanded_evaluation_semantics() -> None:
         powers=((1,), (2,)),
         coefficients=(2.0, 3.0),
         intercept=-5.0,
+        upstream_hyperparameters=DEGREE2_HYPERPARAMETERS,
     )
     assert model.evaluate((4.0,)) == pytest.approx(-5.0 + 2.0 * 4.0 + 3.0 * 16.0)
     assert model.fingerprint == model.fingerprint
@@ -169,6 +190,48 @@ def test_canonical_polynomial_binds_frozen_hardware_and_grid_search_metadata() -
                 ("polynomialfeatures__interaction_only", "false"),
             ),
         )
+
+
+def test_polynomial_basis_must_match_recorded_source_hyperparameters() -> None:
+    with pytest.raises(ValueError, match="exactly match the frozen PolynomialFeatures"):
+        _poly(
+            "degree-mismatch",
+            powers=((1,), (2,)),
+            coefficients=(1.0, 1.0),
+        )
+
+    with pytest.raises(ValueError, match="exactly match the frozen PolynomialFeatures"):
+        _poly(
+            "interaction-mismatch",
+            feature_names=("x", "y"),
+            powers=((0, 1), (1, 0), (2, 0)),
+            coefficients=(1.0, 1.0, 1.0),
+            upstream_hyperparameters=INTERACTION_ONLY_HYPERPARAMETERS,
+        )
+
+    valid_interaction = _poly(
+        "interaction-valid",
+        feature_names=("x", "y"),
+        powers=((0, 1), (1, 0), (1, 1)),
+        coefficients=(1.0, 1.0, 1.0),
+        upstream_hyperparameters=INTERACTION_ONLY_HYPERPARAMETERS,
+    )
+    assert valid_interaction.evaluate((2.0, 3.0)) == pytest.approx(11.0)
+
+
+def test_no_source_constant_requires_zero_canonical_intercept() -> None:
+    with pytest.raises(ValueError, match="intercept must be zero"):
+        _poly(
+            "constant-mismatch",
+            intercept=0.5,
+            upstream_hyperparameters=NO_CONSTANT_HYPERPARAMETERS,
+        )
+    valid = _poly(
+        "constant-valid",
+        intercept=0.0,
+        upstream_hyperparameters=NO_CONSTANT_HYPERPARAMETERS,
+    )
+    assert valid.evaluate((3.0,)) == pytest.approx(3.0)
 
 
 def test_component_predictions_are_not_clipped_before_composition() -> None:
