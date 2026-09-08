@@ -87,6 +87,25 @@ def _partition(kind: ReferenceKind, axes: list[int]):
     )
 
 
+def _cold_prefill_axes() -> list[int]:
+    # Exact C6.3 source-axis identity: 81 points.
+    return (
+        list(range(64, 129, 16))
+        + list(range(160, 1025, 32))
+        + list(range(1088, 4097, 64))
+    )
+
+
+def _transfer_axes() -> list[int]:
+    # Exact C6.3 source-axis identity: 993 points. The transition from the
+    # 8-KiB grid to 1 MiB is intentionally the observed 6-KiB final gap.
+    axes = list(range(2048, 1042432 + 1, 8192))
+    axes.append(1048576)
+    axes.extend(range(1081344, 16777216 + 1, 32768))
+    axes.extend(range(16908288, 67108864 + 1, 131072))
+    return axes
+
+
 def _knot(
     axis: int,
     seconds: float,
@@ -303,46 +322,37 @@ def test_fresh_boundary_is_identity_only_and_exactly_frozen() -> None:
         assert "seconds" not in payload
 
 
-def test_prefill_fresh_boundary_is_unseen_and_fit_bracketed() -> None:
-    axes = [
-        64, 80, 128, 160, 320, 352, 512, 544,
-        1024, 1088, 2048, 2112, 3200, 3264, 4096, 4160,
-    ]
+def test_prefill_fresh_boundary_matches_complete_frozen_family_and_is_bracketed() -> None:
+    axes = _cold_prefill_axes()
+    assert len(axes) == 81
     verify_fresh_boundary_against_c63_partition(
         C64A_FRESH_PREFILL_BOUNDARY,
         _partition(ReferenceKind.COLD_PREFILL, axes),
     )
 
 
-def test_fresh_boundary_collision_fails_closed() -> None:
-    partition = _partition(
-        ReferenceKind.COLD_PREFILL,
-        [64, 80, 127, 160, 320, 352, 4096, 4160],
-    )
-    with pytest.raises(ValueError, match="already present in C6.3"):
+def test_fresh_boundary_rejects_incomplete_canonically_split_family() -> None:
+    incomplete = _cold_prefill_axes()[:-2]
+    with pytest.raises(ValueError, match="complete frozen C6.3 family identity"):
         verify_fresh_boundary_against_c63_partition(
-            C64A_FRESH_PREFILL_BOUNDARY, partition
+            C64A_FRESH_PREFILL_BOUNDARY,
+            _partition(ReferenceKind.COLD_PREFILL, incomplete),
         )
 
 
-def test_transfer_fresh_boundary_is_unseen_and_fit_bracketed() -> None:
-    fit_axes = [
-        2048,
-        18432,
-        34816,
-        133120,
-        526336,
-        2162688,
-        8454144,
-        33816576,
-        58982400,
-        67108864,
-    ]
-    axes: list[int] = []
-    for index, fit_axis in enumerate(fit_axes):
-        axes.append(fit_axis)
-        if index + 1 < len(fit_axes):
-            axes.append((fit_axis + fit_axes[index + 1]) // 2)
+def test_fresh_boundary_rejects_axis_collision_via_frozen_family_identity() -> None:
+    axes = _cold_prefill_axes()
+    axes[4] = 127
+    with pytest.raises(ValueError, match="complete frozen C6.3 family identity"):
+        verify_fresh_boundary_against_c63_partition(
+            C64A_FRESH_PREFILL_BOUNDARY,
+            _partition(ReferenceKind.COLD_PREFILL, axes),
+        )
+
+
+def test_transfer_fresh_boundary_matches_complete_frozen_family_and_is_bracketed() -> None:
+    axes = _transfer_axes()
+    assert len(axes) == 993
     verify_fresh_boundary_against_c63_partition(
         C64A_FRESH_TRANSFER_BOUNDARY,
         _partition(ReferenceKind.POINT_TO_POINT_TRANSFER, axes),
@@ -388,3 +398,54 @@ def test_validation_point_ids_cannot_enter_curve_knots() -> None:
     )
     with pytest.raises(ValueError, match="VALIDATION points"):
         assert_knots_match_c63_fit(leaked, partition)
+
+
+def test_knot_id_cannot_be_reused_with_corrupted_axis_or_timing() -> None:
+    partition = _partition(ReferenceKind.COLD_PREFILL, [64, 80, 128, 160])
+    first, second = partition.fit
+
+    wrong_axis = PiecewiseLinearCostCurve(
+        curve_id="wrong-axis",
+        hardware_id="a100-80gb",
+        reference_kind=ReferenceKind.COLD_PREFILL,
+        axis_unit="input-tokens",
+        knots=(
+            _knot(
+                first.axis_value + 1,
+                first.observed_seconds,
+                first.point_id,
+                kind=ReferenceKind.COLD_PREFILL,
+            ),
+            _knot(
+                second.axis_value + 1,
+                second.observed_seconds,
+                second.point_id,
+                kind=ReferenceKind.COLD_PREFILL,
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="axis does not match"):
+        assert_knots_match_c63_fit(wrong_axis, partition)
+
+    wrong_timing = PiecewiseLinearCostCurve(
+        curve_id="wrong-timing",
+        hardware_id="a100-80gb",
+        reference_kind=ReferenceKind.COLD_PREFILL,
+        axis_unit="input-tokens",
+        knots=(
+            _knot(
+                first.axis_value,
+                first.observed_seconds + 1.0,
+                first.point_id,
+                kind=ReferenceKind.COLD_PREFILL,
+            ),
+            _knot(
+                second.axis_value,
+                second.observed_seconds,
+                second.point_id,
+                kind=ReferenceKind.COLD_PREFILL,
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="timing does not match"):
+        assert_knots_match_c63_fit(wrong_timing, partition)
