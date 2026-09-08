@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import math
-from typing import Any, Sequence
+from typing import Any
 
 from .calibration_validation import (
     VIDUR_PINNED_COMMIT,
@@ -62,6 +62,11 @@ class CurveKnot:
             raise TypeError("seconds must be SourcedScalar")
         if self.seconds.unit != "seconds":
             raise ValueError("curve knot seconds unit must be 'seconds'")
+        if (
+            self.seconds.provenance.source_class
+            is not ParameterSourceClass.PUBLISHED_OR_VALIDATED_PROFILE
+        ):
+            raise ValueError("replacement curve knots must be P-SRC2 evidence")
         if self.seconds.value < 0:
             raise ValueError("curve knot seconds must be non-negative")
         if (
@@ -123,7 +128,7 @@ class PiecewiseLinearCostCurve:
             if axis == knot.axis_value:
                 return knot.seconds.value
 
-        for left, right in zip(self.knots, self.knots[1:], strict=True):
+        for left, right in zip(self.knots, self.knots[1:]):
             if left.axis_value < axis < right.axis_value:
                 fraction = (axis - left.axis_value) / (
                     right.axis_value - left.axis_value
