@@ -360,7 +360,7 @@ def test_transfer_fresh_boundary_matches_complete_frozen_family_and_is_bracketed
 
 
 def test_validation_point_ids_cannot_enter_curve_knots() -> None:
-    partition = _partition(ReferenceKind.COLD_PREFILL, [64, 80, 128, 160])
+    partition = _partition(ReferenceKind.COLD_PREFILL, _cold_prefill_axes())
     fit_knots = tuple(
         CurveKnot(
             hardware_id=point.hardware_id,
@@ -380,72 +380,97 @@ def test_validation_point_ids_cannot_enter_curve_knots() -> None:
     )
     assert_knots_match_c63_fit(curve, partition)
 
+    leaked_knots = list(fit_knots)
+    leaked_point = partition.validation[0]
+    leaked_knots[0] = CurveKnot(
+        hardware_id=leaked_point.hardware_id,
+        reference_kind=leaked_point.kind,
+        axis_value=leaked_point.axis_value,
+        seconds=_scalar(leaked_point.observed_seconds, "seconds"),
+        source_point_id=leaked_point.point_id,
+    )
     leaked = PiecewiseLinearCostCurve(
         curve_id="leaked",
         hardware_id="a100-80gb",
         reference_kind=ReferenceKind.COLD_PREFILL,
         axis_unit="input-tokens",
-        knots=(
-            fit_knots[0],
-            CurveKnot(
-                hardware_id="a100-80gb",
-                reference_kind=ReferenceKind.COLD_PREFILL,
-                axis_value=partition.validation[0].axis_value,
-                seconds=_scalar(partition.validation[0].observed_seconds, "seconds"),
-                source_point_id=partition.validation[0].point_id,
-            ),
-        ),
+        knots=tuple(sorted(leaked_knots, key=lambda knot: knot.axis_value)),
     )
     with pytest.raises(ValueError, match="VALIDATION points"):
         assert_knots_match_c63_fit(leaked, partition)
 
 
 def test_knot_id_cannot_be_reused_with_corrupted_axis_or_timing() -> None:
-    partition = _partition(ReferenceKind.COLD_PREFILL, [64, 80, 128, 160])
-    first, second = partition.fit
+    partition = _partition(ReferenceKind.COLD_PREFILL, _cold_prefill_axes())
+    fit_knots = [
+        CurveKnot(
+            hardware_id=point.hardware_id,
+            reference_kind=point.kind,
+            axis_value=point.axis_value,
+            seconds=_scalar(point.observed_seconds, "seconds"),
+            source_point_id=point.point_id,
+        )
+        for point in partition.fit
+    ]
+    first = partition.fit[0]
 
+    wrong_axis_knots = list(fit_knots)
+    wrong_axis_knots[0] = _knot(
+        first.axis_value + 1,
+        first.observed_seconds,
+        first.point_id,
+        kind=ReferenceKind.COLD_PREFILL,
+    )
     wrong_axis = PiecewiseLinearCostCurve(
         curve_id="wrong-axis",
         hardware_id="a100-80gb",
         reference_kind=ReferenceKind.COLD_PREFILL,
         axis_unit="input-tokens",
-        knots=(
-            _knot(
-                first.axis_value + 1,
-                first.observed_seconds,
-                first.point_id,
-                kind=ReferenceKind.COLD_PREFILL,
-            ),
-            _knot(
-                second.axis_value + 1,
-                second.observed_seconds,
-                second.point_id,
-                kind=ReferenceKind.COLD_PREFILL,
-            ),
-        ),
+        knots=tuple(wrong_axis_knots),
     )
     with pytest.raises(ValueError, match="axis does not match"):
         assert_knots_match_c63_fit(wrong_axis, partition)
 
+    wrong_timing_knots = list(fit_knots)
+    wrong_timing_knots[0] = _knot(
+        first.axis_value,
+        first.observed_seconds + 1.0,
+        first.point_id,
+        kind=ReferenceKind.COLD_PREFILL,
+    )
     wrong_timing = PiecewiseLinearCostCurve(
         curve_id="wrong-timing",
         hardware_id="a100-80gb",
         reference_kind=ReferenceKind.COLD_PREFILL,
         axis_unit="input-tokens",
-        knots=(
-            _knot(
-                first.axis_value,
-                first.observed_seconds + 1.0,
-                first.point_id,
-                kind=ReferenceKind.COLD_PREFILL,
-            ),
-            _knot(
-                second.axis_value,
-                second.observed_seconds,
-                second.point_id,
-                kind=ReferenceKind.COLD_PREFILL,
-            ),
-        ),
+        knots=tuple(wrong_timing_knots),
     )
     with pytest.raises(ValueError, match="timing does not match"):
         assert_knots_match_c63_fit(wrong_timing, partition)
+
+
+def test_knot_admission_rejects_incomplete_canonically_split_family() -> None:
+    incomplete = _partition(
+        ReferenceKind.COLD_PREFILL,
+        _cold_prefill_axes()[:-2],
+    )
+    knots = tuple(
+        CurveKnot(
+            hardware_id=point.hardware_id,
+            reference_kind=point.kind,
+            axis_value=point.axis_value,
+            seconds=_scalar(point.observed_seconds, "seconds"),
+            source_point_id=point.point_id,
+        )
+        for point in incomplete.fit
+    )
+    curve = PiecewiseLinearCostCurve(
+        curve_id="incomplete-fit-only",
+        hardware_id="a100-80gb",
+        reference_kind=ReferenceKind.COLD_PREFILL,
+        axis_unit="input-tokens",
+        knots=knots,
+    )
+    with pytest.raises(ValueError, match="complete frozen C6.3 family identity"):
+        assert_knots_match_c63_fit(curve, incomplete)
+
