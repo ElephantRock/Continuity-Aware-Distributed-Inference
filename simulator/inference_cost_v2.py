@@ -43,6 +43,44 @@ _CURVE_KINDS = {
     ReferenceKind.POINT_TO_POINT_TRANSFER,
 }
 
+# Identity-only fences derived from the exact C6.3c reproduction artifact.  The
+# digest covers hardware, family, and the complete ordered (point_id, axis_value)
+# set; it deliberately excludes observed timing values.  This lets C6.4a prove
+# that a proposed fresh boundary is absent from the complete frozen C6.3 corpus
+# without evaluating any new reference timing.
+_C64A_FROZEN_C63_FAMILY_IDENTITIES: dict[
+    tuple[str, ReferenceKind], tuple[int, str]
+] = {
+    (
+        "a100-80gb",
+        ReferenceKind.COLD_PREFILL,
+    ): (
+        81,
+        "1929a2f912cd39c97fe926e6870d6e6581eb94276c7889fd1aba9da4ba9bf767",
+    ),
+    (
+        "h100-80gb",
+        ReferenceKind.COLD_PREFILL,
+    ): (
+        81,
+        "53e9b4736f90e63ec42f333931130ab0a95dc0333d50ac393f742a21b08c6e49",
+    ),
+    (
+        "a100-80gb",
+        ReferenceKind.POINT_TO_POINT_TRANSFER,
+    ): (
+        993,
+        "e95132d3e0c91f3d7a88dc1cb98ee4b7a9594fafefe07b584700b8751b745902",
+    ),
+    (
+        "h100-80gb",
+        ReferenceKind.POINT_TO_POINT_TRANSFER,
+    ): (
+        993,
+        "a1be65466ec7791e5380050b97e82f17196c82e9f59731c733b9ccd6e860541b",
+    ),
+}
+
 
 @dataclass(frozen=True, slots=True)
 class CurveKnot:
@@ -265,14 +303,34 @@ C64A_FRESH_TRANSFER_BOUNDARY = FreshAdequacyBoundary(
 )
 
 
+def _c63_family_identity(partition: ReferencePartition) -> tuple[int, str]:
+    ordered = tuple(
+        sorted(
+            partition.fit + partition.validation,
+            key=lambda point: (point.axis_value, point.point_id),
+        )
+    )
+    payload = {
+        "hardware_id": partition.hardware_id,
+        "kind": partition.kind.value,
+        "points": [[point.point_id, point.axis_value] for point in ordered],
+    }
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    return len(ordered), hashlib.sha256(encoded).hexdigest()
+
+
 def verify_fresh_boundary_against_c63_partition(
     boundary: FreshAdequacyBoundary,
     partition: ReferencePartition,
 ) -> None:
     """Fail closed unless every fresh axis is unseen and FIT-bracketed.
 
-    This check uses only source point identity and axis membership; it never reads
-    held-out error values or fresh reference timings.
+    The partition must first match the complete frozen C6.3 family identity.  The
+    identity digest uses only point IDs and axes, never held-out errors or timing
+    values.  This prevents a canonically split but incomplete subset from being
+    used to manufacture freshness.
     """
 
     if not isinstance(boundary, FreshAdequacyBoundary):
@@ -281,6 +339,18 @@ def verify_fresh_boundary_against_c63_partition(
         raise TypeError("partition must be ReferencePartition")
     if partition.kind is not boundary.reference_kind:
         raise ValueError("boundary reference kind does not match partition")
+
+    expected_identity = _C64A_FROZEN_C63_FAMILY_IDENTITIES.get(
+        (partition.hardware_id, partition.kind)
+    )
+    if expected_identity is None:
+        raise ValueError("partition is outside the frozen C6.3 revised-family domain")
+    observed_identity = _c63_family_identity(partition)
+    if observed_identity != expected_identity:
+        raise ValueError(
+            "partition does not match the complete frozen C6.3 family identity: "
+            f"expected={expected_identity}, observed={observed_identity}"
+        )
 
     observed_axes = {point.axis_value for point in partition.fit + partition.validation}
     fit_axes = tuple(sorted(point.axis_value for point in partition.fit))
@@ -503,7 +573,7 @@ def assert_knots_match_c63_fit(
     curve: PiecewiseLinearCostCurve,
     partition: ReferencePartition,
 ) -> None:
-    """Reject any replacement curve containing old VALIDATION or unknown points."""
+    """Reject any replacement curve not exactly backed by C6.3 FIT points."""
 
     if not isinstance(curve, PiecewiseLinearCostCurve):
         raise TypeError("curve must be PiecewiseLinearCostCurve")
@@ -523,6 +593,20 @@ def assert_knots_match_c63_fit(
     if supplied != expected_fit:
         missing = sorted(expected_fit - supplied)
         raise ValueError(f"curve must use the complete frozen C6.3 FIT knot set: {missing}")
+
+    fit_by_id = {point.point_id: point for point in partition.fit}
+    for knot in curve.knots:
+        point = fit_by_id[knot.source_point_id]
+        if knot.axis_value != point.axis_value:
+            raise ValueError(
+                "curve knot axis does not match its referenced C6.3 FIT point: "
+                f"{knot.source_point_id}"
+            )
+        if knot.seconds.value != point.observed_seconds:
+            raise ValueError(
+                "curve knot timing does not match its referenced C6.3 FIT point: "
+                f"{knot.source_point_id}"
+            )
 
 
 def _require_nonempty(value: str, name: str) -> None:
