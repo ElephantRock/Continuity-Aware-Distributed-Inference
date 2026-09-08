@@ -5,13 +5,16 @@ import pytest
 from simulator.calibration_adequacy import (
     C63C_COMPOSITION_INPUT_CONTEXTS,
     C63C_COMPOSITION_OUTPUT_TOKENS,
+    C63C_CORPUS_FINGERPRINTS,
     AffineFitDiagnostic,
     FamilyAdequacyRecord,
     FamilyValidationStatus,
+    HardwareAdequacyRecord,
     evaluate_decode_composition,
     evaluate_family_adequacy,
     fit_affine_reference_family_diagnostic,
 )
+from simulator.calibration_projection import VIDUR_SOURCE_SHA256
 from simulator.calibration_validation import (
     VIDUR_PINNED_COMMIT,
     AdequacyDecision,
@@ -133,6 +136,35 @@ def test_family_record_cannot_launder_invalid_fit_into_evaluated_status() -> Non
             fit=diagnostic,
             validation_status=FamilyValidationStatus.EVALUATED,
             validation_report=None,
+            decision=AdequacyDecision.INADEQUATE_REVISE_REPRESENTATION,
+        )
+
+
+def test_hardware_record_rejects_cross_hardware_family_evidence() -> None:
+    families = tuple(
+        evaluate_family_adequacy(
+            _linear_partition(intercept=-1.0, slope=2.0, kind=kind)
+        )
+        for kind in ReferenceKind
+    )
+    mixed_first = replace(
+        families[0],
+        fit=replace(families[0].fit, hardware_id="h100-80gb"),
+    )
+    mixed_families = (mixed_first,) + families[1:]
+    composition = evaluate_decode_composition(
+        "a100-80gb",
+        fixed_seconds=0.0,
+        slope_seconds_per_context_step=1e-6,
+    )
+
+    with pytest.raises(ValueError, match="family record hardware"):
+        HardwareAdequacyRecord(
+            hardware_id="a100-80gb",
+            source_sha256=VIDUR_SOURCE_SHA256["a100-80gb"],
+            corpus_fingerprint=C63C_CORPUS_FINGERPRINTS["a100-80gb"],
+            families=mixed_families,
+            decode_composition=composition,
             decision=AdequacyDecision.INADEQUATE_REVISE_REPRESENTATION,
         )
 
