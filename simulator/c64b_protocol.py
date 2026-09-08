@@ -17,8 +17,8 @@ from .inference_cost_v2 import (
 )
 
 
-C64B_PROTOCOL_SCHEMA = "cadi.c6.4b.vidur-source-model-protocol.v1"
-C64B_PROTOCOL_ID = "cadi.c6.4b.vidur-linear-regression-source-model.v1"
+C64B_PROTOCOL_SCHEMA = "cadi.c6.4b.vidur-source-model-protocol.v2"
+C64B_PROTOCOL_ID = "cadi.c6.4b.vidur-linear-regression-source-model.v2"
 C64B_REFERENCE_EVIDENCE = "SIMULATED_SOURCE_MODEL_DERIVED_P_SRC2"
 C64B_PREDICTOR_CLASS = (
     "vidur.execution_time_predictor.linear_regression_execution_time_predictor."
@@ -61,15 +61,20 @@ C64B_SARATHI_CONFIG: dict[str, Any] = {
     "chunk_size": 512,
 }
 
-# The numerical execution platform is part of the scientific protocol. Hosted
-# runner labels alone are insufficient because they can advance to new images.
-# The evaluator must fail closed if these exact platform identifiers drift.
+# The numerical execution substrate is part of the scientific protocol. The
+# original v1 protocol pinned the GitHub-hosted image version but left NumPy's
+# DYNAMIC_ARCH OpenBLAS kernel selected by the host CPU. Cross-run diagnostics
+# showed that this admitted different exact-source outputs on AMD and Intel
+# runners. Protocol v2 therefore freezes the numerical kernel itself. The hosted
+# image version is recorded by CI as provenance but is not an equivalence key;
+# package, BLAS, OS-family, architecture, and environment fences are.
 C64B_RUNTIME: dict[str, Any] = {
     "python": "3.12.14",
+    "python_implementation": "CPython",
     "os": "ubuntu-24.04",
     "architecture": "x86_64",
     "github_actions_image_os": "ubuntu24",
-    "github_actions_image_version": "20260831.293.1",
+    "github_actions_image_version_policy": "record_only_not_equivalence",
     "numpy": "1.26.4",
     "pandas": "2.2.3",
     "scikit-learn": "1.5.2",
@@ -77,10 +82,17 @@ C64B_RUNTIME: dict[str, Any] = {
     "joblib": "1.4.2",
     "threadpoolctl": "3.5.0",
     "fasteners": "0.19",
+    "openblas": {
+        "version": "0.3.23.dev",
+        "coretype": "Haswell",
+        "threading_layer": "pthreads",
+        "num_threads": 1,
+    },
     "environment": {
         "PYTHONHASHSEED": "0",
         "OMP_NUM_THREADS": "1",
         "OPENBLAS_NUM_THREADS": "1",
+        "OPENBLAS_CORETYPE": "Haswell",
         "MKL_NUM_THREADS": "1",
         "NUMEXPR_NUM_THREADS": "1",
     },
