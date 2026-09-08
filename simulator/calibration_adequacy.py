@@ -230,6 +230,8 @@ class HardwareAdequacyRecord:
         kinds = [item.fit.kind for item in self.families]
         if len(self.families) != len(ReferenceKind) or set(kinds) != set(ReferenceKind):
             raise ValueError("hardware record requires exactly one family record per kind")
+        if any(item.fit.hardware_id != self.hardware_id for item in self.families):
+            raise ValueError("family record hardware does not match enclosing hardware")
         if self.decode_composition.hardware_id != self.hardware_id:
             raise ValueError("decode composition hardware does not match")
         adequate = all(
