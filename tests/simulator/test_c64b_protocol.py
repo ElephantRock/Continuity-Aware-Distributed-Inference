@@ -65,9 +65,13 @@ def test_protocol_selects_deterministic_upstream_linear_regression() -> None:
 def test_upstream_behavioral_files_are_sha_fenced() -> None:
     expected_paths = {
         "vidur/config/config.py",
+        "vidur/config/model_config.py",
+        "vidur/config/device_sku_config.py",
+        "vidur/config/node_sku_config.py",
         "vidur/execution_time_predictor/base_execution_time_predictor.py",
         "vidur/execution_time_predictor/sklearn_execution_time_predictor.py",
         "vidur/execution_time_predictor/linear_regression_execution_time_predictor.py",
+        "vidur/entities/request.py",
         "vidur/entities/batch.py",
         "vidur/entities/execution_time.py",
     }
