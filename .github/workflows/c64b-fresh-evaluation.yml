@@ -1,0 +1,82 @@
+name: c64b-fresh-evaluation
+
+on:
+  push:
+    branches:
+      - c6/replacement-calibration-fresh-adequacy
+    paths:
+      - .github/workflows/c64b-fresh-evaluation.yml
+
+permissions:
+  contents: write
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PYTHONHASHSEED: '0'
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      NUMEXPR_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c6/replacement-calibration-fresh-adequacy
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install frozen evaluator runtime
+        run: >-
+          python -m pip install
+          numpy==1.26.4
+          pandas==2.2.3
+          scikit-learn==1.5.2
+          scipy==1.14.1
+          joblib==1.4.2
+          threadpoolctl==3.5.0
+          fasteners==0.19
+      - name: Checkout pinned Vidur source
+        shell: bash
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vidur.git .c64b_vidur
+          git -C .c64b_vidur checkout --detach abae7f63aa857300f5cdc6f5e0d27860cd24721b
+          test "$(git -C .c64b_vidur rev-parse HEAD)" = "abae7f63aa857300f5cdc6f5e0d27860cd24721b"
+      - name: Run exact-source evaluation twice
+        shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/.c64b_vidur
+        run: |
+          python experiments/c64b_fresh_adequacy.py \
+            --vidur-root .c64b_vidur \
+            --output /tmp/c64b-run-1.json > /tmp/c64b-run-1.log
+          rm -rf /tmp/c64b-second
+          python experiments/c64b_fresh_adequacy.py \
+            --vidur-root .c64b_vidur \
+            --output /tmp/c64b-run-2.json > /tmp/c64b-run-2.log
+          cmp /tmp/c64b-run-1.json /tmp/c64b-run-2.json
+          mkdir -p artifacts/c6.4b
+          cp /tmp/c64b-run-1.json artifacts/c6.4b/fresh-adequacy.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('/tmp/c64b-run-1.json').read_text())
+          print('decision=', result['decision'])
+          print('protocol_fingerprint=', result['protocol_fingerprint'])
+          print('scientific_fingerprint=', result['scientific_fingerprint'])
+          for hw in result['hardware']:
+              print(hw['hardware_id'], hw['decision'])
+              for name in ('fresh_prefill', 'fresh_transfer'):
+                  r = hw[name]
+                  print(name, r['decision'], r['evaluated_subset_mape'], r['evaluated_subset_max_ape'], r['all_frozen_axes_evaluated'])
+          PY
+      - name: Commit canonical scientific result
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add artifacts/c6.4b/fresh-adequacy.json
+          git commit -m "C6.4b: record fresh adequacy result"
+          git push origin HEAD:c6/replacement-calibration-fresh-adequacy
