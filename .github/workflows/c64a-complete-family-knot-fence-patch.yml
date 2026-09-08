@@ -1,0 +1,156 @@
+name: c64a-complete-family-knot-fence-patch
+
+on:
+  push:
+    branches:
+      - c6/c64a-complete-family-knot-fence
+    paths:
+      - .github/workflows/c64a-complete-family-knot-fence-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c6/c64a-complete-family-knot-fence
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply bounded semantic patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('simulator/inference_cost_v2.py')
+          text = path.read_text(encoding='utf-8')
+
+          marker = '''def verify_fresh_boundary_against_c63_partition(
+              boundary: FreshAdequacyBoundary,
+              partition: ReferencePartition,
+          ) -> None:
+          '''
+          helper = '''def _assert_complete_frozen_c63_family(partition: ReferencePartition) -> None:
+              """Require the exact complete C6.3 family before using its partition.
+
+              The identity fence is timing-free: it binds hardware, family, exact point
+              count, and the canonical ``(point_id, axis_value)`` set only.
+              """
+
+              if not isinstance(partition, ReferencePartition):
+                  raise TypeError("partition must be ReferencePartition")
+              expected_identity = _C64A_FROZEN_C63_FAMILY_IDENTITIES.get(
+                  (partition.hardware_id, partition.kind)
+              )
+              if expected_identity is None:
+                  raise ValueError("partition is outside the frozen C6.3 revised-family domain")
+              observed_identity = _c63_family_identity(partition)
+              if observed_identity != expected_identity:
+                  raise ValueError(
+                      "partition does not match the complete frozen C6.3 family identity: "
+                      f"expected={expected_identity}, observed={observed_identity}"
+                  )
+
+
+          def verify_fresh_boundary_against_c63_partition(
+              boundary: FreshAdequacyBoundary,
+              partition: ReferencePartition,
+          ) -> None:
+          '''
+          if marker not in text:
+              raise SystemExit('verify function marker not found')
+          text = text.replace(marker, helper, 1)
+
+          old = '''    expected_identity = _C64A_FROZEN_C63_FAMILY_IDENTITIES.get(
+              (partition.hardware_id, partition.kind)
+          )
+              if expected_identity is None:
+                  raise ValueError("partition is outside the frozen C6.3 revised-family domain")
+              observed_identity = _c63_family_identity(partition)
+              if observed_identity != expected_identity:
+                  raise ValueError(
+                      "partition does not match the complete frozen C6.3 family identity: "
+                      f"expected={expected_identity}, observed={observed_identity}"
+                  )
+          '''
+          # Indentation in the source is four spaces; normalize an exact block separately.
+          old = '''    expected_identity = _C64A_FROZEN_C63_FAMILY_IDENTITIES.get(
+              (partition.hardware_id, partition.kind)
+          )
+              if expected_identity is None:
+                  raise ValueError("partition is outside the frozen C6.3 revised-family domain")
+              observed_identity = _c63_family_identity(partition)
+              if observed_identity != expected_identity:
+                  raise ValueError(
+                      "partition does not match the complete frozen C6.3 family identity: "
+                      f"expected={expected_identity}, observed={observed_identity}"
+                  )
+          '''
+          # Use start/end anchors to avoid depending on continuation indentation.
+          start = text.index('    expected_identity = _C64A_FROZEN_C63_FAMILY_IDENTITIES.get(', text.index('def verify_fresh_boundary_against_c63_partition'))
+          end_anchor = '    observed_axes = {point.axis_value for point in partition.fit + partition.validation}\n'
+          end = text.index(end_anchor, start)
+          text = text[:start] + '    _assert_complete_frozen_c63_family(partition)\n\n' + text[end:]
+
+          needle = '''    if curve.hardware_id != partition.hardware_id or curve.reference_kind is not partition.kind:
+              raise ValueError("curve hardware/family must match the C6.3 partition")
+              expected_fit = {point.point_id for point in partition.fit}
+          '''
+          replacement = '''    if curve.hardware_id != partition.hardware_id or curve.reference_kind is not partition.kind:
+              raise ValueError("curve hardware/family must match the C6.3 partition")
+              _assert_complete_frozen_c63_family(partition)
+              expected_fit = {point.point_id for point in partition.fit}
+          '''
+          if needle not in text:
+              raise SystemExit('knot admission marker not found')
+          text = text.replace(needle, replacement, 1)
+          path.write_text(text, encoding='utf-8')
+
+          tests = Path('tests/simulator/test_inference_cost_v2.py')
+          t = tests.read_text(encoding='utf-8')
+          regression = '''
+
+          def test_knot_admission_rejects_incomplete_canonically_split_family() -> None:
+              incomplete = _partition(
+                  ReferenceKind.COLD_PREFILL,
+                  _cold_prefill_axes()[:-2],
+              )
+              knots = tuple(
+                  CurveKnot(
+                      hardware_id=point.hardware_id,
+                      reference_kind=point.kind,
+                      axis_value=point.axis_value,
+                      seconds=_scalar(point.observed_seconds, "seconds"),
+                      source_point_id=point.point_id,
+                  )
+                  for point in incomplete.fit
+              )
+              curve = PiecewiseLinearCostCurve(
+                  curve_id="incomplete-fit-only",
+                  hardware_id="a100-80gb",
+                  reference_kind=ReferenceKind.COLD_PREFILL,
+                  axis_unit="input-tokens",
+                  knots=knots,
+              )
+              with pytest.raises(ValueError, match="complete frozen C6.3 family identity"):
+                  assert_knots_match_c63_fit(curve, incomplete)
+          '''
+          if 'def test_knot_admission_rejects_incomplete_canonically_split_family' in t:
+              raise SystemExit('regression already present')
+          tests.write_text(t.rstrip() + regression + '\n', encoding='utf-8')
+          PY
+      - name: Run focused C6.4a tests
+        run: python -m pytest tests/simulator/test_inference_cost_v2.py
+      - name: Commit bounded correction
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add simulator/inference_cost_v2.py tests/simulator/test_inference_cost_v2.py
+          git commit -m "C6.4a: require complete family before knot admission"
+          git push origin HEAD:c6/c64a-complete-family-knot-fence
