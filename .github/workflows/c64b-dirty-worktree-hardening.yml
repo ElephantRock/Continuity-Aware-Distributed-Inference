@@ -1,0 +1,53 @@
+name: c64b-dirty-worktree-hardening
+
+on:
+  push:
+    branches:
+      - c6/replacement-calibration-fresh-adequacy
+    paths:
+      - .github/workflows/c64b-dirty-worktree-hardening.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: c6/replacement-calibration-fresh-adequacy
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Apply fail-closed working-tree fence and regression
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('experiments/c64b_fresh_adequacy.py')
+          text = path.read_text()
+          needle = '''def verify_upstream_snapshot(vidur_root: Path) -> dict[str, Any]:\n    head = _git(vidur_root, "rev-parse", "HEAD")\n'''
+          replacement = '''def verify_upstream_snapshot(vidur_root: Path) -> dict[str, Any]:\n    worktree_status = _git(\n        vidur_root, "status", "--porcelain", "--untracked-files=all"\n    )\n    if worktree_status:\n        raise ValueError(\n            "Vidur working tree must be clean before source-model evaluation: "\n            f"status={worktree_status!r}"\n        )\n\n    head = _git(vidur_root, "rev-parse", "HEAD")\n'''
+          if needle not in text:
+              raise SystemExit('expected verify_upstream_snapshot anchor not found')
+          path.write_text(text.replace(needle, replacement, 1))
+
+          test_path = Path('tests/simulator/test_c64b_fresh_adequacy.py')
+          if test_path.exists():
+              raise SystemExit(f'{test_path} already exists')
+          test_path.write_text('''from __future__ import annotations\n\nfrom pathlib import Path\n\nimport pytest\n\nimport experiments.c64b_fresh_adequacy as evaluator\n\n\ndef test_upstream_snapshot_rejects_dirty_worktree_before_commit_checks(\n    monkeypatch: pytest.MonkeyPatch, tmp_path: Path\n) -> None:\n    calls: list[tuple[str, ...]] = []\n\n    def fake_git(repo: Path, *args: str) -> str:\n        assert repo == tmp_path\n        calls.append(args)\n        if args == ("status", "--porcelain", "--untracked-files=all"):\n            return " M vidur/execution_time_predictor/sklearn_execution_time_predictor.py"\n        raise AssertionError(f"unexpected git call after dirty status: {args}")\n\n    monkeypatch.setattr(evaluator, "_git", fake_git)\n    with pytest.raises(ValueError, match="working tree must be clean"):\n        evaluator.verify_upstream_snapshot(tmp_path)\n\n    assert calls == [("status", "--porcelain", "--untracked-files=all")]\n''')
+          PY
+      - name: Run focused regression
+        run: |
+          python -m pip install pytest
+          python -m pytest -q tests/simulator/test_c64b_fresh_adequacy.py tests/simulator/test_c64b_protocol.py
+      - name: Commit hardening
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add experiments/c64b_fresh_adequacy.py tests/simulator/test_c64b_fresh_adequacy.py
+          git commit -m "C6.4b: reject dirty upstream source worktrees"
+          git push origin HEAD:c6/replacement-calibration-fresh-adequacy
