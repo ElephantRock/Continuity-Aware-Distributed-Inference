@@ -66,49 +66,29 @@ jobs:
               raise SystemExit('verify function marker not found')
           text = text.replace(marker, helper, 1)
 
-          old = '''    expected_identity = _C64A_FROZEN_C63_FAMILY_IDENTITIES.get(
-              (partition.hardware_id, partition.kind)
+          verify_start = text.index('def verify_fresh_boundary_against_c63_partition')
+          identity_start = text.index(
+              '    expected_identity = _C64A_FROZEN_C63_FAMILY_IDENTITIES.get(',
+              verify_start,
           )
-              if expected_identity is None:
-                  raise ValueError("partition is outside the frozen C6.3 revised-family domain")
-              observed_identity = _c63_family_identity(partition)
-              if observed_identity != expected_identity:
-                  raise ValueError(
-                      "partition does not match the complete frozen C6.3 family identity: "
-                      f"expected={expected_identity}, observed={observed_identity}"
-                  )
-          '''
-          # Indentation in the source is four spaces; normalize an exact block separately.
-          old = '''    expected_identity = _C64A_FROZEN_C63_FAMILY_IDENTITIES.get(
-              (partition.hardware_id, partition.kind)
+          observed_anchor = (
+              '    observed_axes = {point.axis_value for point in partition.fit + partition.validation}\n'
           )
-              if expected_identity is None:
-                  raise ValueError("partition is outside the frozen C6.3 revised-family domain")
-              observed_identity = _c63_family_identity(partition)
-              if observed_identity != expected_identity:
-                  raise ValueError(
-                      "partition does not match the complete frozen C6.3 family identity: "
-                      f"expected={expected_identity}, observed={observed_identity}"
-                  )
-          '''
-          # Use start/end anchors to avoid depending on continuation indentation.
-          start = text.index('    expected_identity = _C64A_FROZEN_C63_FAMILY_IDENTITIES.get(', text.index('def verify_fresh_boundary_against_c63_partition'))
-          end_anchor = '    observed_axes = {point.axis_value for point in partition.fit + partition.validation}\n'
-          end = text.index(end_anchor, start)
-          text = text[:start] + '    _assert_complete_frozen_c63_family(partition)\n\n' + text[end:]
+          identity_end = text.index(observed_anchor, identity_start)
+          text = (
+              text[:identity_start]
+              + '    _assert_complete_frozen_c63_family(partition)\n\n'
+              + text[identity_end:]
+          )
 
-          needle = '''    if curve.hardware_id != partition.hardware_id or curve.reference_kind is not partition.kind:
-              raise ValueError("curve hardware/family must match the C6.3 partition")
-              expected_fit = {point.point_id for point in partition.fit}
-          '''
-          replacement = '''    if curve.hardware_id != partition.hardware_id or curve.reference_kind is not partition.kind:
-              raise ValueError("curve hardware/family must match the C6.3 partition")
-              _assert_complete_frozen_c63_family(partition)
-              expected_fit = {point.point_id for point in partition.fit}
-          '''
-          if needle not in text:
-              raise SystemExit('knot admission marker not found')
-          text = text.replace(needle, replacement, 1)
+          knot_start = text.index('def assert_knots_match_c63_fit')
+          expected_anchor = '    expected_fit = {point.point_id for point in partition.fit}\n'
+          expected_pos = text.index(expected_anchor, knot_start)
+          text = (
+              text[:expected_pos]
+              + '    _assert_complete_frozen_c63_family(partition)\n'
+              + text[expected_pos:]
+          )
           path.write_text(text, encoding='utf-8')
 
           tests = Path('tests/simulator/test_inference_cost_v2.py')
