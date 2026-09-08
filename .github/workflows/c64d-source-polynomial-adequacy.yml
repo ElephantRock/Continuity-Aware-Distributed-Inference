@@ -1,0 +1,240 @@
+name: c64d-source-polynomial-adequacy
+
+on:
+  push:
+    branches:
+      - c6/source-polynomial-v3-adequacy
+    paths:
+      - .github/workflows/c64d-source-polynomial-adequacy.yml
+      - simulator/c64d_export.py
+      - experiments/c64d_source_polynomial_adequacy.py
+      - tests/simulator/test_c64d_export.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PYTHONHASHSEED: '0'
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  OPENBLAS_CORETYPE: 'Haswell'
+  MKL_NUM_THREADS: '1'
+  NUMEXPR_NUM_THREADS: '1'
+
+jobs:
+  compile-reproduction:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Verify immutable event checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+      - name: Verify frozen platform contract
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, platform, sys
+          expected = {
+              'python': '3.12.14', 'runner_os': 'Linux', 'runner_arch': 'X64',
+              'machine': 'x86_64', 'image_os': 'ubuntu24',
+          }
+          observed = {
+              'python': platform.python_version(), 'runner_os': os.environ.get('RUNNER_OS'),
+              'runner_arch': os.environ.get('RUNNER_ARCH'), 'machine': platform.machine(),
+              'image_os': os.environ.get('ImageOS'),
+          }
+          if observed != expected or sys.implementation.name != 'cpython':
+              raise SystemExit(f'C6.4d platform drift: expected={expected}, observed={observed}')
+          expected_env = {
+              'PYTHONHASHSEED':'0','OMP_NUM_THREADS':'1','OPENBLAS_NUM_THREADS':'1',
+              'OPENBLAS_CORETYPE':'Haswell','MKL_NUM_THREADS':'1','NUMEXPR_NUM_THREADS':'1',
+          }
+          observed_env = {k: os.environ.get(k) for k in expected_env}
+          if observed_env != expected_env:
+              raise SystemExit(f'C6.4d environment drift: {observed_env}')
+          print('runner_provenance=', json.dumps({
+              'ImageOS': os.environ.get('ImageOS'), 'ImageVersion': os.environ.get('ImageVersion'),
+              'RUNNER_OS': os.environ.get('RUNNER_OS'), 'RUNNER_ARCH': os.environ.get('RUNNER_ARCH'),
+              'processor': platform.processor(),
+          }, sort_keys=True))
+          PY
+      - name: Install frozen evaluator runtime
+        run: >-
+          python -m pip install
+          pytest==8.3.5
+          numpy==1.26.4 pandas==2.2.3 scikit-learn==1.5.2 scipy==1.14.1
+          joblib==1.4.2 threadpoolctl==3.5.0 fasteners==0.19
+      - name: Verify frozen package and BLAS runtime
+        shell: bash
+        run: |
+          python - <<'PY'
+          from importlib.metadata import version
+          import numpy as np
+          from threadpoolctl import threadpool_info
+          expected = {
+              'numpy':'1.26.4','pandas':'2.2.3','scikit-learn':'1.5.2','scipy':'1.14.1',
+              'joblib':'1.4.2','threadpoolctl':'3.5.0','fasteners':'0.19',
+          }
+          observed = {k: version(k) for k in expected}
+          if observed != expected:
+              raise SystemExit(f'C6.4d package drift: {observed}')
+          np.dot(np.ones((2,2)), np.ones((2,2)))
+          blas = [x for x in threadpool_info() if x.get('internal_api') == 'openblas']
+          if len(blas) != 1:
+              raise SystemExit(f'expected one OpenBLAS runtime: {blas!r}')
+          observed_blas = {
+              'version': str(blas[0].get('version')), 'coretype': str(blas[0].get('architecture')),
+              'threading_layer': str(blas[0].get('threading_layer')),
+              'num_threads': int(blas[0].get('num_threads', -1)),
+          }
+          expected_blas = {'version':'0.3.23.dev','coretype':'Haswell','threading_layer':'pthreads','num_threads':1}
+          if observed_blas != expected_blas:
+              raise SystemExit(f'C6.4d BLAS drift: {observed_blas}')
+          print('frozen_packages=', observed)
+          print('frozen_openblas=', observed_blas)
+          PY
+      - name: Checkout pinned Vidur source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/microsoft/vidur.git .c64d_vidur
+          git -C .c64d_vidur checkout --detach abae7f63aa857300f5cdc6f5e0d27860cd24721b
+          test "$(git -C .c64d_vidur rev-parse HEAD)" = "abae7f63aa857300f5cdc6f5e0d27860cd24721b"
+      - name: Run exporter contract tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/.c64d_vidur
+        run: python -m pytest -q tests/simulator/test_c64d_export.py tests/simulator/test_inference_cost_v3.py
+      - name: Compile profiles twice without fresh boundary timings
+        shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/.c64d_vidur
+        run: |
+          set -euo pipefail
+          python experiments/c64d_source_polynomial_adequacy.py --mode compile --vidur-root .c64d_vidur --output /tmp/c64d-compile-1.json > /tmp/c64d-compile-1.log
+          python experiments/c64d_source_polynomial_adequacy.py --mode compile --vidur-root .c64d_vidur --output /tmp/c64d-compile-2.json > /tmp/c64d-compile-2.log
+          cmp /tmp/c64d-compile-1.json /tmp/c64d-compile-2.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('/tmp/c64d-compile-1.json').read_text())
+          assert result['contains_fresh_reference_timings'] is False
+          assert result['decision'] == 'PASS', result
+          print('compile_fingerprint=', result['compile_fingerprint'])
+          for hw in result['hardware']:
+              assert hw['source_equivalence']['decision'] == 'PASS', hw
+              print('profile_fingerprint=', hw['hardware_id'], hw['profile_fingerprint'])
+              for component in hw['source_equivalence']['components']:
+                  print('equivalence=', hw['hardware_id'], component['component_id'], component['sample_count'], component['max_ulp_ratio'])
+          PY
+
+  evaluate:
+    needs: compile-reproduction
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Verify immutable event checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+      - name: Verify frozen platform contract
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, platform, sys
+          expected = {'python':'3.12.14','runner_os':'Linux','runner_arch':'X64','machine':'x86_64','image_os':'ubuntu24'}
+          observed = {'python':platform.python_version(),'runner_os':os.environ.get('RUNNER_OS'),'runner_arch':os.environ.get('RUNNER_ARCH'),'machine':platform.machine(),'image_os':os.environ.get('ImageOS')}
+          if observed != expected or sys.implementation.name != 'cpython':
+              raise SystemExit(f'C6.4d platform drift: {observed}')
+          expected_env = {'PYTHONHASHSEED':'0','OMP_NUM_THREADS':'1','OPENBLAS_NUM_THREADS':'1','OPENBLAS_CORETYPE':'Haswell','MKL_NUM_THREADS':'1','NUMEXPR_NUM_THREADS':'1'}
+          if {k:os.environ.get(k) for k in expected_env} != expected_env:
+              raise SystemExit('C6.4d numerical environment drift')
+          print('ImageVersion=', os.environ.get('ImageVersion'))
+          PY
+      - name: Install frozen evaluator runtime
+        run: >-
+          python -m pip install
+          pytest==8.3.5
+          numpy==1.26.4 pandas==2.2.3 scikit-learn==1.5.2 scipy==1.14.1
+          joblib==1.4.2 threadpoolctl==3.5.0 fasteners==0.19
+      - name: Verify frozen package and BLAS runtime
+        shell: bash
+        run: |
+          python - <<'PY'
+          from importlib.metadata import version
+          import numpy as np
+          from threadpoolctl import threadpool_info
+          expected = {'numpy':'1.26.4','pandas':'2.2.3','scikit-learn':'1.5.2','scipy':'1.14.1','joblib':'1.4.2','threadpoolctl':'3.5.0','fasteners':'0.19'}
+          if {k:version(k) for k in expected} != expected:
+              raise SystemExit('C6.4d package runtime drift')
+          np.dot(np.ones((2,2)), np.ones((2,2)))
+          blas = [x for x in threadpool_info() if x.get('internal_api') == 'openblas']
+          observed = {'version':str(blas[0].get('version')),'coretype':str(blas[0].get('architecture')),'threading_layer':str(blas[0].get('threading_layer')),'num_threads':int(blas[0].get('num_threads',-1))} if len(blas) == 1 else None
+          expected_blas = {'version':'0.3.23.dev','coretype':'Haswell','threading_layer':'pthreads','num_threads':1}
+          if observed != expected_blas:
+              raise SystemExit(f'C6.4d BLAS runtime drift: {observed}')
+          PY
+      - name: Checkout pinned Vidur source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/microsoft/vidur.git .c64d_vidur
+          git -C .c64d_vidur checkout --detach abae7f63aa857300f5cdc6f5e0d27860cd24721b
+          test "$(git -C .c64d_vidur rev-parse HEAD)" = "abae7f63aa857300f5cdc6f5e0d27860cd24721b"
+      - name: Run exact-source C6.4d evaluation twice
+        shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/.c64d_vidur
+        run: |
+          set -euo pipefail
+          python experiments/c64d_source_polynomial_adequacy.py --mode evaluate --vidur-root .c64d_vidur --output /tmp/c64d-run-1.json > /tmp/c64d-run-1.log
+          python experiments/c64d_source_polynomial_adequacy.py --mode evaluate --vidur-root .c64d_vidur --output /tmp/c64d-run-2.json > /tmp/c64d-run-2.log
+          cmp /tmp/c64d-run-1.json /tmp/c64d-run-2.json
+          mkdir -p artifacts/c6.4d
+          cp /tmp/c64d-run-1.json artifacts/c6.4d/source-polynomial-adequacy.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('/tmp/c64d-run-1.json').read_text())
+          print('decision=', result['decision'])
+          print('protocol_fingerprint=', result['protocol_fingerprint'])
+          print('scientific_fingerprint=', result['scientific_fingerprint'])
+          for hw in result['hardware']:
+              assert hw['source_equivalence']['decision'] == 'PASS', hw
+              assert hw['fresh_evaluation_status'] == 'EVALUATED', hw
+              print('profile_fingerprint=', hw['hardware_id'], hw['profile_fingerprint'])
+              print('hardware_decision=', hw['hardware_id'], hw['decision'])
+              for key in ('fresh_prefill','fresh_transfer'):
+                  family = hw[key]
+                  print(key, family['decision'], family['mape'], family['max_ape'])
+          PY
+      - name: Record canonical scientific result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add artifacts/c6.4d/source-polynomial-adequacy.json
+          if git diff --cached --quiet; then
+            echo "canonical C6.4d scientific result unchanged"
+          else
+            git commit -m "C6.4d: record source-polynomial adequacy result"
+            git push origin HEAD:c6/source-polynomial-v3-adequacy
+          fi
