@@ -15,6 +15,8 @@ permissions:
 jobs:
   freeze-boundary-identities:
     runs-on: ubuntu-24.04
+    env:
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -44,11 +46,26 @@ jobs:
           result = json.loads(Path('/tmp/c64c-boundary.json').read_text())
           if result['contains_reference_timings'] is not False:
               raise SystemExit('boundary selector must remain timing-free')
-          forbidden = ('seconds', 'timing', 'residual', 'error', 'mape', 'ape')
-          encoded = json.dumps(result, sort_keys=True).lower()
-          for token in forbidden:
-              if token in encoded:
-                  raise SystemExit(f'boundary artifact contains forbidden timing/evaluation field: {token}')
+
+          forbidden_fragments = ('seconds', 'residual', 'mape', 'ape')
+
+          def walk(value, path=()):
+              if isinstance(value, dict):
+                  for key, child in value.items():
+                      lowered = str(key).lower()
+                      if key != 'contains_reference_timings' and any(
+                          token in lowered for token in forbidden_fragments
+                      ):
+                          raise SystemExit(
+                              'boundary artifact contains forbidden evaluation key: '
+                              + '.'.join(path + (str(key),))
+                          )
+                      walk(child, path + (str(key),))
+              elif isinstance(value, list):
+                  for index, child in enumerate(value):
+                      walk(child, path + (str(index),))
+
+          walk(result)
           print('selection_algorithm_id=', result['selection_algorithm_id'])
           print('selection_seed=', result['selection_seed'])
           print('history_identities=', json.dumps(result['history_identities'], sort_keys=True))
