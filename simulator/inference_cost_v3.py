@@ -38,6 +38,13 @@ C64C_PREFILL_TOKEN_MIN = 1
 C64C_PREFILL_TOKEN_MAX = VIDUR_LLAMA2_7B_TP1_DOMAIN.max_model_len
 C64C_POINTS_PER_STRATUM = 4
 C64C_STRATA = ((1, 1024), (1025, 2048), (2049, 3072), (3073, 4096))
+C64C_SUPPORTED_HARDWARE_IDS = frozenset({"a100-80gb", "h100-80gb"})
+C64C_REQUIRED_HYPERPARAMETER_KEYS = (
+    "linearregression__fit_intercept",
+    "polynomialfeatures__degree",
+    "polynomialfeatures__include_bias",
+    "polynomialfeatures__interaction_only",
+)
 
 C64C_FRESH_PREFILL_AXES = (
     85,
@@ -151,13 +158,6 @@ def _finite(value: float, name: str) -> float:
     return result
 
 
-def _finite_nonnegative(value: float, name: str) -> float:
-    result = _finite(value, name)
-    if result < 0:
-        raise ValueError(f"{name} must be non-negative")
-    return result
-
-
 def _integral_axis(value: float, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"{name} must be numeric")
@@ -172,9 +172,9 @@ class CanonicalPolynomialModel:
     """Canonical expanded source polynomial independent of sklearn runtime objects.
 
     C6.4d will export an upstream-fitted sklearn pipeline by folding all constant
-    terms into ``intercept`` and serializing only non-constant monomials.  The
+    terms into ``intercept`` and serializing only non-constant monomials. The
     evaluator uses one fixed scalar multiplication order and ``math.fsum`` for
-    term accumulation.  Negative intermediate/component predictions are not
+    term accumulation. Negative intermediate/component predictions are not
     clipped; request-level cost validation fails closed if the final cost is
     negative or non-finite.
     """
@@ -194,8 +194,12 @@ class CanonicalPolynomialModel:
         _require_nonempty(self.component_id, "component_id")
         _require_nonempty(self.hardware_id, "hardware_id")
         _require_nonempty(self.source_reference, "source_reference")
+        if self.hardware_id not in C64C_SUPPORTED_HARDWARE_IDS:
+            raise ValueError("hardware_id must belong to the frozen C6.4c source family")
         if self.source_protocol_fingerprint != C64C_SOURCE_PROTOCOL_FINGERPRINT:
-            raise ValueError("source protocol fingerprint must equal the frozen C6.4b v2 protocol")
+            raise ValueError(
+                "source protocol fingerprint must equal the frozen C6.4b v2 protocol"
+            )
         if self.output_unit != "milliseconds":
             raise ValueError("source polynomial output_unit must be 'milliseconds'")
         if not isinstance(self.feature_names, tuple) or not self.feature_names:
@@ -206,7 +210,9 @@ class CanonicalPolynomialModel:
             raise ValueError("feature_names must contain unique non-empty strings")
         if not isinstance(self.powers, tuple) or not self.powers:
             raise ValueError("powers must be a non-empty tuple")
-        if not isinstance(self.coefficients, tuple) or len(self.coefficients) != len(self.powers):
+        if not isinstance(self.coefficients, tuple) or len(self.coefficients) != len(
+            self.powers
+        ):
             raise ValueError("coefficients must align one-to-one with powers")
 
         normalized_powers: list[tuple[int, ...]] = []
@@ -223,10 +229,12 @@ class CanonicalPolynomialModel:
             if not any(power):
                 raise ValueError("constant monomials must be folded into intercept")
             normalized_powers.append(power)
-        if normalized_powers != sorted(normalized_powers) or len(set(normalized_powers)) != len(
-            normalized_powers
-        ):
-            raise ValueError("monomial powers must be unique and lexicographically sorted")
+        if normalized_powers != sorted(normalized_powers) or len(
+            set(normalized_powers)
+        ) != len(normalized_powers):
+            raise ValueError(
+                "monomial powers must be unique and lexicographically sorted"
+            )
 
         coefficients = tuple(
             _finite(value, f"coefficients[{index}]")
@@ -235,18 +243,32 @@ class CanonicalPolynomialModel:
         object.__setattr__(self, "coefficients", coefficients)
         object.__setattr__(self, "intercept", _finite(self.intercept, "intercept"))
 
-        if not isinstance(self.upstream_hyperparameters, tuple) or not self.upstream_hyperparameters:
-            raise ValueError("upstream_hyperparameters must be a non-empty tuple")
+        if not isinstance(self.upstream_hyperparameters, tuple):
+            raise TypeError("upstream_hyperparameters must be a tuple")
         keys: list[str] = []
         for pair in self.upstream_hyperparameters:
             if not isinstance(pair, tuple) or len(pair) != 2:
-                raise ValueError("upstream_hyperparameters entries must be key/value tuples")
+                raise ValueError(
+                    "upstream_hyperparameters entries must be key/value tuples"
+                )
             key, encoded_value = pair
             _require_nonempty(key, "upstream_hyperparameter key")
             _require_nonempty(encoded_value, "upstream_hyperparameter value")
             keys.append(key)
-        if keys != sorted(keys) or len(keys) != len(set(keys)):
-            raise ValueError("upstream_hyperparameter keys must be unique and sorted")
+        if tuple(keys) != C64C_REQUIRED_HYPERPARAMETER_KEYS:
+            raise ValueError(
+                "upstream_hyperparameters must contain the exact frozen Vidur grid-search keys"
+            )
+        encoded = dict(self.upstream_hyperparameters)
+        if encoded["polynomialfeatures__degree"] not in {"1", "2", "3", "4", "5"}:
+            raise ValueError("polynomialfeatures__degree must be one of the frozen source choices")
+        for key in (
+            "linearregression__fit_intercept",
+            "polynomialfeatures__include_bias",
+            "polynomialfeatures__interaction_only",
+        ):
+            if encoded[key] not in {"true", "false"}:
+                raise ValueError(f"{key} must use canonical true/false encoding")
 
     def evaluate(self, feature_values: Sequence[float]) -> float:
         if len(feature_values) != len(self.feature_names):
@@ -256,7 +278,9 @@ class CanonicalPolynomialModel:
             for index, value in enumerate(feature_values)
         )
         terms: list[float] = []
-        for powers, coefficient in zip(self.powers, self.coefficients, strict=True):
+        for powers, coefficient in zip(
+            self.powers, self.coefficients, strict=True
+        ):
             monomial = 1.0
             for value, exponent in zip(values, powers, strict=True):
                 for _ in range(exponent):
@@ -279,7 +303,9 @@ class CanonicalPolynomialModel:
             "powers": [list(power) for power in self.powers],
             "coefficients": list(self.coefficients),
             "intercept": self.intercept,
-            "upstream_hyperparameters": [list(item) for item in self.upstream_hyperparameters],
+            "upstream_hyperparameters": [
+                list(item) for item in self.upstream_hyperparameters
+            ],
             "source_reference": self.source_reference,
             "source_protocol_id": C64C_SOURCE_PROTOCOL_ID,
             "source_protocol_fingerprint": self.source_protocol_fingerprint,
@@ -309,22 +335,36 @@ class SourcePolynomialCostProfile:
     def __post_init__(self) -> None:
         for name in ("profile_id", "model_id", "hardware_id"):
             _require_nonempty(getattr(self, name), name)
+        if self.model_id != VIDUR_LLAMA2_7B_TP1_DOMAIN.model_id:
+            raise ValueError("model_id must equal the frozen C6.4c source model")
+        if self.hardware_id not in C64C_SUPPORTED_HARDWARE_IDS:
+            raise ValueError("hardware_id must belong to the frozen C6.4c source family")
         if self.representation_id != C64C_REPRESENTATION_ID:
-            raise ValueError("representation_id must equal the frozen C6.4c representation")
+            raise ValueError(
+                "representation_id must equal the frozen C6.4c representation"
+            )
         if not isinstance(self.prefill_components, tuple):
             raise TypeError("prefill_components must be a tuple")
+        if not all(
+            isinstance(item, CanonicalPolynomialModel)
+            for item in self.prefill_components
+        ):
+            raise TypeError(
+                "prefill_components must contain CanonicalPolynomialModel values"
+            )
         component_ids = tuple(item.component_id for item in self.prefill_components)
         if component_ids != _PREFILL_COMPONENT_IDS:
             raise ValueError(
                 "prefill_components must contain the exact canonical Vidur component order"
             )
-        if not all(isinstance(item, CanonicalPolynomialModel) for item in self.prefill_components):
-            raise TypeError("prefill_components must contain CanonicalPolynomialModel values")
         if any(
-            item.hardware_id != self.hardware_id or item.feature_names != ("num_tokens",)
+            item.hardware_id != self.hardware_id
+            or item.feature_names != ("num_tokens",)
             for item in self.prefill_components
         ):
-            raise ValueError("prefill component hardware/features must match the frozen source contract")
+            raise ValueError(
+                "prefill component hardware/features must match the frozen source contract"
+            )
         if not isinstance(self.prefill_attention, CanonicalPolynomialModel):
             raise TypeError("prefill_attention must be CanonicalPolynomialModel")
         if (
@@ -333,7 +373,9 @@ class SourcePolynomialCostProfile:
             or self.prefill_attention.feature_names
             != ("kv_cache_size", "prefill_chunk_size_squared")
         ):
-            raise ValueError("prefill_attention must match the frozen Vidur cold-prefill model")
+            raise ValueError(
+                "prefill_attention must match the frozen Vidur cold-prefill model"
+            )
         if not isinstance(self.transfer, CanonicalPolynomialModel):
             raise TypeError("transfer must be CanonicalPolynomialModel")
         if (
@@ -341,14 +383,21 @@ class SourcePolynomialCostProfile:
             or self.transfer.component_id != "send_recv"
             or self.transfer.feature_names != ("num_tokens",)
         ):
-            raise ValueError("transfer must match the frozen Vidur send_recv source model")
+            raise ValueError(
+                "transfer must match the frozen Vidur send_recv source model"
+            )
 
-        source_models = self.prefill_components + (self.prefill_attention, self.transfer)
+        source_models = self.prefill_components + (
+            self.prefill_attention,
+            self.transfer,
+        )
         if any(
             item.source_protocol_fingerprint != C64C_SOURCE_PROTOCOL_FINGERPRINT
             for item in source_models
         ):
-            raise ValueError("all source polynomial models must bind the same frozen protocol")
+            raise ValueError(
+                "all source polynomial models must bind the same frozen protocol"
+            )
 
         expected_units = {
             "decode_fixed_seconds_per_output_token": "seconds/output-token",
@@ -373,7 +422,9 @@ class SourcePolynomialCostProfile:
             self.memory_capacity_bytes.sensitivity is not None
             and self.memory_capacity_bytes.sensitivity.low <= 0
         ):
-            raise ValueError("memory_capacity_bytes sensitivity must remain positive")
+            raise ValueError(
+                "memory_capacity_bytes sensitivity must remain positive"
+            )
 
     def prefill_seconds(self, input_tokens: int) -> float:
         if not isinstance(input_tokens, int) or isinstance(input_tokens, bool):
@@ -381,19 +432,33 @@ class SourcePolynomialCostProfile:
         if input_tokens == 0:
             return 0.0
         if not C64C_PREFILL_TOKEN_MIN <= input_tokens <= C64C_PREFILL_TOKEN_MAX:
-            raise ValueError("cold-prefill evaluation is outside the frozen source domain")
+            raise ValueError(
+                "cold-prefill evaluation is outside the frozen source domain"
+            )
         rounded_tokens = (input_tokens + 7) // 8 * 8
         by_id = {item.component_id: item for item in self.prefill_components}
         component_ms: list[float] = []
         for component_id in _PREFILL_COMPONENT_IDS:
-            axis = input_tokens if component_id in _EXACT_PREFILL_COMPONENT_IDS else rounded_tokens
+            axis = (
+                input_tokens
+                if component_id in _EXACT_PREFILL_COMPONENT_IDS
+                else rounded_tokens
+            )
             component_ms.append(by_id[component_id].evaluate((float(axis),)))
         component_ms.append(
-            self.prefill_attention.evaluate((0.0, float(input_tokens * input_tokens)))
+            self.prefill_attention.evaluate(
+                (0.0, float(input_tokens * input_tokens))
+            )
         )
-        seconds = math.fsum(component_ms) * VIDUR_LLAMA2_7B_TP1_DOMAIN.num_layers * 1e-3
+        seconds = (
+            math.fsum(component_ms)
+            * VIDUR_LLAMA2_7B_TP1_DOMAIN.num_layers
+            * 1e-3
+        )
         if not math.isfinite(seconds) or seconds < 0:
-            raise ValueError("source-polynomial cold-prefill composition produced invalid seconds")
+            raise ValueError(
+                "source-polynomial cold-prefill composition produced invalid seconds"
+            )
         return seconds
 
     def transfer_seconds(self, state_bytes: float) -> float:
@@ -401,14 +466,20 @@ class SourcePolynomialCostProfile:
         if axis_bytes == 0:
             return 0.0
         if axis_bytes % C64C_TRANSFER_BYTES_PER_TOKEN:
-            raise ValueError("transfer bytes are outside the exact source token-multiple domain")
+            raise ValueError(
+                "transfer bytes are outside the exact source token-multiple domain"
+            )
         num_tokens = axis_bytes // C64C_TRANSFER_BYTES_PER_TOKEN
         if not C64C_TRANSFER_TOKEN_MIN <= num_tokens <= C64C_TRANSFER_TOKEN_MAX:
-            raise ValueError("transfer bytes are outside the frozen source lookup domain")
+            raise ValueError(
+                "transfer bytes are outside the frozen source lookup domain"
+            )
         milliseconds = self.transfer.evaluate((float(num_tokens),))
         seconds = milliseconds * 1e-3
         if not math.isfinite(seconds) or seconds < 0:
-            raise ValueError("source-polynomial transfer evaluation produced invalid seconds")
+            raise ValueError(
+                "source-polynomial transfer evaluation produced invalid seconds"
+            )
         return seconds
 
     def to_dict(self) -> dict[str, Any]:
@@ -420,12 +491,21 @@ class SourcePolynomialCostProfile:
             "representation_id": self.representation_id,
             "source_protocol_id": C64C_SOURCE_PROTOCOL_ID,
             "source_protocol_fingerprint": C64C_SOURCE_PROTOCOL_FINGERPRINT,
-            "prefill_domain_input_tokens": [C64C_PREFILL_TOKEN_MIN, C64C_PREFILL_TOKEN_MAX],
+            "prefill_domain_input_tokens": [
+                C64C_PREFILL_TOKEN_MIN,
+                C64C_PREFILL_TOKEN_MAX,
+            ],
             "prefill_compute_rounding": "(n + 7) // 8 * 8",
-            "prefill_components": [item.to_dict() for item in self.prefill_components],
+            "prefill_components": [
+                item.to_dict() for item in self.prefill_components
+            ],
             "prefill_attention": self.prefill_attention.to_dict(),
-            "decode_fixed_seconds_per_output_token": self.decode_fixed_seconds_per_output_token.to_dict(),
-            "decode_seconds_per_context_token_step": self.decode_seconds_per_context_token_step.to_dict(),
+            "decode_fixed_seconds_per_output_token": (
+                self.decode_fixed_seconds_per_output_token.to_dict()
+            ),
+            "decode_seconds_per_context_token_step": (
+                self.decode_seconds_per_context_token_step.to_dict()
+            ),
             "state_fixed_bytes": self.state_fixed_bytes.to_dict(),
             "state_bytes_per_token": self.state_bytes_per_token.to_dict(),
             "memory_capacity_bytes": self.memory_capacity_bytes.to_dict(),
@@ -518,7 +598,9 @@ def estimate_source_polynomial_cost(
         memory_fraction,
     )
     if not all(math.isfinite(value) and value >= 0 for value in values):
-        raise ValueError("source-polynomial cost evaluation produced an invalid result")
+        raise ValueError(
+            "source-polynomial cost evaluation produced an invalid result"
+        )
     return SourcePolynomialCostEstimate(
         profile_id=profile.profile_id,
         profile_fingerprint=profile.fingerprint,
@@ -533,7 +615,9 @@ def estimate_source_polynomial_cost(
     )
 
 
-def _history_union_digest(kind: ReferenceKind, historical_public_axes: Sequence[int]) -> str:
+def _history_union_digest(
+    kind: ReferenceKind, historical_public_axes: Sequence[int]
+) -> str:
     axes = sorted(set(historical_public_axes))
     return _sha256_json({"reference_kind": kind.value, "axes": axes})
 
@@ -566,10 +650,15 @@ def select_second_boundary_axes(
             and to_public(identity_axis) not in previous
         ]
         if len(candidates) < C64C_POINTS_PER_STRATUM:
-            raise ValueError("insufficient timing-blind candidates for one boundary stratum")
+            raise ValueError(
+                "insufficient timing-blind candidates for one boundary stratum"
+            )
         chosen = sorted(
             candidates,
-            key=lambda identity_axis: (_boundary_rank(kind, identity_axis), identity_axis),
+            key=lambda identity_axis: (
+                _boundary_rank(kind, identity_axis),
+                identity_axis,
+            ),
         )[:C64C_POINTS_PER_STRATUM]
         selected.extend(to_public(identity_axis) for identity_axis in chosen)
     return tuple(sorted(selected))
@@ -593,15 +682,27 @@ class SecondFreshAdequacyBoundary:
             expected_unit = "bytes"
             expected_axes = C64C_FRESH_TRANSFER_AXES
         else:
-            raise ValueError("second boundary exists only for prefill and transfer")
+            raise ValueError(
+                "second boundary exists only for prefill and transfer"
+            )
         if self.axis_unit != expected_unit:
-            raise ValueError(f"second boundary axis_unit must be {expected_unit!r}")
+            raise ValueError(
+                f"second boundary axis_unit must be {expected_unit!r}"
+            )
         if self.axes != expected_axes:
-            raise ValueError("second boundary axes differ from the frozen C6.4c boundary")
-        if tuple(sorted(self.axes)) != self.axes or len(set(self.axes)) != len(self.axes):
-            raise ValueError("second boundary axes must be strictly increasing and unique")
+            raise ValueError(
+                "second boundary axes differ from the frozen C6.4c boundary"
+            )
+        if tuple(sorted(self.axes)) != self.axes or len(set(self.axes)) != len(
+            self.axes
+        ):
+            raise ValueError(
+                "second boundary axes must be strictly increasing and unique"
+            )
         if self.source_commit != VIDUR_PINNED_COMMIT:
-            raise ValueError("second boundary source commit must remain pinned to Vidur")
+            raise ValueError(
+                "second boundary source commit must remain pinned to Vidur"
+            )
         if self.evidence_class != C64C_FRESH_REFERENCE_EVIDENCE:
             raise ValueError("second boundary evidence class is frozen")
         if self.selection_algorithm_id != C64C_BOUNDARY_ALGORITHM_ID:
@@ -610,7 +711,9 @@ class SecondFreshAdequacyBoundary:
             raise ValueError("second boundary selection seed is frozen")
 
     def to_dict(self) -> dict[str, Any]:
-        history_count, history_digest = _C64C_C63_HISTORY_UNION[self.reference_kind]
+        history_count, history_digest = _C64C_C63_HISTORY_UNION[
+            self.reference_kind
+        ]
         previous_axes = (
             C64A_FRESH_PREFILL_AXES
             if self.reference_kind is ReferenceKind.COLD_PREFILL
@@ -635,7 +738,8 @@ class SecondFreshAdequacyBoundary:
                 "points_per_stratum": C64C_POINTS_PER_STRATUM,
                 "transfer_bytes_per_predictor_token": (
                     C64C_TRANSFER_BYTES_PER_TOKEN
-                    if self.reference_kind is ReferenceKind.POINT_TO_POINT_TRANSFER
+                    if self.reference_kind
+                    is ReferenceKind.POINT_TO_POINT_TRANSFER
                     else None
                 ),
             },
@@ -666,21 +770,31 @@ def verify_second_boundary_against_history(
     if not isinstance(boundary, SecondFreshAdequacyBoundary):
         raise TypeError("boundary must be SecondFreshAdequacyBoundary")
     historical = tuple(sorted(set(historical_public_axes)))
-    expected_count, expected_digest = _C64C_C63_HISTORY_UNION[boundary.reference_kind]
+    expected_count, expected_digest = _C64C_C63_HISTORY_UNION[
+        boundary.reference_kind
+    ]
     observed_digest = _history_union_digest(boundary.reference_kind, historical)
     if len(historical) != expected_count or observed_digest != expected_digest:
         raise ValueError(
             "historical axes do not match the frozen identity-only C6.3 family union"
         )
-    expected_axes = select_second_boundary_axes(boundary.reference_kind, historical)
+    expected_axes = select_second_boundary_axes(
+        boundary.reference_kind, historical
+    )
     if expected_axes != boundary.axes:
-        raise ValueError("second boundary does not reproduce from the frozen timing-blind selector")
+        raise ValueError(
+            "second boundary does not reproduce from the frozen timing-blind selector"
+        )
     if set(boundary.axes) & set(historical):
-        raise ValueError("second boundary collides with C6.3 request-level history")
+        raise ValueError(
+            "second boundary collides with C6.3 request-level history"
+        )
     previous = (
         set(C64A_FRESH_PREFILL_AXES)
         if boundary.reference_kind is ReferenceKind.COLD_PREFILL
         else set(C64A_FRESH_TRANSFER_AXES)
     )
     if set(boundary.axes) & previous:
-        raise ValueError("second boundary collides with the observed C6.4a boundary")
+        raise ValueError(
+            "second boundary collides with the observed C6.4a boundary"
+        )
