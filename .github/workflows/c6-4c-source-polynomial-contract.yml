@@ -1,0 +1,90 @@
+name: c6-4c-source-polynomial-contract
+
+on:
+  push:
+    branches:
+      - c6/source-polynomial-v3-boundary
+    paths:
+      - simulator/inference_cost_v3.py
+      - experiments/c64c_boundary_identity.py
+      - artifacts/c6.4c/second-fresh-boundary.json
+      - tests/simulator/test_inference_cost_v3.py
+      - spec/44-c6.4c-source-polynomial-representation.md
+      - .github/workflows/c6-4c-source-polynomial-contract.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Verify immutable event checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+      - name: Install test dependency
+        run: python -m pip install pytest==8.3.5
+      - name: Run C6.4c representation tests
+        run: python -m pytest -q tests/simulator/test_inference_cost_v3.py
+      - name: Checkout pinned Vidur source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/microsoft/vidur.git .c64c_vidur
+          git -C .c64c_vidur checkout --detach abae7f63aa857300f5cdc6f5e0d27860cd24721b
+          test "$(git -C .c64c_vidur rev-parse HEAD)" = "abae7f63aa857300f5cdc6f5e0d27860cd24721b"
+      - name: Reproduce committed timing-free boundary artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/c64c_boundary_identity.py \
+            --vidur-root .c64c_vidur \
+            --output /tmp/c64c-boundary.json > /tmp/c64c-boundary.log
+          cmp artifacts/c6.4c/second-fresh-boundary.json /tmp/c64c-boundary.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from simulator.inference_cost_v3 import (
+              C64C_FRESH_PREFILL_AXES,
+              C64C_FRESH_TRANSFER_AXES,
+              C64C_FRESH_PREFILL_BOUNDARY,
+              C64C_FRESH_TRANSFER_BOUNDARY,
+          )
+
+          result = json.loads(Path('artifacts/c6.4c/second-fresh-boundary.json').read_text())
+          assert result['contains_reference_timings'] is False
+          assert tuple(result['fresh_prefill_axes_input_tokens']) == C64C_FRESH_PREFILL_AXES
+          assert tuple(result['fresh_transfer_axes_bytes']) == C64C_FRESH_TRANSFER_AXES
+          assert C64C_FRESH_PREFILL_BOUNDARY.to_dict()['contains_reference_timings'] is False
+          assert C64C_FRESH_TRANSFER_BOUNDARY.to_dict()['contains_reference_timings'] is False
+
+          forbidden_keys = ('seconds', 'residual', 'mape', 'ape')
+          def walk(value, path=()):
+              if isinstance(value, dict):
+                  for key, child in value.items():
+                      lowered = str(key).lower()
+                      if key != 'contains_reference_timings' and any(
+                          fragment in lowered for fragment in forbidden_keys
+                      ):
+                          raise AssertionError(
+                              'forbidden timing/evaluation key: ' + '.'.join(path + (str(key),))
+                          )
+                      walk(child, path + (str(key),))
+              elif isinstance(value, list):
+                  for index, child in enumerate(value):
+                      walk(child, path + (str(index),))
+          walk(result)
+          print('prefill_axes=', list(C64C_FRESH_PREFILL_AXES))
+          print('transfer_axes=', list(C64C_FRESH_TRANSFER_AXES))
+          print('contains_reference_timings=false')
+          PY
