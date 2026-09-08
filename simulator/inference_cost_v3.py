@@ -1,0 +1,686 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import hashlib
+import json
+import math
+from typing import Any, Sequence
+
+from .calibration_validation import (
+    VIDUR_LLAMA2_7B_TP1_DOMAIN,
+    VIDUR_PINNED_COMMIT,
+    ReferenceKind,
+)
+from .inference_cost import InferenceCostWorkload, SourcedScalar
+from .inference_cost_v2 import C64A_FRESH_PREFILL_AXES, C64A_FRESH_TRANSFER_AXES
+
+
+C64C_POLYNOMIAL_SCHEMA = "cadi.c6.4c.canonical-source-polynomial.v1"
+C64C_PROFILE_SCHEMA = "cadi.c6.4c.cost-profile-v3.v1"
+C64C_ESTIMATE_SCHEMA = "cadi.c6.4c.cost-estimate-v3.v1"
+C64C_BOUNDARY_SCHEMA = "cadi.c6.4c.second-fresh-adequacy-boundary.v1"
+C64C_REPRESENTATION_ID = (
+    "cadi.c6.cost-representation.v3.source-polynomial-composite+decode-step-affine"
+)
+C64C_SOURCE_PROTOCOL_ID = "cadi.c6.4b.vidur-linear-regression-source-model.v2"
+C64C_SOURCE_PROTOCOL_FINGERPRINT = (
+    "9decab129b64921d59696c58242f0047ad986c76b82a22819eb93166b5d3a717"
+)
+C64C_FRESH_REFERENCE_EVIDENCE = "SIMULATED_SOURCE_MODEL_DERIVED_P_SRC2"
+C64C_BOUNDARY_ALGORITHM_ID = "sha256-four-per-equal-width-quartile-v1"
+C64C_BOUNDARY_SEED = (
+    "cadi.c6.4c.boundary.v1|291fa8f9bd5c7d0e72e46163715cb04bd772d205"
+)
+C64C_TRANSFER_BYTES_PER_TOKEN = 2 * 4096
+C64C_TRANSFER_TOKEN_MIN = 1
+C64C_TRANSFER_TOKEN_MAX = 4096
+C64C_PREFILL_TOKEN_MIN = 1
+C64C_PREFILL_TOKEN_MAX = VIDUR_LLAMA2_7B_TP1_DOMAIN.max_model_len
+C64C_POINTS_PER_STRATUM = 4
+C64C_STRATA = ((1, 1024), (1025, 2048), (2049, 3072), (3073, 4096))
+
+C64C_FRESH_PREFILL_AXES = (
+    85,
+    202,
+    475,
+    897,
+    1026,
+    1333,
+    1622,
+    1623,
+    2371,
+    2373,
+    2476,
+    2636,
+    3352,
+    3353,
+    3402,
+    3899,
+)
+C64C_FRESH_TRANSFER_AXES = (
+    2482176,
+    2637824,
+    3620864,
+    4513792,
+    8527872,
+    9314304,
+    14540800,
+    14729216,
+    19251200,
+    19611648,
+    23420928,
+    23609344,
+    26705920,
+    27295744,
+    32391168,
+    32825344,
+)
+
+_C64C_C63_HISTORY_UNION: dict[ReferenceKind, tuple[int, str]] = {
+    ReferenceKind.COLD_PREFILL: (
+        81,
+        "3064f9f0b8842a17f12029c1f15dd07560dc72f3e75d251cfc80243987cd1d62",
+    ),
+    ReferenceKind.POINT_TO_POINT_TRANSFER: (
+        993,
+        "c975994503bccffd3822472378be6c90587f39baf6e741242923708daf313ab4",
+    ),
+}
+
+C64C_C63_HISTORY_IDENTITIES = (
+    (
+        "a100-80gb",
+        ReferenceKind.COLD_PREFILL.value,
+        81,
+        "dc579db1ad49a832ac76c55e1d9325d064820f9aa77e878130076d6977703b24",
+    ),
+    (
+        "a100-80gb",
+        ReferenceKind.POINT_TO_POINT_TRANSFER.value,
+        993,
+        "03d6e489db32bc706bf50e7b03784ab78376427a2d75e55e011a1c1be98429f2",
+    ),
+    (
+        "h100-80gb",
+        ReferenceKind.COLD_PREFILL.value,
+        81,
+        "a44ab7ca09e0039af78784b8acb3a4aceacec55edab3e9844febea3e0d4e80f5",
+    ),
+    (
+        "h100-80gb",
+        ReferenceKind.POINT_TO_POINT_TRANSFER.value,
+        993,
+        "1df7d10b64836e6067f8e8b6475a697b0ea90923e5a92135021947ef56b23dc9",
+    ),
+)
+
+_PREFILL_COMPONENT_IDS = (
+    "add",
+    "attn_kv_cache_save",
+    "attn_post_proj",
+    "attn_pre_proj",
+    "attn_rope",
+    "input_layernorm",
+    "mlp_act",
+    "mlp_down_proj",
+    "mlp_up_proj",
+    "post_attention_layernorm",
+)
+_EXACT_PREFILL_COMPONENT_IDS = frozenset({"attn_kv_cache_save"})
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _sha256_json(value: object) -> str:
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _require_nonempty(value: str, name: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a non-empty string")
+
+
+def _finite(value: float, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be numeric")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{name} must be finite")
+    return result
+
+
+def _finite_nonnegative(value: float, name: str) -> float:
+    result = _finite(value, name)
+    if result < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return result
+
+
+def _integral_axis(value: float, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be numeric")
+    numeric = float(value)
+    if not math.isfinite(numeric) or numeric < 0 or not numeric.is_integer():
+        raise ValueError(f"{name} must be a finite non-negative integer value")
+    return int(numeric)
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalPolynomialModel:
+    """Canonical expanded source polynomial independent of sklearn runtime objects.
+
+    C6.4d will export an upstream-fitted sklearn pipeline by folding all constant
+    terms into ``intercept`` and serializing only non-constant monomials.  The
+    evaluator uses one fixed scalar multiplication order and ``math.fsum`` for
+    term accumulation.  Negative intermediate/component predictions are not
+    clipped; request-level cost validation fails closed if the final cost is
+    negative or non-finite.
+    """
+
+    component_id: str
+    hardware_id: str
+    feature_names: tuple[str, ...]
+    powers: tuple[tuple[int, ...], ...]
+    coefficients: tuple[float, ...]
+    intercept: float
+    upstream_hyperparameters: tuple[tuple[str, str], ...]
+    source_reference: str
+    source_protocol_fingerprint: str = C64C_SOURCE_PROTOCOL_FINGERPRINT
+    output_unit: str = "milliseconds"
+
+    def __post_init__(self) -> None:
+        _require_nonempty(self.component_id, "component_id")
+        _require_nonempty(self.hardware_id, "hardware_id")
+        _require_nonempty(self.source_reference, "source_reference")
+        if self.source_protocol_fingerprint != C64C_SOURCE_PROTOCOL_FINGERPRINT:
+            raise ValueError("source protocol fingerprint must equal the frozen C6.4b v2 protocol")
+        if self.output_unit != "milliseconds":
+            raise ValueError("source polynomial output_unit must be 'milliseconds'")
+        if not isinstance(self.feature_names, tuple) or not self.feature_names:
+            raise ValueError("feature_names must be a non-empty tuple")
+        if len(set(self.feature_names)) != len(self.feature_names) or not all(
+            isinstance(name, str) and name.strip() for name in self.feature_names
+        ):
+            raise ValueError("feature_names must contain unique non-empty strings")
+        if not isinstance(self.powers, tuple) or not self.powers:
+            raise ValueError("powers must be a non-empty tuple")
+        if not isinstance(self.coefficients, tuple) or len(self.coefficients) != len(self.powers):
+            raise ValueError("coefficients must align one-to-one with powers")
+
+        normalized_powers: list[tuple[int, ...]] = []
+        for power in self.powers:
+            if not isinstance(power, tuple) or len(power) != len(self.feature_names):
+                raise ValueError("every monomial power tuple must match feature_names")
+            if any(
+                not isinstance(exponent, int)
+                or isinstance(exponent, bool)
+                or exponent < 0
+                for exponent in power
+            ):
+                raise ValueError("monomial exponents must be non-negative integers")
+            if not any(power):
+                raise ValueError("constant monomials must be folded into intercept")
+            normalized_powers.append(power)
+        if normalized_powers != sorted(normalized_powers) or len(set(normalized_powers)) != len(
+            normalized_powers
+        ):
+            raise ValueError("monomial powers must be unique and lexicographically sorted")
+
+        coefficients = tuple(
+            _finite(value, f"coefficients[{index}]")
+            for index, value in enumerate(self.coefficients)
+        )
+        object.__setattr__(self, "coefficients", coefficients)
+        object.__setattr__(self, "intercept", _finite(self.intercept, "intercept"))
+
+        if not isinstance(self.upstream_hyperparameters, tuple) or not self.upstream_hyperparameters:
+            raise ValueError("upstream_hyperparameters must be a non-empty tuple")
+        keys: list[str] = []
+        for pair in self.upstream_hyperparameters:
+            if not isinstance(pair, tuple) or len(pair) != 2:
+                raise ValueError("upstream_hyperparameters entries must be key/value tuples")
+            key, encoded_value = pair
+            _require_nonempty(key, "upstream_hyperparameter key")
+            _require_nonempty(encoded_value, "upstream_hyperparameter value")
+            keys.append(key)
+        if keys != sorted(keys) or len(keys) != len(set(keys)):
+            raise ValueError("upstream_hyperparameter keys must be unique and sorted")
+
+    def evaluate(self, feature_values: Sequence[float]) -> float:
+        if len(feature_values) != len(self.feature_names):
+            raise ValueError("feature_values length must match feature_names")
+        values = tuple(
+            _finite(value, f"feature_values[{index}]")
+            for index, value in enumerate(feature_values)
+        )
+        terms: list[float] = []
+        for powers, coefficient in zip(self.powers, self.coefficients, strict=True):
+            monomial = 1.0
+            for value, exponent in zip(values, powers, strict=True):
+                for _ in range(exponent):
+                    monomial *= value
+            term = coefficient * monomial
+            if not math.isfinite(term):
+                raise ValueError("source polynomial term became non-finite")
+            terms.append(term)
+        result = math.fsum([self.intercept, *terms])
+        if not math.isfinite(result):
+            raise ValueError("source polynomial evaluation became non-finite")
+        return result
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": C64C_POLYNOMIAL_SCHEMA,
+            "component_id": self.component_id,
+            "hardware_id": self.hardware_id,
+            "feature_names": list(self.feature_names),
+            "powers": [list(power) for power in self.powers],
+            "coefficients": list(self.coefficients),
+            "intercept": self.intercept,
+            "upstream_hyperparameters": [list(item) for item in self.upstream_hyperparameters],
+            "source_reference": self.source_reference,
+            "source_protocol_id": C64C_SOURCE_PROTOCOL_ID,
+            "source_protocol_fingerprint": self.source_protocol_fingerprint,
+            "output_unit": self.output_unit,
+        }
+
+    @property
+    def fingerprint(self) -> str:
+        return _sha256_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class SourcePolynomialCostProfile:
+    profile_id: str
+    model_id: str
+    hardware_id: str
+    prefill_components: tuple[CanonicalPolynomialModel, ...]
+    prefill_attention: CanonicalPolynomialModel
+    transfer: CanonicalPolynomialModel
+    decode_fixed_seconds_per_output_token: SourcedScalar
+    decode_seconds_per_context_token_step: SourcedScalar
+    state_fixed_bytes: SourcedScalar
+    state_bytes_per_token: SourcedScalar
+    memory_capacity_bytes: SourcedScalar
+    representation_id: str = C64C_REPRESENTATION_ID
+
+    def __post_init__(self) -> None:
+        for name in ("profile_id", "model_id", "hardware_id"):
+            _require_nonempty(getattr(self, name), name)
+        if self.representation_id != C64C_REPRESENTATION_ID:
+            raise ValueError("representation_id must equal the frozen C6.4c representation")
+        if not isinstance(self.prefill_components, tuple):
+            raise TypeError("prefill_components must be a tuple")
+        component_ids = tuple(item.component_id for item in self.prefill_components)
+        if component_ids != _PREFILL_COMPONENT_IDS:
+            raise ValueError(
+                "prefill_components must contain the exact canonical Vidur component order"
+            )
+        if not all(isinstance(item, CanonicalPolynomialModel) for item in self.prefill_components):
+            raise TypeError("prefill_components must contain CanonicalPolynomialModel values")
+        if any(
+            item.hardware_id != self.hardware_id or item.feature_names != ("num_tokens",)
+            for item in self.prefill_components
+        ):
+            raise ValueError("prefill component hardware/features must match the frozen source contract")
+        if not isinstance(self.prefill_attention, CanonicalPolynomialModel):
+            raise TypeError("prefill_attention must be CanonicalPolynomialModel")
+        if (
+            self.prefill_attention.hardware_id != self.hardware_id
+            or self.prefill_attention.component_id != "attn_prefill"
+            or self.prefill_attention.feature_names
+            != ("kv_cache_size", "prefill_chunk_size_squared")
+        ):
+            raise ValueError("prefill_attention must match the frozen Vidur cold-prefill model")
+        if not isinstance(self.transfer, CanonicalPolynomialModel):
+            raise TypeError("transfer must be CanonicalPolynomialModel")
+        if (
+            self.transfer.hardware_id != self.hardware_id
+            or self.transfer.component_id != "send_recv"
+            or self.transfer.feature_names != ("num_tokens",)
+        ):
+            raise ValueError("transfer must match the frozen Vidur send_recv source model")
+
+        source_models = self.prefill_components + (self.prefill_attention, self.transfer)
+        if any(
+            item.source_protocol_fingerprint != C64C_SOURCE_PROTOCOL_FINGERPRINT
+            for item in source_models
+        ):
+            raise ValueError("all source polynomial models must bind the same frozen protocol")
+
+        expected_units = {
+            "decode_fixed_seconds_per_output_token": "seconds/output-token",
+            "decode_seconds_per_context_token_step": "seconds/context-token-step",
+            "state_fixed_bytes": "bytes",
+            "state_bytes_per_token": "bytes/token",
+            "memory_capacity_bytes": "bytes",
+        }
+        for name, unit in expected_units.items():
+            value = getattr(self, name)
+            if not isinstance(value, SourcedScalar):
+                raise TypeError(f"{name} must be SourcedScalar")
+            if value.unit != unit:
+                raise ValueError(f"{name} unit must be {unit!r}")
+            if value.value < 0:
+                raise ValueError(f"{name} must be non-negative")
+            if value.sensitivity is not None and value.sensitivity.low < 0:
+                raise ValueError(f"{name} sensitivity must remain non-negative")
+        if self.memory_capacity_bytes.value <= 0:
+            raise ValueError("memory_capacity_bytes must be positive")
+        if (
+            self.memory_capacity_bytes.sensitivity is not None
+            and self.memory_capacity_bytes.sensitivity.low <= 0
+        ):
+            raise ValueError("memory_capacity_bytes sensitivity must remain positive")
+
+    def prefill_seconds(self, input_tokens: int) -> float:
+        if not isinstance(input_tokens, int) or isinstance(input_tokens, bool):
+            raise TypeError("input_tokens must be an integer")
+        if input_tokens == 0:
+            return 0.0
+        if not C64C_PREFILL_TOKEN_MIN <= input_tokens <= C64C_PREFILL_TOKEN_MAX:
+            raise ValueError("cold-prefill evaluation is outside the frozen source domain")
+        rounded_tokens = (input_tokens + 7) // 8 * 8
+        by_id = {item.component_id: item for item in self.prefill_components}
+        component_ms: list[float] = []
+        for component_id in _PREFILL_COMPONENT_IDS:
+            axis = input_tokens if component_id in _EXACT_PREFILL_COMPONENT_IDS else rounded_tokens
+            component_ms.append(by_id[component_id].evaluate((float(axis),)))
+        component_ms.append(
+            self.prefill_attention.evaluate((0.0, float(input_tokens * input_tokens)))
+        )
+        seconds = math.fsum(component_ms) * VIDUR_LLAMA2_7B_TP1_DOMAIN.num_layers * 1e-3
+        if not math.isfinite(seconds) or seconds < 0:
+            raise ValueError("source-polynomial cold-prefill composition produced invalid seconds")
+        return seconds
+
+    def transfer_seconds(self, state_bytes: float) -> float:
+        axis_bytes = _integral_axis(state_bytes, "state_bytes")
+        if axis_bytes == 0:
+            return 0.0
+        if axis_bytes % C64C_TRANSFER_BYTES_PER_TOKEN:
+            raise ValueError("transfer bytes are outside the exact source token-multiple domain")
+        num_tokens = axis_bytes // C64C_TRANSFER_BYTES_PER_TOKEN
+        if not C64C_TRANSFER_TOKEN_MIN <= num_tokens <= C64C_TRANSFER_TOKEN_MAX:
+            raise ValueError("transfer bytes are outside the frozen source lookup domain")
+        milliseconds = self.transfer.evaluate((float(num_tokens),))
+        seconds = milliseconds * 1e-3
+        if not math.isfinite(seconds) or seconds < 0:
+            raise ValueError("source-polynomial transfer evaluation produced invalid seconds")
+        return seconds
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": C64C_PROFILE_SCHEMA,
+            "profile_id": self.profile_id,
+            "model_id": self.model_id,
+            "hardware_id": self.hardware_id,
+            "representation_id": self.representation_id,
+            "source_protocol_id": C64C_SOURCE_PROTOCOL_ID,
+            "source_protocol_fingerprint": C64C_SOURCE_PROTOCOL_FINGERPRINT,
+            "prefill_domain_input_tokens": [C64C_PREFILL_TOKEN_MIN, C64C_PREFILL_TOKEN_MAX],
+            "prefill_compute_rounding": "(n + 7) // 8 * 8",
+            "prefill_components": [item.to_dict() for item in self.prefill_components],
+            "prefill_attention": self.prefill_attention.to_dict(),
+            "decode_fixed_seconds_per_output_token": self.decode_fixed_seconds_per_output_token.to_dict(),
+            "decode_seconds_per_context_token_step": self.decode_seconds_per_context_token_step.to_dict(),
+            "state_fixed_bytes": self.state_fixed_bytes.to_dict(),
+            "state_bytes_per_token": self.state_bytes_per_token.to_dict(),
+            "memory_capacity_bytes": self.memory_capacity_bytes.to_dict(),
+            "transfer": self.transfer.to_dict(),
+            "transfer_domain": {
+                "bytes_per_predictor_token": C64C_TRANSFER_BYTES_PER_TOKEN,
+                "predictor_token_min": C64C_TRANSFER_TOKEN_MIN,
+                "predictor_token_max": C64C_TRANSFER_TOKEN_MAX,
+                "rounding": "forbidden",
+                "extrapolation": "forbidden",
+            },
+        }
+
+    @property
+    def fingerprint(self) -> str:
+        return _sha256_json(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class SourcePolynomialCostEstimate:
+    profile_id: str
+    profile_fingerprint: str
+    prefill_seconds: float
+    decode_seconds: float
+    recompute_seconds: float
+    transfer_seconds: float
+    state_bytes: float
+    memory_capacity_fraction: float
+    recompute_tokens: int
+    decode_context_token_steps: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": C64C_ESTIMATE_SCHEMA,
+            "profile_id": self.profile_id,
+            "profile_fingerprint": self.profile_fingerprint,
+            "prefill_seconds": self.prefill_seconds,
+            "decode_seconds": self.decode_seconds,
+            "recompute_seconds": self.recompute_seconds,
+            "transfer_seconds": self.transfer_seconds,
+            "state_bytes": self.state_bytes,
+            "memory_capacity_fraction": self.memory_capacity_fraction,
+            "recompute_tokens": self.recompute_tokens,
+            "decode_context_token_steps": self.decode_context_token_steps,
+        }
+
+
+def estimate_source_polynomial_cost(
+    profile: SourcePolynomialCostProfile,
+    workload: InferenceCostWorkload,
+) -> SourcePolynomialCostEstimate:
+    if not isinstance(profile, SourcePolynomialCostProfile):
+        raise TypeError("profile must be SourcePolynomialCostProfile")
+    if not isinstance(workload, InferenceCostWorkload):
+        raise TypeError("workload must be InferenceCostWorkload")
+
+    prefill_seconds = profile.prefill_seconds(workload.input_tokens)
+    decode_steps = (
+        workload.output_tokens * workload.input_tokens
+        + workload.output_tokens * (workload.output_tokens - 1) // 2
+    )
+    decode_seconds = (
+        0.0
+        if workload.output_tokens == 0
+        else math.fsum(
+            [
+                workload.output_tokens
+                * profile.decode_fixed_seconds_per_output_token.value,
+                profile.decode_seconds_per_context_token_step.value * decode_steps,
+            ]
+        )
+    )
+    recompute_tokens = workload.input_tokens - workload.reusable_prefix_tokens
+    recompute_seconds = profile.prefill_seconds(recompute_tokens)
+    state_bytes = math.fsum(
+        [
+            profile.state_fixed_bytes.value,
+            profile.state_bytes_per_token.value * workload.state_tokens,
+        ]
+    )
+    transfer_seconds = profile.transfer_seconds(state_bytes)
+    memory_fraction = state_bytes / profile.memory_capacity_bytes.value
+
+    values = (
+        prefill_seconds,
+        decode_seconds,
+        recompute_seconds,
+        transfer_seconds,
+        state_bytes,
+        memory_fraction,
+    )
+    if not all(math.isfinite(value) and value >= 0 for value in values):
+        raise ValueError("source-polynomial cost evaluation produced an invalid result")
+    return SourcePolynomialCostEstimate(
+        profile_id=profile.profile_id,
+        profile_fingerprint=profile.fingerprint,
+        prefill_seconds=prefill_seconds,
+        decode_seconds=decode_seconds,
+        recompute_seconds=recompute_seconds,
+        transfer_seconds=transfer_seconds,
+        state_bytes=state_bytes,
+        memory_capacity_fraction=memory_fraction,
+        recompute_tokens=recompute_tokens,
+        decode_context_token_steps=decode_steps,
+    )
+
+
+def _history_union_digest(kind: ReferenceKind, historical_public_axes: Sequence[int]) -> str:
+    axes = sorted(set(historical_public_axes))
+    return _sha256_json({"reference_kind": kind.value, "axes": axes})
+
+
+def _boundary_rank(kind: ReferenceKind, identity_axis: int) -> str:
+    material = f"{C64C_BOUNDARY_SEED}|{kind.value}|{identity_axis}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def select_second_boundary_axes(
+    kind: ReferenceKind,
+    historical_public_axes: Sequence[int],
+) -> tuple[int, ...]:
+    if kind is ReferenceKind.COLD_PREFILL:
+        previous = set(C64A_FRESH_PREFILL_AXES)
+        to_public = lambda value: value
+    elif kind is ReferenceKind.POINT_TO_POINT_TRANSFER:
+        previous = set(C64A_FRESH_TRANSFER_AXES)
+        to_public = lambda value: value * C64C_TRANSFER_BYTES_PER_TOKEN
+    else:
+        raise ValueError("second boundary exists only for prefill and transfer")
+
+    historical = set(historical_public_axes)
+    selected: list[int] = []
+    for lower, upper in C64C_STRATA:
+        candidates = [
+            identity_axis
+            for identity_axis in range(lower, upper + 1)
+            if to_public(identity_axis) not in historical
+            and to_public(identity_axis) not in previous
+        ]
+        if len(candidates) < C64C_POINTS_PER_STRATUM:
+            raise ValueError("insufficient timing-blind candidates for one boundary stratum")
+        chosen = sorted(
+            candidates,
+            key=lambda identity_axis: (_boundary_rank(kind, identity_axis), identity_axis),
+        )[:C64C_POINTS_PER_STRATUM]
+        selected.extend(to_public(identity_axis) for identity_axis in chosen)
+    return tuple(sorted(selected))
+
+
+@dataclass(frozen=True, slots=True)
+class SecondFreshAdequacyBoundary:
+    reference_kind: ReferenceKind
+    axis_unit: str
+    axes: tuple[int, ...]
+    source_commit: str = VIDUR_PINNED_COMMIT
+    evidence_class: str = C64C_FRESH_REFERENCE_EVIDENCE
+    selection_algorithm_id: str = C64C_BOUNDARY_ALGORITHM_ID
+    selection_seed: str = C64C_BOUNDARY_SEED
+
+    def __post_init__(self) -> None:
+        if self.reference_kind is ReferenceKind.COLD_PREFILL:
+            expected_unit = "input-tokens"
+            expected_axes = C64C_FRESH_PREFILL_AXES
+        elif self.reference_kind is ReferenceKind.POINT_TO_POINT_TRANSFER:
+            expected_unit = "bytes"
+            expected_axes = C64C_FRESH_TRANSFER_AXES
+        else:
+            raise ValueError("second boundary exists only for prefill and transfer")
+        if self.axis_unit != expected_unit:
+            raise ValueError(f"second boundary axis_unit must be {expected_unit!r}")
+        if self.axes != expected_axes:
+            raise ValueError("second boundary axes differ from the frozen C6.4c boundary")
+        if tuple(sorted(self.axes)) != self.axes or len(set(self.axes)) != len(self.axes):
+            raise ValueError("second boundary axes must be strictly increasing and unique")
+        if self.source_commit != VIDUR_PINNED_COMMIT:
+            raise ValueError("second boundary source commit must remain pinned to Vidur")
+        if self.evidence_class != C64C_FRESH_REFERENCE_EVIDENCE:
+            raise ValueError("second boundary evidence class is frozen")
+        if self.selection_algorithm_id != C64C_BOUNDARY_ALGORITHM_ID:
+            raise ValueError("second boundary selection algorithm is frozen")
+        if self.selection_seed != C64C_BOUNDARY_SEED:
+            raise ValueError("second boundary selection seed is frozen")
+
+    def to_dict(self) -> dict[str, Any]:
+        history_count, history_digest = _C64C_C63_HISTORY_UNION[self.reference_kind]
+        previous_axes = (
+            C64A_FRESH_PREFILL_AXES
+            if self.reference_kind is ReferenceKind.COLD_PREFILL
+            else C64A_FRESH_TRANSFER_AXES
+        )
+        return {
+            "schema": C64C_BOUNDARY_SCHEMA,
+            "reference_kind": self.reference_kind.value,
+            "axis_unit": self.axis_unit,
+            "axes": list(self.axes),
+            "source_commit": self.source_commit,
+            "evidence_class": self.evidence_class,
+            "selection_algorithm_id": self.selection_algorithm_id,
+            "selection_seed": self.selection_seed,
+            "history_union_axis_count": history_count,
+            "history_union_axis_identity_sha256": history_digest,
+            "previous_c64a_axes": list(previous_axes),
+            "candidate_domain_identity": {
+                "identity_axis_min": 1,
+                "identity_axis_max": 4096,
+                "strata": [list(item) for item in C64C_STRATA],
+                "points_per_stratum": C64C_POINTS_PER_STRATUM,
+                "transfer_bytes_per_predictor_token": (
+                    C64C_TRANSFER_BYTES_PER_TOKEN
+                    if self.reference_kind is ReferenceKind.POINT_TO_POINT_TRANSFER
+                    else None
+                ),
+            },
+            "contains_reference_timings": False,
+        }
+
+    @property
+    def fingerprint(self) -> str:
+        return _sha256_json(self.to_dict())
+
+
+C64C_FRESH_PREFILL_BOUNDARY = SecondFreshAdequacyBoundary(
+    reference_kind=ReferenceKind.COLD_PREFILL,
+    axis_unit="input-tokens",
+    axes=C64C_FRESH_PREFILL_AXES,
+)
+C64C_FRESH_TRANSFER_BOUNDARY = SecondFreshAdequacyBoundary(
+    reference_kind=ReferenceKind.POINT_TO_POINT_TRANSFER,
+    axis_unit="bytes",
+    axes=C64C_FRESH_TRANSFER_AXES,
+)
+
+
+def verify_second_boundary_against_history(
+    boundary: SecondFreshAdequacyBoundary,
+    historical_public_axes: Sequence[int],
+) -> None:
+    if not isinstance(boundary, SecondFreshAdequacyBoundary):
+        raise TypeError("boundary must be SecondFreshAdequacyBoundary")
+    historical = tuple(sorted(set(historical_public_axes)))
+    expected_count, expected_digest = _C64C_C63_HISTORY_UNION[boundary.reference_kind]
+    observed_digest = _history_union_digest(boundary.reference_kind, historical)
+    if len(historical) != expected_count or observed_digest != expected_digest:
+        raise ValueError(
+            "historical axes do not match the frozen identity-only C6.3 family union"
+        )
+    expected_axes = select_second_boundary_axes(boundary.reference_kind, historical)
+    if expected_axes != boundary.axes:
+        raise ValueError("second boundary does not reproduce from the frozen timing-blind selector")
+    if set(boundary.axes) & set(historical):
+        raise ValueError("second boundary collides with C6.3 request-level history")
+    previous = (
+        set(C64A_FRESH_PREFILL_AXES)
+        if boundary.reference_kind is ReferenceKind.COLD_PREFILL
+        else set(C64A_FRESH_TRANSFER_AXES)
+    )
+    if set(boundary.axes) & previous:
+        raise ValueError("second boundary collides with the observed C6.4a boundary")
