@@ -148,12 +148,33 @@ def test_piecewise_curve_interpolates_and_forbids_extrapolation() -> None:
         curve.evaluate(41)
 
 
-def test_curve_knots_are_strict_fit_only_source_evidence() -> None:
+def test_curve_knots_are_strict_fit_only_psrc2_evidence() -> None:
     knot = _knot(64, 0.1, "fit-point")
     assert knot.source_partition == C64A_KNOT_PARTITION
 
     with pytest.raises(ValueError, match="only from C6.3 FIT"):
         replace(knot, source_partition="VALIDATION")
+
+    synthetic_provenance = ParameterProvenance(
+        source_class=ParameterSourceClass.SYNTHETIC_SENSITIVITY,
+        reference="test synthetic",
+    )
+    synthetic_seconds = SourcedScalar(
+        value=0.1,
+        unit="seconds",
+        provenance=synthetic_provenance,
+        sensitivity=replace(
+            __import__("simulator.inference_cost", fromlist=["SensitivityRange"]).SensitivityRange(
+                low=0.05, high=0.2
+            )
+        ),
+    )
+    with pytest.raises(ValueError, match="P-SRC2"):
+        CurveKnot(
+            axis_value=64,
+            seconds=synthetic_seconds,
+            source_point_id="synthetic",
+        )
 
     with pytest.raises(ValueError, match="strictly increasing"):
         PiecewiseLinearCostCurve(
@@ -252,8 +273,7 @@ def test_fresh_boundary_is_identity_only_and_exactly_frozen() -> None:
 
 
 def test_prefill_fresh_boundary_is_unseen_and_fit_bracketed() -> None:
-    # Even ordinals are FIT. These axis identities are sufficient to bracket
-    # every frozen fresh point without touching timing residuals.
+    # Even ordinals are FIT. These identities bracket every frozen fresh point.
     axes = [
         64,
         80,
@@ -277,13 +297,16 @@ def test_prefill_fresh_boundary_is_unseen_and_fit_bracketed() -> None:
         C64A_FRESH_PREFILL_BOUNDARY, partition
     )
 
-    collided = replace(C64A_FRESH_PREFILL_BOUNDARY, axes=C64A_FRESH_PREFILL_AXES)
-    points = list(partition.fit + partition.validation)
-    points[1] = replace(points[1], axis_value=127, point_id="collision")
-    with pytest.raises(ValueError):
-        # Direct construction is intentionally strict about the canonical split;
-        # collision detection is independently exercised below with transfer.
-        split_reference_family(points)
+
+def test_fresh_boundary_collision_fails_closed() -> None:
+    # 127 is an exact frozen fresh axis. Put it into the source partition and
+    # verify that the boundary checker rejects reuse, independent of timing data.
+    axes = [64, 80, 127, 160, 320, 352, 4096, 4160]
+    partition = _partition(ReferenceKind.COLD_PREFILL, axes)
+    with pytest.raises(ValueError, match="already present in C6.3"):
+        verify_fresh_boundary_against_c63_partition(
+            C64A_FRESH_PREFILL_BOUNDARY, partition
+        )
 
 
 def test_transfer_fresh_boundary_is_unseen_and_fit_bracketed() -> None:
