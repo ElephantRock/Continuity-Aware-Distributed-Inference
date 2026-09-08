@@ -82,10 +82,15 @@ C64B_RUNTIME: dict[str, Any] = {
     },
 }
 
-# Git-blob fences for every upstream implementation file whose behavior is used
-# to train, look up, or compose the fresh source-model references.
+# Git-blob fences for upstream implementation files whose behavior participates
+# in configuration resolution, training, request/batch semantics, lookup, or
+# model-time composition. Raw profiling artifacts remain independently fenced by
+# the C6.2/C6.3 source manifests and SHA-256 snapshots.
 C64B_UPSTREAM_CODE_BLOBS: dict[str, str] = {
     "vidur/config/config.py": "9452180c40bebc0d9cf4de29d5b19ef41557ec44",
+    "vidur/config/model_config.py": "722299bbb556ccbab2b82609598be6b8c2963c29",
+    "vidur/config/device_sku_config.py": "8ac9bf57ac03070cd42cdf48792ccf8ffd73ca04",
+    "vidur/config/node_sku_config.py": "ce2271f55f772ab346b6083b2baee3f3ea91e9e7",
     "vidur/execution_time_predictor/base_execution_time_predictor.py": (
         "f399c8ea7fcf66282a473477c67f2dd328d4cb03"
     ),
@@ -95,6 +100,7 @@ C64B_UPSTREAM_CODE_BLOBS: dict[str, str] = {
     "vidur/execution_time_predictor/linear_regression_execution_time_predictor.py": (
         "8dd32b76bcd4f190bc820dd0274f1a71c58e997a"
     ),
+    "vidur/entities/request.py": "8f2d684b76347ecd8e48a3a955d1228ad7ac9c65",
     "vidur/entities/batch.py": "7cda25ac339788e3e27de888a89e645876f71ffa",
     "vidur/entities/execution_time.py": "a5100f86b7e4d885ff62a5a66f845682a998add8",
 }
