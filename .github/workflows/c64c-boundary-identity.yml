@@ -1,0 +1,58 @@
+name: c64c-boundary-identity
+
+on:
+  push:
+    branches:
+      - c6/source-polynomial-v3-boundary
+    paths:
+      - experiments/c64c_boundary_identity.py
+      - .github/workflows/c64c-boundary-identity.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  freeze-boundary-identities:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: c6/source-polynomial-v3-boundary
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+      - name: Checkout pinned Vidur source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/microsoft/vidur.git .c64c_vidur
+          git -C .c64c_vidur checkout --detach abae7f63aa857300f5cdc6f5e0d27860cd24721b
+          test "$(git -C .c64c_vidur rev-parse HEAD)" = "abae7f63aa857300f5cdc6f5e0d27860cd24721b"
+      - name: Generate timing-blind boundary identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/c64c_boundary_identity.py \
+            --vidur-root .c64c_vidur \
+            --output /tmp/c64c-boundary.json > /tmp/c64c-boundary.log
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          result = json.loads(Path('/tmp/c64c-boundary.json').read_text())
+          if result['contains_reference_timings'] is not False:
+              raise SystemExit('boundary selector must remain timing-free')
+          forbidden = ('seconds', 'timing', 'residual', 'error', 'mape', 'ape')
+          encoded = json.dumps(result, sort_keys=True).lower()
+          for token in forbidden:
+              if token in encoded:
+                  raise SystemExit(f'boundary artifact contains forbidden timing/evaluation field: {token}')
+          print('selection_algorithm_id=', result['selection_algorithm_id'])
+          print('selection_seed=', result['selection_seed'])
+          print('history_identities=', json.dumps(result['history_identities'], sort_keys=True))
+          print('history_union=', json.dumps(result['history_union'], sort_keys=True))
+          print('fresh_prefill_axes_input_tokens=', result['fresh_prefill_axes_input_tokens'])
+          print('fresh_transfer_axes_bytes=', result['fresh_transfer_axes_bytes'])
+          PY
