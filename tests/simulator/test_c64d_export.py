@@ -166,6 +166,26 @@ def test_source_equivalence_report_enforces_eight_ulp_budget() -> None:
     assert report["violation_count"] == 1
 
 
+def test_source_equivalence_counts_true_binary64_steps_across_binade() -> None:
+    model = _export(
+        _pipeline(
+            powers=((0,), (1,)),
+            coefficients=(0.0, 0.0),
+            intercept=1.0,
+            degree=1,
+        )
+    )
+    reference = 1.0
+    for _ in range(16):
+        reference = math.nextafter(reference, 0.0)
+    report = source_equivalence_report(
+        model, feature_rows=[(1.0,)], source_predictions=[reference]
+    )
+    assert report["max_ulp_distance"] == 16
+    assert report["violation_count"] == 1
+    assert report["decision"] == "FAIL"
+
+
 def test_carried_decode_is_exact_c63_evidence() -> None:
     a_fixed, a_slope = carried_decode_scalars("a100-80gb")
     h_fixed, h_slope = carried_decode_scalars("h100-80gb")

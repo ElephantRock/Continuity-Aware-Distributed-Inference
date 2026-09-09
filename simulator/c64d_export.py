@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import struct
 from typing import Any, Iterable, Sequence
 
 from .calibration_validation import VIDUR_PINNED_COMMIT, VIDUR_LLAMA2_7B_TP1_DOMAIN
@@ -203,6 +204,19 @@ def export_canonical_polynomial(
     )
 
 
+def _ordered_binary64(value: float) -> int:
+    bits = struct.unpack(">Q", struct.pack(">d", value))[0]
+    sign = 1 << 63
+    mask = (1 << 64) - 1
+    return ((~bits) & mask) if bits & sign else bits | sign
+
+
+def _ulp_distance(left: float, right: float) -> int:
+    if left == right:
+        return 0
+    return abs(_ordered_binary64(left) - _ordered_binary64(right))
+
+
 def source_equivalence_report(
     canonical: CanonicalPolynomialModel,
     *,
@@ -217,16 +231,15 @@ def source_equivalence_report(
         raise ValueError("feature rows and source predictions must have equal length")
 
     max_absolute_error = 0.0
-    max_ulp_ratio = 0.0
+    max_ulp_distance = 0
     violations = 0
     for row, reference in zip(rows, source, strict=True):
         predicted = canonical.evaluate(row)
         absolute = abs(predicted - reference)
-        ulp = max(math.ulp(predicted), math.ulp(reference))
-        ratio = 0.0 if absolute == 0 else absolute / ulp
+        distance = _ulp_distance(predicted, reference)
         max_absolute_error = max(max_absolute_error, absolute)
-        max_ulp_ratio = max(max_ulp_ratio, ratio)
-        if absolute > C64D_EQUIVALENCE_ULP_BUDGET * ulp:
+        max_ulp_distance = max(max_ulp_distance, distance)
+        if distance > C64D_EQUIVALENCE_ULP_BUDGET:
             violations += 1
     return {
         "schema": C64D_EXPORT_SCHEMA,
@@ -235,7 +248,7 @@ def source_equivalence_report(
         "sample_count": len(rows),
         "ulp_budget": C64D_EQUIVALENCE_ULP_BUDGET,
         "max_absolute_error": max_absolute_error,
-        "max_ulp_ratio": max_ulp_ratio,
+        "max_ulp_distance": max_ulp_distance,
         "violation_count": violations,
         "decision": "PASS" if violations == 0 else "FAIL",
     }
