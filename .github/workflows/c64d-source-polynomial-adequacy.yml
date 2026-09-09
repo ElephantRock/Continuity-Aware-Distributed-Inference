@@ -1,4 +1,5 @@
 name: c64d-source-polynomial-adequacy
+# This final-head workflow change intentionally triggers exact-head scientific verification.
 
 on:
   push:
