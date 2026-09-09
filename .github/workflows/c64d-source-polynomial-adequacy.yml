@@ -116,7 +116,7 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/.c64d_vidur
         run: python -m pytest -q tests/simulator/test_c64d_export.py tests/simulator/test_inference_cost_v3.py
-      - name: Compile profiles twice without fresh boundary timings
+      - name: Reproduce the frozen source-equivalence failure without fresh boundary timings
         shell: bash
         env:
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/.c64d_vidur
@@ -130,13 +130,25 @@ jobs:
           from pathlib import Path
           result = json.loads(Path('/tmp/c64d-compile-1.json').read_text())
           assert result['contains_fresh_reference_timings'] is False
-          assert result['decision'] == 'PASS', result
+          assert result['decision'] == 'FAIL', result
+          assert result['compile_fingerprint'] == '487aef0c98035bf24ac1c84572b9a95a1e32d3580e829dccd64a3f068cf8647a', result['compile_fingerprint']
+          by_hw = {item['hardware_id']: item for item in result['hardware']}
+          a100 = by_hw['a100-80gb']['source_equivalence']
+          h100 = by_hw['h100-80gb']['source_equivalence']
+          assert a100['decision'] == 'FAIL', a100
+          assert h100['decision'] == 'PASS', h100
+          a100_components = {item['component_id']: item for item in a100['components']}
+          failed = a100_components['attn_prefill']
+          assert failed['decision'] == 'FAIL', failed
+          assert failed['sample_count'] == 4410, failed
+          assert failed['violation_count'] == 11, failed
+          assert failed['max_ulp_ratio'] == 19.0, failed
+          assert failed['max_absolute_error'] == 8.881784197001252e-16, failed
           print('compile_fingerprint=', result['compile_fingerprint'])
+          print('a100_attn_prefill_equivalence=', failed)
+          print('h100_equivalence=', h100['decision'])
           for hw in result['hardware']:
-              assert hw['source_equivalence']['decision'] == 'PASS', hw
               print('profile_fingerprint=', hw['hardware_id'], hw['profile_fingerprint'])
-              for component in hw['source_equivalence']['components']:
-                  print('equivalence=', hw['hardware_id'], component['component_id'], component['sample_count'], component['max_ulp_ratio'])
           PY
 
   evaluate:
@@ -198,7 +210,7 @@ jobs:
           git clone --filter=blob:none https://github.com/microsoft/vidur.git .c64d_vidur
           git -C .c64d_vidur checkout --detach abae7f63aa857300f5cdc6f5e0d27860cd24721b
           test "$(git -C .c64d_vidur rev-parse HEAD)" = "abae7f63aa857300f5cdc6f5e0d27860cd24721b"
-      - name: Run exact-source C6.4d evaluation twice
+      - name: Record fail-closed C6.4d result without consuming the fresh boundary
         shell: bash
         env:
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/.c64d_vidur
@@ -213,17 +225,18 @@ jobs:
           import json
           from pathlib import Path
           result = json.loads(Path('/tmp/c64d-run-1.json').read_text())
+          assert result['decision'] == 'INADEQUATE_REVISE_REPRESENTATION', result
+          for hw in result['hardware']:
+              assert hw['fresh_evaluation_status'] == 'NOT_EVALUATED_EQUIVALENCE_FENCE_FAILED', hw
+              assert hw['fresh_prefill'] is None, hw
+              assert hw['fresh_transfer'] is None, hw
+              assert hw['source_equivalence']['fresh_boundary_values_consumed'] is False, hw
+              print('profile_fingerprint=', hw['hardware_id'], hw['profile_fingerprint'])
+              print('source_equivalence=', hw['hardware_id'], hw['source_equivalence']['decision'])
           print('decision=', result['decision'])
           print('protocol_fingerprint=', result['protocol_fingerprint'])
           print('scientific_fingerprint=', result['scientific_fingerprint'])
-          for hw in result['hardware']:
-              assert hw['source_equivalence']['decision'] == 'PASS', hw
-              assert hw['fresh_evaluation_status'] == 'EVALUATED', hw
-              print('profile_fingerprint=', hw['hardware_id'], hw['profile_fingerprint'])
-              print('hardware_decision=', hw['hardware_id'], hw['decision'])
-              for key in ('fresh_prefill','fresh_transfer'):
-                  family = hw[key]
-                  print(key, family['decision'], family['mape'], family['max_ape'])
+          print('fresh_boundary_consumed=false')
           PY
       - name: Record canonical scientific result
         shell: bash
