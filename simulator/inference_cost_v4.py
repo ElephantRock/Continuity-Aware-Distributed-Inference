@@ -7,7 +7,7 @@ import json
 import math
 import os
 import platform
-from typing import Any, Sequence
+from typing import Any, Iterable, Sequence
 
 from .c64b_protocol import C64B_RUNTIME
 from .c64d_export import carried_decode_scalars, state_memory_scalars
@@ -54,6 +54,12 @@ C64E_NUMERICAL_SOURCE_BLOBS = {
     "vidur/entities/execution_time.py": (
         "a5100f86b7e4d885ff62a5a66f845682a998add8"
     ),
+    "vidur/execution_time_predictor/sklearn_execution_time_predictor.py": (
+        "a5a96466eb86d94503711afec6d45218bd38d93e"
+    ),
+    "vidur/execution_time_predictor/linear_regression_execution_time_predictor.py": (
+        "8dd32b76bcd4f190bc820dd0274f1a71c58e997a"
+    ),
 }
 C64E_SUPPORTED_HARDWARE_IDS = frozenset({"a100-80gb", "h100-80gb"})
 C64E_REQUIRED_HYPERPARAMETER_KEYS = (
@@ -75,6 +81,11 @@ C64E_PREFILL_COMPONENT_IDS = (
     "post_attention_layernorm",
 )
 C64E_EXACT_PREFILL_COMPONENT_IDS = frozenset({"attn_kv_cache_save"})
+C64E_SOURCE_COMPUTE_BATCH_ROWS = 4096
+C64E_SOURCE_ATTENTION_PREFILL_KV_STEP = 64
+C64E_SOURCE_ATTENTION_PREFILL_KV_MAX = 4096
+C64E_SOURCE_ATTENTION_PREFILL_BATCH_ROWS = 65 * 4096
+C64E_SOURCE_EXPORT_KIND = "STRUCTURALLY_VERIFIED_FITTED_PIPELINE"
 
 
 def _canonical_json(value: object) -> str:
@@ -147,27 +158,37 @@ def _numpy_module():
     return np
 
 
-def source_dense_polynomial_row(
-    feature_values: Sequence[float],
+def source_dense_polynomial_matrix(
+    feature_rows: Sequence[Sequence[float]],
     *,
     degree: int,
     interaction_only: bool,
     include_bias: bool,
 ) -> Any:
-    """Reproduce the sklearn 1.5.2 dense transform algorithm for one row."""
+    """Reproduce sklearn 1.5.2 dense PolynomialFeatures.transform for one batch."""
     np = _numpy_module()
-    values = tuple(
-        _finite(value, f"feature_values[{index}]")
-        for index, value in enumerate(feature_values)
-    )
-    if not values:
-        raise ValueError("feature_values must be non-empty")
-    powers = source_polynomial_powers(
-        len(values), degree, interaction_only, include_bias
-    )
-    X = np.asarray([values], dtype=np.float64, order="F")
-    _, n_features = X.shape
-    XP = np.empty((1, len(powers)), dtype=X.dtype, order="C")
+    rows = []
+    width = None
+    for row_index, row in enumerate(feature_rows):
+        values = tuple(
+            _finite(value, f"feature_rows[{row_index}][{column_index}]")
+            for column_index, value in enumerate(row)
+        )
+        if not values:
+            raise ValueError("feature rows must be non-empty")
+        if width is None:
+            width = len(values)
+        elif len(values) != width:
+            raise ValueError("feature rows must have equal width")
+        rows.append(values)
+    if not rows or width is None:
+        raise ValueError("feature_rows must contain at least one row")
+    powers = source_polynomial_powers(width, degree, interaction_only, include_bias)
+    # sklearn 1.5.2 _validate_data(..., order="F", dtype=FLOAT_DTYPES)
+    # feeds a Fortran-ordered dense input into a C-ordered PolynomialFeatures output.
+    X = np.asarray(rows, dtype=np.float64, order="F")
+    n_samples, n_features = X.shape
+    XP = np.empty((n_samples, len(powers)), dtype=X.dtype, order="C")
     if include_bias:
         XP[:, 0] = 1
         current_col = 1
@@ -199,8 +220,23 @@ def source_dense_polynomial_row(
         index = new_index
     if current_col != len(powers):
         raise RuntimeError("source polynomial construction disagrees with powers")
-    return XP[0]
+    return XP
 
+
+def source_dense_polynomial_row(
+    feature_values: Sequence[float],
+    *,
+    degree: int,
+    interaction_only: bool,
+    include_bias: bool,
+) -> Any:
+    """Structural one-row transform helper; scientific regression uses frozen batches."""
+    return source_dense_polynomial_matrix(
+        (feature_values,),
+        degree=degree,
+        interaction_only=interaction_only,
+        include_bias=include_bias,
+    )[0]
 
 def assert_c64e_numerical_runtime() -> dict[str, Any]:
     """Fail closed unless the accepted C6.4b v2 numerical substrate is active."""
@@ -225,9 +261,15 @@ def assert_c64e_numerical_runtime() -> dict[str, Any]:
             f"numerical environment drift: expected={expected_env}, observed={observed_env}"
         )
     np.dot(np.ones((2, 2)), np.ones((2, 2)))
-    blas = [x for x in threadpool_info() if x.get("internal_api") == "openblas"]
+    blas = [
+        x for x in threadpool_info()
+        if x.get("internal_api") == "openblas"
+        and "/numpy.libs/" in str(x.get("filepath", ""))
+    ]
     if len(blas) != 1:
-        raise RuntimeError(f"expected exactly one OpenBLAS runtime, observed={blas}")
+        raise RuntimeError(
+            f"expected exactly one NumPy OpenBLAS runtime, observed={blas}"
+        )
     observed_blas = {
         "version": str(blas[0].get("version")),
         "coretype": str(blas[0].get("architecture")),
@@ -248,6 +290,156 @@ def assert_c64e_numerical_runtime() -> dict[str, Any]:
     }
 
 
+def _tolist(value: Any) -> Any:
+    return value.tolist() if hasattr(value, "tolist") else value
+
+
+def _float_vector(value: Any, name: str) -> tuple[float, ...]:
+    raw = _tolist(value)
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return (_finite(raw, name),)
+    if not isinstance(raw, (list, tuple)):
+        raise TypeError(f"{name} must be a one-dimensional numeric sequence")
+    if raw and isinstance(raw[0], (list, tuple)):
+        if len(raw) != 1:
+            raise ValueError(f"{name} must describe one regression output")
+        raw = raw[0]
+    return tuple(_finite(value, f"{name}[{index}]") for index, value in enumerate(raw))
+
+
+def _source_powers(value: Any) -> tuple[tuple[int, ...], ...]:
+    raw = _tolist(value)
+    if not isinstance(raw, (list, tuple)):
+        raise TypeError("PolynomialFeatures.powers_ must be a matrix")
+    result = []
+    for row_index, row in enumerate(raw):
+        row = _tolist(row)
+        if not isinstance(row, (list, tuple)):
+            raise TypeError("PolynomialFeatures.powers_ rows must be sequences")
+        exponents = []
+        for column_index, value in enumerate(row):
+            if isinstance(value, bool):
+                raise TypeError("polynomial powers must be integers")
+            numeric = int(value)
+            if numeric != value or numeric < 0:
+                raise ValueError(f"invalid polynomial power at {row_index}/{column_index}")
+            exponents.append(numeric)
+        result.append(tuple(exponents))
+    return tuple(result)
+
+
+def _source_feature_names(estimator: Any, polynomial: Any) -> tuple[str, ...]:
+    candidates = []
+    for owner in (estimator, polynomial):
+        if hasattr(owner, "feature_names_in_"):
+            raw = _tolist(getattr(owner, "feature_names_in_"))
+            if not isinstance(raw, (list, tuple)):
+                raise TypeError("feature_names_in_ must be a sequence")
+            candidates.append(tuple(str(item) for item in raw))
+    if not candidates:
+        raise ValueError("trained source pipeline must expose feature_names_in_")
+    if any(candidate != candidates[0] for candidate in candidates[1:]):
+        raise ValueError("pipeline and PolynomialFeatures feature order disagree")
+    return candidates[0]
+
+
+def _bool_text(value: Any, name: str) -> str:
+    if not isinstance(value, bool):
+        raise TypeError(f"{name} must be boolean")
+    return "true" if value else "false"
+
+
+def source_pipeline_binding_fingerprint(
+    *,
+    component_id: str,
+    hardware_id: str,
+    feature_names: Sequence[str],
+    powers: Sequence[Sequence[int]],
+    coefficients: Sequence[float],
+    intercept: float,
+    upstream_hyperparameters: Sequence[Sequence[str]],
+    source_reference: str,
+) -> str:
+    return _sha256_json({
+        "export_kind": C64E_SOURCE_EXPORT_KIND,
+        "component_id": component_id,
+        "hardware_id": hardware_id,
+        "feature_names": list(feature_names),
+        "powers": [list(row) for row in powers],
+        "coefficients": list(coefficients),
+        "intercept": intercept,
+        "upstream_hyperparameters": [list(pair) for pair in upstream_hyperparameters],
+        "source_reference": source_reference,
+        "source_protocol_fingerprint": C64E_SOURCE_PROTOCOL_FINGERPRINT,
+    })
+
+
+def export_source_ordered_polynomial(
+    estimator: Any,
+    *,
+    component_id: str,
+    hardware_id: str,
+    expected_feature_names: Sequence[str],
+    source_reference: str,
+) -> "SourceOrderedPolynomialModel":
+    """Admit only a structurally verified fitted PolynomialFeatures+LinearRegression pipeline."""
+    if estimator.__class__.__name__ != "Pipeline" or not hasattr(estimator, "named_steps"):
+        raise TypeError("source estimator must be sklearn Pipeline")
+    named_steps = estimator.named_steps
+    if tuple(named_steps) != ("polynomialfeatures", "linearregression"):
+        raise ValueError("source pipeline must contain exactly PolynomialFeatures then LinearRegression")
+    polynomial = named_steps["polynomialfeatures"]
+    regression = named_steps["linearregression"]
+    if polynomial.__class__.__name__ != "PolynomialFeatures":
+        raise TypeError("polynomialfeatures step must be PolynomialFeatures")
+    if regression.__class__.__name__ != "LinearRegression":
+        raise TypeError("linearregression step must be LinearRegression")
+    if getattr(polynomial, "order", None) != "C":
+        raise ValueError("source PolynomialFeatures order must be C")
+    feature_names = _source_feature_names(estimator, polynomial)
+    expected = tuple(expected_feature_names)
+    if feature_names != expected:
+        raise ValueError(f"source feature order mismatch: expected={expected}, observed={feature_names}")
+    if int(getattr(polynomial, "n_features_in_", -1)) != len(feature_names):
+        raise ValueError("PolynomialFeatures n_features_in_ disagrees with feature names")
+    degree = getattr(polynomial, "degree", None)
+    if isinstance(degree, bool) or not isinstance(degree, int) or degree not in (1, 2, 3, 4, 5):
+        raise ValueError("selected polynomial degree outside frozen choices")
+    include_bias = getattr(polynomial, "include_bias", None)
+    interaction_only = getattr(polynomial, "interaction_only", None)
+    fit_intercept = getattr(regression, "fit_intercept", None)
+    hyperparameters = (
+        ("linearregression__fit_intercept", _bool_text(fit_intercept, "fit_intercept")),
+        ("polynomialfeatures__degree", str(degree)),
+        ("polynomialfeatures__include_bias", _bool_text(include_bias, "include_bias")),
+        ("polynomialfeatures__interaction_only", _bool_text(interaction_only, "interaction_only")),
+    )
+    powers = _source_powers(getattr(polynomial, "powers_", None))
+    expected_powers = source_polynomial_powers(
+        len(feature_names), degree, interaction_only, include_bias
+    )
+    if powers != expected_powers:
+        raise ValueError("fitted PolynomialFeatures powers_ disagree with frozen source semantics")
+    coefficients = _float_vector(getattr(regression, "coef_", None), "coef_")
+    if len(coefficients) != len(powers):
+        raise ValueError("PolynomialFeatures powers_ and LinearRegression coef_ differ")
+    intercept_values = _float_vector(getattr(regression, "intercept_", None), "intercept_")
+    if len(intercept_values) != 1:
+        raise ValueError("source regression must have exactly one intercept")
+    intercept = intercept_values[0]
+    binding = source_pipeline_binding_fingerprint(
+        component_id=component_id, hardware_id=hardware_id, feature_names=feature_names,
+        powers=powers, coefficients=coefficients, intercept=intercept,
+        upstream_hyperparameters=hyperparameters, source_reference=source_reference,
+    )
+    return SourceOrderedPolynomialModel(
+        component_id=component_id, hardware_id=hardware_id, feature_names=feature_names,
+        powers=powers, coefficients=coefficients, intercept=intercept,
+        upstream_hyperparameters=hyperparameters, source_reference=source_reference,
+        source_pipeline_fingerprint=binding,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class SourceOrderedPolynomialModel:
     component_id: str
@@ -258,6 +450,7 @@ class SourceOrderedPolynomialModel:
     intercept: float
     upstream_hyperparameters: tuple[tuple[str, str], ...]
     source_reference: str
+    source_pipeline_fingerprint: str
     source_protocol_fingerprint: str = C64E_SOURCE_PROTOCOL_FINGERPRINT
     evaluation_kernel_id: str = C64E_EVALUATION_KERNEL_ID
     polynomial_output_order: str = "C"
@@ -267,6 +460,7 @@ class SourceOrderedPolynomialModel:
         _require_nonempty(self.component_id, "component_id")
         _require_nonempty(self.hardware_id, "hardware_id")
         _require_nonempty(self.source_reference, "source_reference")
+        _require_nonempty(self.source_pipeline_fingerprint, "source_pipeline_fingerprint")
         if self.hardware_id not in C64E_SUPPORTED_HARDWARE_IDS:
             raise ValueError("hardware_id outside frozen v4 source family")
         if self.source_protocol_fingerprint != C64E_SOURCE_PROTOCOL_FINGERPRINT:
@@ -331,6 +525,14 @@ class SourceOrderedPolynomialModel:
         object.__setattr__(self, "intercept", _finite(self.intercept, "intercept"))
         if encoded["linearregression__fit_intercept"] == "false" and self.intercept != 0.0:
             raise ValueError("source fit_intercept=false requires zero intercept")
+        expected_binding = source_pipeline_binding_fingerprint(
+            component_id=self.component_id, hardware_id=self.hardware_id,
+            feature_names=self.feature_names, powers=self.powers, coefficients=self.coefficients,
+            intercept=self.intercept, upstream_hyperparameters=self.upstream_hyperparameters,
+            source_reference=self.source_reference,
+        )
+        if self.source_pipeline_fingerprint != expected_binding:
+            raise ValueError("source pipeline content binding drift")
 
     @property
     def degree(self) -> int:
@@ -344,27 +546,35 @@ class SourceOrderedPolynomialModel:
     def interaction_only(self) -> bool:
         return dict(self.upstream_hyperparameters)["polynomialfeatures__interaction_only"] == "true"
 
-    def evaluate(self, feature_values: Sequence[float]) -> float:
-        if len(feature_values) != len(self.feature_names):
-            raise ValueError("feature_values length must match feature_names")
+    def evaluate_source_batch(
+        self, feature_rows: Sequence[Sequence[float]]
+    ) -> tuple[float, ...]:
+        """Evaluate exactly one frozen source materialization batch."""
+        rows = tuple(tuple(row) for row in feature_rows)
+        if not rows:
+            raise ValueError("feature_rows must contain at least one row")
+        if any(len(row) != len(self.feature_names) for row in rows):
+            raise ValueError("feature row width must match feature_names")
+        # The fence must execute in this process immediately before BLAS-backed evaluation.
+        assert_c64e_numerical_runtime()
         np = _numpy_module()
-        transformed = source_dense_polynomial_row(
-            feature_values,
-            degree=self.degree,
-            interaction_only=self.interaction_only,
+        transformed = source_dense_polynomial_matrix(
+            rows, degree=self.degree, interaction_only=self.interaction_only,
             include_bias=self.include_bias,
         )
         coefficients = np.asarray(self.coefficients, dtype=np.float64)
-        if transformed.shape != coefficients.shape:
-            raise RuntimeError("source row and coefficient shape disagree")
-        predicted = (
-            np.asarray([transformed], dtype=np.float64) @ coefficients
-            + np.float64(self.intercept)
-        )
-        result = float(predicted[0])
-        if not math.isfinite(result):
-            raise ValueError("source-kernel polynomial evaluation became non-finite")
+        if transformed.ndim != 2 or transformed.shape[1] != coefficients.shape[0]:
+            raise RuntimeError("source batch and coefficient shape disagree")
+        predicted = transformed @ coefficients + np.float64(self.intercept)
+        result = tuple(float(value) for value in predicted)
+        if len(result) != len(rows) or not all(math.isfinite(value) for value in result):
+            raise ValueError("source-kernel polynomial batch evaluation became invalid")
         return result
+
+    def evaluate(self, feature_values: Sequence[float]) -> float:
+        raise RuntimeError(
+            "singleton v4 regression evaluation is forbidden; materialize the frozen source batch"
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -381,6 +591,8 @@ class SourceOrderedPolynomialModel:
             "source_protocol_id": C64E_SOURCE_PROTOCOL_ID,
             "source_protocol_fingerprint": self.source_protocol_fingerprint,
             "source_reference": self.source_reference,
+            "source_export_kind": C64E_SOURCE_EXPORT_KIND,
+            "source_pipeline_fingerprint": self.source_pipeline_fingerprint,
             "numerical_source_blobs": dict(sorted(C64E_NUMERICAL_SOURCE_BLOBS.items())),
             "output_unit": self.output_unit,
         }
@@ -470,54 +682,14 @@ class SourceKernelCostProfile:
             raise ValueError("memory_capacity_bytes must be positive")
 
     def prefill_seconds(self, input_tokens: int) -> float:
-        if not isinstance(input_tokens, int) or isinstance(input_tokens, bool):
-            raise TypeError("input_tokens must be an integer")
-        if input_tokens == 0:
-            return 0.0
-        if not C64E_PREFILL_TOKEN_MIN <= input_tokens <= C64E_PREFILL_TOKEN_MAX:
-            raise ValueError("cold-prefill evaluation outside frozen source domain")
-        rounded = (input_tokens + 7) // 8 * 8
-        by_id = {x.component_id: x for x in self.prefill_components}
-        def component(name: str) -> float:
-            axis = input_tokens if name in C64E_EXACT_PREFILL_COMPONENT_IDS else rounded
-            return by_id[name].evaluate((float(axis),))
-        # Exact pinned ExecutionTime nesting/order; cold prefill decode/TP/PP are zero.
-        attention = _left_add((
-            component("attn_pre_proj"),
-            component("attn_post_proj"),
-            component("attn_rope"),
-            component("attn_kv_cache_save"),
-            0.0,
-            self.prefill_attention.evaluate((0.0, float(input_tokens * input_tokens))),
-            0.0,
-            component("input_layernorm"),
-        ))
-        mlp = _left_add((
-            component("mlp_up_proj"),
-            component("mlp_down_proj"),
-            component("mlp_act"),
-            0.0,
-            component("post_attention_layernorm"),
-        ))
-        block = _left_add((attention, mlp, component("add")))
-        seconds = (block * VIDUR_LLAMA2_7B_TP1_DOMAIN.num_layers + 0.0) * 1e-3
-        if not math.isfinite(seconds) or seconds < 0:
-            raise ValueError("source-kernel cold-prefill produced invalid seconds")
-        return seconds
+        raise RuntimeError(
+            "unmaterialized v4 profile cannot evaluate requests; call materialize_source_kernel_domain"
+        )
 
     def transfer_seconds(self, state_bytes: float) -> float:
-        axis_bytes = _integral_axis(state_bytes, "state_bytes")
-        if axis_bytes == 0:
-            return 0.0
-        if axis_bytes % C64E_TRANSFER_BYTES_PER_TOKEN:
-            raise ValueError("transfer bytes outside exact source token-multiple domain")
-        tokens = axis_bytes // C64E_TRANSFER_BYTES_PER_TOKEN
-        if not C64E_TRANSFER_PREDICTOR_TOKEN_MIN <= tokens <= C64E_TRANSFER_PREDICTOR_TOKEN_MAX:
-            raise ValueError("transfer bytes outside frozen source lookup domain")
-        seconds = self.transfer.evaluate((float(tokens),)) * 1e-3
-        if not math.isfinite(seconds) or seconds < 0:
-            raise ValueError("source-kernel transfer produced invalid seconds")
-        return seconds
+        raise RuntimeError(
+            "unmaterialized v4 profile cannot evaluate requests; call materialize_source_kernel_domain"
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -532,6 +704,11 @@ class SourceKernelCostProfile:
             "prefill_domain_input_tokens": [1, 4096],
             "prefill_compute_rounding": "(n + 7) // 8 * 8",
             "prefill_request_arithmetic": "pinned Vidur ExecutionTime left-associative nesting",
+            "source_materialization": {
+                "compute_and_send_recv_batch_rows": C64E_SOURCE_COMPUTE_BATCH_ROWS,
+                "attn_prefill_batch_rows": C64E_SOURCE_ATTENTION_PREFILL_BATCH_ROWS,
+                "request_evaluation": "lookup-only after source-shape batch materialization",
+            },
             "prefill_components": [x.to_dict() for x in self.prefill_components],
             "prefill_attention": self.prefill_attention.to_dict(),
             "decode_fixed_seconds_per_output_token": self.decode_fixed_seconds_per_output_token.to_dict(),
@@ -555,6 +732,107 @@ class SourceKernelCostProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceKernelMaterializedDomain:
+    profile: SourceKernelCostProfile
+    prefill_seconds_by_input_token: tuple[float, ...]
+    transfer_seconds_by_predictor_token: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.profile, SourceKernelCostProfile):
+            raise TypeError("profile must be SourceKernelCostProfile")
+        if len(self.prefill_seconds_by_input_token) != C64E_SOURCE_COMPUTE_BATCH_ROWS:
+            raise ValueError("prefill materialization must cover exactly 4096 axes")
+        if len(self.transfer_seconds_by_predictor_token) != C64E_SOURCE_COMPUTE_BATCH_ROWS:
+            raise ValueError("transfer materialization must cover exactly 4096 axes")
+        for family in (self.prefill_seconds_by_input_token, self.transfer_seconds_by_predictor_token):
+            if not all(math.isfinite(value) and value >= 0 for value in family):
+                raise ValueError("materialized source-domain costs must be finite/non-negative")
+
+    def prefill_seconds(self, input_tokens: int) -> float:
+        if not isinstance(input_tokens, int) or isinstance(input_tokens, bool):
+            raise TypeError("input_tokens must be an integer")
+        if input_tokens == 0:
+            return 0.0
+        if not C64E_PREFILL_TOKEN_MIN <= input_tokens <= C64E_PREFILL_TOKEN_MAX:
+            raise ValueError("cold-prefill evaluation outside frozen source domain")
+        return self.prefill_seconds_by_input_token[input_tokens - 1]
+
+    def transfer_seconds(self, state_bytes: float) -> float:
+        axis_bytes = _integral_axis(state_bytes, "state_bytes")
+        if axis_bytes == 0:
+            return 0.0
+        if axis_bytes % C64E_TRANSFER_BYTES_PER_TOKEN:
+            raise ValueError("transfer bytes outside exact source token-multiple domain")
+        tokens = axis_bytes // C64E_TRANSFER_BYTES_PER_TOKEN
+        if not C64E_TRANSFER_PREDICTOR_TOKEN_MIN <= tokens <= C64E_TRANSFER_PREDICTOR_TOKEN_MAX:
+            raise ValueError("transfer bytes outside frozen source lookup domain")
+        return self.transfer_seconds_by_predictor_token[tokens - 1]
+
+    @property
+    def fingerprint(self) -> str:
+        return _sha256_json({
+            "profile_fingerprint": self.profile.fingerprint,
+            "evaluation_kernel_id": C64E_EVALUATION_KERNEL_ID,
+            "prefill_seconds_by_input_token": list(self.prefill_seconds_by_input_token),
+            "transfer_seconds_by_predictor_token": list(self.transfer_seconds_by_predictor_token),
+        })
+
+
+def materialize_source_kernel_domain(
+    profile: SourceKernelCostProfile,
+) -> SourceKernelMaterializedDomain:
+    """Materialize v4 using exactly the pinned Vidur source prediction batch shapes."""
+    if not isinstance(profile, SourceKernelCostProfile):
+        raise TypeError("profile must be SourceKernelCostProfile")
+    assert_c64e_numerical_runtime()
+    token_rows = tuple((float(token),) for token in range(1, 4097))
+    by_id = {model.component_id: model for model in profile.prefill_components}
+    component_predictions = {
+        component_id: by_id[component_id].evaluate_source_batch(token_rows)
+        for component_id in C64E_PREFILL_COMPONENT_IDS
+    }
+    transfer_predictions_ms = profile.transfer.evaluate_source_batch(token_rows)
+    attention_rows = tuple(
+        (float(kv_cache_size), float(prefill_chunk_size * prefill_chunk_size))
+        for kv_cache_size in range(
+            0, C64E_SOURCE_ATTENTION_PREFILL_KV_MAX + 1, C64E_SOURCE_ATTENTION_PREFILL_KV_STEP
+        )
+        for prefill_chunk_size in range(1, 4097)
+    )
+    if len(attention_rows) != C64E_SOURCE_ATTENTION_PREFILL_BATCH_ROWS:
+        raise RuntimeError("attention materialization batch shape drift")
+    attention_predictions_ms = profile.prefill_attention.evaluate_source_batch(attention_rows)
+    # Source product order places kv_cache_size=0 first, with prefill chunk 1..4096 inner.
+    cold_attention_ms = attention_predictions_ms[:4096]
+    prefill_seconds = []
+    for input_tokens in range(1, 4097):
+        rounded = (input_tokens + 7) // 8 * 8
+        def component(name: str) -> float:
+            axis = input_tokens if name in C64E_EXACT_PREFILL_COMPONENT_IDS else rounded
+            return component_predictions[name][axis - 1]
+        attention = _left_add((
+            component("attn_pre_proj"), component("attn_post_proj"),
+            component("attn_rope"), component("attn_kv_cache_save"), 0.0,
+            cold_attention_ms[input_tokens - 1], 0.0, component("input_layernorm"),
+        ))
+        mlp = _left_add((
+            component("mlp_up_proj"), component("mlp_down_proj"),
+            component("mlp_act"), 0.0, component("post_attention_layernorm"),
+        ))
+        block = _left_add((attention, mlp, component("add")))
+        seconds = (block * VIDUR_LLAMA2_7B_TP1_DOMAIN.num_layers + 0.0) * 1e-3
+        if not math.isfinite(seconds) or seconds < 0:
+            raise ValueError("source-kernel cold-prefill materialization produced invalid seconds")
+        prefill_seconds.append(seconds)
+    transfer_seconds = tuple(value * 1e-3 for value in transfer_predictions_ms)
+    return SourceKernelMaterializedDomain(
+        profile=profile,
+        prefill_seconds_by_input_token=tuple(prefill_seconds),
+        transfer_seconds_by_predictor_token=transfer_seconds,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class SourceKernelCostEstimate:
     profile_id: str
     profile_fingerprint: str
@@ -575,14 +853,15 @@ class SourceKernelCostEstimate:
 
 
 def estimate_source_kernel_cost(
-    profile: SourceKernelCostProfile,
+    materialized: SourceKernelMaterializedDomain,
     workload: InferenceCostWorkload,
 ) -> SourceKernelCostEstimate:
-    if not isinstance(profile, SourceKernelCostProfile):
-        raise TypeError("profile must be SourceKernelCostProfile")
+    if not isinstance(materialized, SourceKernelMaterializedDomain):
+        raise TypeError("materialized must be SourceKernelMaterializedDomain")
     if not isinstance(workload, InferenceCostWorkload):
         raise TypeError("workload must be InferenceCostWorkload")
-    prefill = profile.prefill_seconds(workload.input_tokens)
+    profile = materialized.profile
+    prefill = materialized.prefill_seconds(workload.input_tokens)
     steps = (
         workload.output_tokens * workload.input_tokens
         + workload.output_tokens * (workload.output_tokens - 1) // 2
@@ -592,26 +871,17 @@ def estimate_source_kernel_cost(
         + profile.decode_seconds_per_context_token_step.value * steps
     )
     recompute_tokens = workload.input_tokens - workload.reusable_prefix_tokens
-    recompute = profile.prefill_seconds(recompute_tokens)
+    recompute = materialized.prefill_seconds(recompute_tokens)
     state = profile.state_fixed_bytes.value + profile.state_bytes_per_token.value * workload.state_tokens
-    transfer = profile.transfer_seconds(state)
+    transfer = materialized.transfer_seconds(state)
     memory_fraction = state / profile.memory_capacity_bytes.value
     values = (prefill, decode, recompute, transfer, state, memory_fraction)
-    if not all(math.isfinite(x) and x >= 0 for x in values):
+    if not all(math.isfinite(value) and value >= 0 for value in values):
         raise ValueError("source-kernel cost evaluation produced invalid result")
     return SourceKernelCostEstimate(
-        profile.profile_id,
-        profile.fingerprint,
-        prefill,
-        decode,
-        recompute,
-        transfer,
-        state,
-        memory_fraction,
-        recompute_tokens,
-        steps,
+        profile.profile_id, profile.fingerprint, prefill, decode, recompute, transfer,
+        state, memory_fraction, recompute_tokens, steps,
     )
-
 
 def profile_from_source_models(
     *,
@@ -701,6 +971,24 @@ class ExhaustiveSourceEquivalenceProtocol:
                 "environment": dict(C64B_RUNTIME["environment"]),
             },
             "numerical_source_blobs": dict(sorted(C64E_NUMERICAL_SOURCE_BLOBS.items())),
+            "source_model_admission": {
+                "kind": C64E_SOURCE_EXPORT_KIND,
+                "requires_structural_fitted_pipeline_export": True,
+                "requires_content_binding": True,
+            },
+            "source_materialization_batches": {
+                "compute_and_send_recv": {
+                    "row_count": C64E_SOURCE_COMPUTE_BATCH_ROWS,
+                    "feature_rows": "num_tokens=1..4096 in one model.predict-equivalent batch",
+                },
+                "attn_prefill": {
+                    "row_count": C64E_SOURCE_ATTENTION_PREFILL_BATCH_ROWS,
+                    "row_order": "kv_cache_size outer 0..4096 step 64; prefill_chunk_size inner 1..4096",
+                    "features": ["kv_cache_size", "prefill_chunk_size_squared"],
+                },
+                "request_projection": "index materialized batch outputs; singleton BLAS evaluation forbidden",
+                "runtime_fence": "mandatory in-process immediately before every BLAS-backed batch evaluation",
+            },
             "domains": {
                 "cold_prefill_input_tokens": {"min": 1, "max": 4096, "point_count": 4096, "enumeration": "every integer axis"},
                 "point_to_point_transfer": {"predictor_token_min": 1, "predictor_token_max": 4096, "bytes_per_predictor_token": 8192, "point_count": 4096, "enumeration": "every integer predictor-token axis"},
