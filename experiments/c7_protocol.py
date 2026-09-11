@@ -41,6 +41,7 @@ C6_STATE_BYTES_PER_TOKEN = 524288
 C6_MAX_UNSPLIT_TRANSFER_STATE_TOKENS = (
     C6_MAX_VALIDATED_TRANSFER_BYTES // C6_STATE_BYTES_PER_TOKEN
 )
+C7_SUPPORTED_HARDWARE_IDS = ("a100-80gb", "h100-80gb")
 C7_P5_STATE_TOKENS = (1, 4, 16, 64)
 
 C7_STOCHASTIC_SEEDS = tuple(range(64))
@@ -482,6 +483,7 @@ class EfficiencyProtocol:
                 "evidence_class": C6_EVIDENCE_CLASS,
                 "scientific_fingerprint": C6_SCIENTIFIC_FINGERPRINT,
                 "artifact_sha256": C6_ARTIFACT_SHA256,
+                "supported_hardware_ids": list(C7_SUPPORTED_HARDWARE_IDS),
                 "max_model_length": C6_MAX_MODEL_LENGTH,
                 "transfer_bytes_per_predictor_token": C6_TRANSFER_BYTES_PER_PREDICTOR_TOKEN,
                 "max_validated_transfer_bytes": C6_MAX_VALIDATED_TRANSFER_BYTES,
@@ -499,6 +501,10 @@ class EfficiencyProtocol:
                 "convergence_prefixes": list(C7_CONVERGENCE_PREFIXES),
                 "proportion_ci_half_width": C7_PROPORTION_CI_HALF_WIDTH,
                 "continuous_relative_ci_half_width": C7_CONTINUOUS_RELATIVE_CI_HALF_WIDTH,
+                "continuous_zero_baseline_rule": (
+                    "do not declare early convergence from a relative target; consume through seed 63 "
+                    "unless the paired interval is exactly zero"
+                ),
                 "bootstrap_resamples": C7_BOOTSTRAP_RESAMPLES,
                 "bootstrap_seed": C7_BOOTSTRAP_SEED,
                 "bootstrap_interval": "percentile-95",
@@ -515,6 +521,7 @@ class EfficiencyProtocol:
             "invalid_result_conditions": [
                 "source row clipped, truncated, or extrapolated to enter the C6 domain",
                 "positive decode outside input_tokens>=1 and input_tokens+output_tokens<=4096",
+                "hardware identity outside the accepted C6 runtime family",
                 "P-SRC2 transfer State size outside {1,4,16,64} State tokens",
                 "compared policies do not share workload seed/segment/resource/fault schedule",
                 "policy receives information outside cadi.policy-information-contract.v2",
@@ -565,6 +572,8 @@ class C7ExperimentManifest:
         if not isinstance(self.workload_class, WorkloadClass):
             raise TypeError("workload_class must be WorkloadClass")
         _nonempty(self.hardware_id, "hardware_id")
+        if self.hardware_id not in C7_SUPPORTED_HARDWARE_IDS:
+            raise ValueError("hardware_id is outside the accepted C6 runtime family")
         _nonempty(self.program_objective, "program_objective")
         if self.seed is not None:
             _nonnegative_int(self.seed, "seed")
