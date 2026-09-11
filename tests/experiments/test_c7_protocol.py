@@ -186,3 +186,17 @@ def test_manifest_requires_canonical_one_to_one_parameter_sources() -> None:
             parameters=(("session_depth", 8),),
             parameter_sources=(("worker_count", ParameterSource.P_SRC4),),
         )
+
+
+def test_manifest_fences_seed_sequence_and_frozen_axis_values() -> None:
+    with pytest.raises(ValueError, match="0..63"):
+        _manifest(seed=64)
+
+    with pytest.raises(ValueError, match="outside the frozen C7.1 axis"):
+        _manifest(parameters=(("session_depth", 3),))
+
+    with pytest.raises(ValueError, match="source class"):
+        _manifest(
+            parameters=(("session_depth", 8),),
+            parameter_sources=(("session_depth", ParameterSource.P_SRC2),),
+        )
