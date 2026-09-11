@@ -11,6 +11,7 @@ from experiments.c7_protocol import (
     C7_P5_STATE_TOKENS,
     C7_PROTOCOL_FINGERPRINT,
     C7_STOCHASTIC_SEEDS,
+    C7_SUPPORTED_HARDWARE_IDS,
     EfficiencyEligibility,
     ExperimentSeries,
     FROZEN_C7_PROTOCOL,
@@ -32,7 +33,7 @@ from simulator.policies import PolicyID
 
 
 EXPECTED_PROTOCOL_FINGERPRINT = (
-    "1ca59a03829283e97f2580f42db91a1054e91162f981b1fdbeb4f0aa195a4be6"
+    "706e0d5fff362a1eda8c906b957c914251c6e7949bac6be3c2c143ae21625474"
 )
 
 
@@ -44,7 +45,7 @@ def _manifest(**overrides: object) -> C7ExperimentManifest:
         "series": ExperimentSeries.P1_DEEP_REUSE,
         "policy_id": PolicyID.B4,
         "workload_class": WorkloadClass.TRACE_AUGMENTED,
-        "hardware_id": "A100-80GB",
+        "hardware_id": "a100-80gb",
         "program_objective": "all requests in the synthetic Session complete",
         "seed": 0,
         "source_dataset_fingerprint": "a" * 64,
@@ -139,16 +140,20 @@ def test_protocol_identity_is_canonical_deterministic_and_frozen() -> None:
     assert C7_PROTOCOL_FINGERPRINT == EXPECTED_PROTOCOL_FINGERPRINT
     assert len(C7_PROTOCOL_FINGERPRINT) == 64
     assert C7_STOCHASTIC_SEEDS == tuple(range(64))
+    assert C7_SUPPORTED_HARDWARE_IDS == ("a100-80gb", "h100-80gb")
     encoded = json.dumps(first, sort_keys=True, separators=(",", ":"), allow_nan=False)
     assert json.loads(encoded) == first
 
 
-def test_manifest_binds_frozen_protocol_and_workload_provenance() -> None:
+def test_manifest_binds_frozen_protocol_workload_and_hardware_provenance() -> None:
     manifest = _manifest()
     assert manifest.to_dict()["protocol_fingerprint"] == C7_PROTOCOL_FINGERPRINT
 
     with pytest.raises(ValueError, match="frozen C7.1 protocol"):
         _manifest(protocol_fingerprint="0" * 64)
+
+    with pytest.raises(ValueError, match="accepted C6 runtime family"):
+        _manifest(hardware_id="A100-80GB")
 
     with pytest.raises(ValueError, match="REAL-TRACE"):
         _manifest(
