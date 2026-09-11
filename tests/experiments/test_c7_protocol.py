@@ -31,6 +31,11 @@ from experiments.c7_protocol import (
 from simulator.policies import PolicyID
 
 
+EXPECTED_PROTOCOL_FINGERPRINT = (
+    "1ca59a03829283e97f2580f42db91a1054e91162f981b1fdbeb4f0aa195a4be6"
+)
+
+
 def _manifest(**overrides: object) -> C7ExperimentManifest:
     values: dict[str, object] = {
         "experiment_id": "c7.1-test",
@@ -126,11 +131,12 @@ def test_semantic_violation_excludes_efficiency_ranking() -> None:
     )
 
 
-def test_protocol_identity_is_canonical_and_deterministic() -> None:
+def test_protocol_identity_is_canonical_deterministic_and_frozen() -> None:
     first = FROZEN_C7_PROTOCOL.to_dict()
     second = FROZEN_C7_PROTOCOL.to_dict()
     assert first == second
     assert FROZEN_C7_PROTOCOL.fingerprint == C7_PROTOCOL_FINGERPRINT
+    assert C7_PROTOCOL_FINGERPRINT == EXPECTED_PROTOCOL_FINGERPRINT
     assert len(C7_PROTOCOL_FINGERPRINT) == 64
     assert C7_STOCHASTIC_SEEDS == tuple(range(64))
     encoded = json.dumps(first, sort_keys=True, separators=(",", ":"), allow_nan=False)
