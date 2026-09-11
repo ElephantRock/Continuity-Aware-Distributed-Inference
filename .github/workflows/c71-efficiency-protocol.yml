@@ -43,6 +43,12 @@ jobs:
         with:
           python-version: '3.12.14'
           check-latest: false
+      - name: Print candidate protocol fingerprint
+        run: |
+          python - <<'PY'
+          from experiments.c7_protocol import C7_PROTOCOL_FINGERPRINT
+          print(f'candidate_protocol_fingerprint={C7_PROTOCOL_FINGERPRINT}')
+          PY
       - name: Install test runner only
         run: python -m pip install 'pytest==8.4.2'
       - name: Run C7.1 protocol contract tests
@@ -69,6 +75,7 @@ jobs:
           assert protocol['semantic_validity']['covered_violation_excludes_efficiency_ranking'] is True
           assert protocol['statistics']['stochastic_seeds'] == list(range(64))
           assert protocol['cost_model']['p5_state_tokens'] == [1, 4, 16, 64]
+          assert protocol['cost_model']['supported_hardware_ids'] == ['a100-80gb', 'h100-80gb']
           assert all(axis['source'] == 'P-SRC4' for axis in protocol['axes'])
           assert 'results' not in payload
           assert 'policy_comparison' not in payload
