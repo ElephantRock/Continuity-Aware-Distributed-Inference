@@ -5,6 +5,7 @@ from enum import Enum
 import hashlib
 import json
 import math
+import re
 from typing import Any, Iterable
 
 from continuity.entities import ContinuationLifecycle, StateLifecycle
@@ -36,6 +37,7 @@ C73_EVENT_ORDER = (
     "CAPACITY_ENFORCEMENT",
     "INTERVAL_ACCOUNTING_CHECKPOINT",
 )
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class RetentionPolicyID(str, Enum):
@@ -89,6 +91,12 @@ def _canonical_json(value: object) -> str:
 
 def _sha256(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _require_sha256(value: Any, name: str) -> str:
+    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+        raise ValueError(f"{name} must be a lowercase SHA-256 hex digest")
+    return value
 
 
 def _nonnegative_int(value: Any, name: str) -> int:
@@ -273,6 +281,29 @@ class RetentionProtocol:
             },
             "comparative_result_inspection": "NONE",
             "policy_ids": [policy.value for policy in RetentionPolicyID],
+            "manifest_schema": {
+                "schema": C73_RETENTION_MANIFEST_SCHEMA,
+                "fields": [
+                    "base_c7_manifest_fingerprint",
+                    "retention_protocol_fingerprint",
+                    "retention_policy_id",
+                    "ttl_seconds",
+                    "program_case_fingerprint",
+                    "state_size_map_fingerprint",
+                    "reference_working_set_bytes",
+                    "cache_capacity_ratio",
+                    "capacity_bytes",
+                ],
+            },
+            "result_identity_requirements": [
+                "base C7 manifest fingerprint",
+                "retention manifest fingerprint",
+                "retention protocol fingerprint",
+                "immutable Program-case fingerprint",
+                "State-size map/provenance fingerprint",
+                "retention policy ID",
+                "capacity outcome including CAPACITY_INFEASIBLE",
+            ],
             "lifecycle_validity_boundary": {
                 "lifecycle_role": "RETENTION_POLICY_ONLY",
                 "validity_role": "CORRECTNESS_AND_SEMANTIC_REUSE",
@@ -400,11 +431,69 @@ class RetentionProtocol:
 
 
 FROZEN_C73_RETENTION_PROTOCOL = RetentionProtocol()
+C73_RETENTION_PROTOCOL_FINGERPRINT = FROZEN_C73_RETENTION_PROTOCOL.fingerprint
+
+
+@dataclass(frozen=True, slots=True)
+class C73RetentionManifest:
+    base_c7_manifest_fingerprint: str
+    retention_protocol_fingerprint: str
+    retention_policy_id: RetentionPolicyID
+    ttl_seconds: float | None
+    program_case_fingerprint: str
+    state_size_map_fingerprint: str
+    reference_working_set_bytes: int
+    cache_capacity_ratio: float
+    capacity_bytes: int
+
+    def __post_init__(self) -> None:
+        _require_sha256(self.base_c7_manifest_fingerprint, "base_c7_manifest_fingerprint")
+        if self.retention_protocol_fingerprint != C73_RETENTION_PROTOCOL_FINGERPRINT:
+            raise ValueError("retention manifest must bind to the C7.3a protocol fingerprint")
+        if not isinstance(self.retention_policy_id, RetentionPolicyID):
+            raise TypeError("retention_policy_id must be RetentionPolicyID")
+        if self.retention_policy_id is RetentionPolicyID.FIXED_TTL:
+            if self.ttl_seconds is None:
+                raise ValueError("FIXED_TTL retention manifest requires ttl_seconds")
+            ttl = _finite_nonnegative(self.ttl_seconds, "ttl_seconds")
+            if ttl not in C73_TTL_SENSITIVITY_SECONDS:
+                raise ValueError("ttl_seconds must be one of the predeclared sensitivity values")
+            object.__setattr__(self, "ttl_seconds", ttl)
+        elif self.ttl_seconds is not None:
+            raise ValueError("ttl_seconds is valid only for FIXED_TTL")
+        _require_sha256(self.program_case_fingerprint, "program_case_fingerprint")
+        _require_sha256(self.state_size_map_fingerprint, "state_size_map_fingerprint")
+        reference = _positive_int(self.reference_working_set_bytes, "reference_working_set_bytes")
+        ratio = _finite_nonnegative(self.cache_capacity_ratio, "cache_capacity_ratio")
+        expected_capacity = capacity_bytes(
+            reference_working_set_bytes=reference,
+            cache_capacity_ratio=ratio,
+        )
+        if self.capacity_bytes != expected_capacity:
+            raise ValueError("capacity_bytes must equal the frozen capacity normalization")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": C73_RETENTION_MANIFEST_SCHEMA,
+            "base_c7_manifest_fingerprint": self.base_c7_manifest_fingerprint,
+            "retention_protocol_fingerprint": self.retention_protocol_fingerprint,
+            "retention_policy_id": self.retention_policy_id.value,
+            "ttl_seconds": self.ttl_seconds,
+            "program_case_fingerprint": self.program_case_fingerprint,
+            "state_size_map_fingerprint": self.state_size_map_fingerprint,
+            "reference_working_set_bytes": self.reference_working_set_bytes,
+            "cache_capacity_ratio": self.cache_capacity_ratio,
+            "capacity_bytes": self.capacity_bytes,
+        }
+
+    @property
+    def fingerprint(self) -> str:
+        return _sha256(self.to_dict())
 
 
 def main() -> None:
     payload = FROZEN_C73_RETENTION_PROTOCOL.to_dict()
-    print(_canonical_json({**payload, "protocol_fingerprint": FROZEN_C73_RETENTION_PROTOCOL.fingerprint}))
+    print(_canonical_json({**payload, "protocol_fingerprint": C73_RETENTION_PROTOCOL_FINGERPRINT}))
 
 
 if __name__ == "__main__":
