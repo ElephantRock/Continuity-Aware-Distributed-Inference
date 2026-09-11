@@ -7,6 +7,7 @@ import pytest
 from continuity.entities import ContinuationLifecycle, StateLifecycle
 from experiments.c7_protocol import (
     AXES,
+    C6_STATE_BYTES_PER_TOKEN,
     C7_BOOTSTRAP_RESAMPLES,
     C7_BOOTSTRAP_SEED,
     C7_CONVERGENCE_PREFIXES,
@@ -16,6 +17,8 @@ from experiments.c7_protocol import (
 )
 from experiments.c73_retention_protocol import (
     C73_BASE_COMMIT,
+    C73_DEFAULT_STATE_BYTES,
+    C73_DEFAULT_STATE_TOKENS,
     C73_EVENT_ORDER,
     C73_PRIMARY_TTL_SECONDS,
     C73_RETENTION_MANIFEST_SCHEMA,
@@ -138,6 +141,7 @@ def test_fixed_ttl_grid_is_predeclared_and_equal_to_tool_gap_axis() -> None:
     assert C73_TTL_SENSITIVITY_SECONDS == (0.25, 1.0, 5.0, 30.0, 120.0)
     assert C73_TTL_SENSITIVITY_SECONDS == AXES["tool_gap_seconds"].values
     policy = FROZEN_C73_RETENTION_PROTOCOL.to_dict()["policies"]["FIXED_TTL"]
+    assert policy["ttl_parameter_source"] == "P-SRC4"
     assert policy["reuse_refreshes_expiry"] is False
     assert policy["expiry_at_equality_precedes_reuse"] is True
     assert "oracle-tuned sensitivity upper bound" in policy["best_of_grid_rule"]
@@ -151,6 +155,19 @@ def test_fixed_ttl_is_from_admission_and_expires_at_equality() -> None:
     assert fixed_ttl_expired(now_seconds=16.0, expiry_seconds=expiry) is True
     with pytest.raises(ValueError, match="predeclared sensitivity"):
         fixed_ttl_expiry_seconds(admission_time_seconds=0.0, ttl_seconds=7.0)
+
+
+def test_fixed_state_size_design_point_is_frozen_before_results() -> None:
+    assert C73_DEFAULT_STATE_TOKENS == 16
+    assert C73_DEFAULT_STATE_TOKENS == AXES["state_tokens"].reference_value
+    assert C73_DEFAULT_STATE_BYTES == 16 * C6_STATE_BYTES_PER_TOKEN == 8_388_608
+    rule = FROZEN_C73_RETENTION_PROTOCOL.to_dict()["state_size_rule"]
+    assert rule["default_state_tokens"] == 16
+    assert rule["default_state_tokens_source"] == "P-SRC4"
+    assert rule["bytes_per_state_token"] == C6_STATE_BYTES_PER_TOKEN
+    assert rule["byte_mapping_evidence"] == "P-SRC2"
+    assert rule["default_state_bytes"] == 8_388_608
+    assert rule["new_state_size_sweep"] is False
 
 
 @pytest.mark.parametrize(
@@ -271,6 +288,15 @@ def test_tool_return_ttft_includes_queue_recompute_and_first_decode_step_only() 
             decode_fixed_seconds=0.0,
             decode_seconds_per_context_token_step=0.0,
             full_context_tokens=1,
+        )
+    with pytest.raises(ValueError, match="positive"):
+        tool_return_ttft_seconds(
+            resume_eligibility_seconds=10.0,
+            service_start_seconds=10.0,
+            recompute_prefill_seconds=0.0,
+            decode_fixed_seconds=0.1,
+            decode_seconds_per_context_token_step=0.01,
+            full_context_tokens=0,
         )
 
 
