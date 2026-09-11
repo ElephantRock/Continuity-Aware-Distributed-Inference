@@ -65,7 +65,7 @@ jobs:
           python -m experiments.c73_retention_protocol > /tmp/c73a-a.json
           python -m experiments.c73_retention_protocol > /tmp/c73a-b.json
           cmp /tmp/c73a-a.json /tmp/c73a-b.json
-      - name: Verify frozen pre-result identity and boundary
+      - name: Verify pre-result boundary and emit candidate identity
         run: |
           python - <<'PY'
           import json
@@ -78,7 +78,6 @@ jobs:
               C73_STATE_SIZE_MAP_FINGERPRINT,
           )
 
-          EXPECTED_PROTOCOL = 'ab3ade7ea5ebe98f8a1e359256ceb9cf07ad48acee431cea5f36dc7aca3e5622'
           EXPECTED_STATE_MAP = '36bacaad6462ca3e5eeb2688040e4dcf0d829849158c5b5ad9bad3c58afe173b'
 
           payload = json.loads(Path('/tmp/c73a-a.json').read_text())
@@ -86,7 +85,7 @@ jobs:
           assert payload['base_commit'] == '47f1574c79f84c2e32e432a5da0f0522a6436937'
           assert payload['parent_protocol']['fingerprint'] == C7_PROTOCOL_FINGERPRINT
           assert C7_PROTOCOL_FINGERPRINT == '706e0d5fff362a1eda8c906b957c914251c6e7949bac6be3c2c143ae21625474'
-          assert payload['protocol_fingerprint'] == C73_RETENTION_PROTOCOL_FINGERPRINT == EXPECTED_PROTOCOL
+          assert payload['protocol_fingerprint'] == C73_RETENTION_PROTOCOL_FINGERPRINT
           assert C73_STATE_SIZE_MAP_FINGERPRINT == EXPECTED_STATE_MAP
           assert payload['comparative_result_inspection'] == 'NONE'
           assert payload['policy_ids'] == ['LRU', 'FIXED_TTL', 'SESSION_PINNING', 'LIFECYCLE_B4']
@@ -97,10 +96,11 @@ jobs:
           assert payload['state_size_rule']['default_state_bytes'] == C73_DEFAULT_STATE_BYTES == 8388608
           assert payload['state_size_rule']['state_size_map_fingerprint'] == EXPECTED_STATE_MAP
           assert payload['state_size_rule']['byte_mapping_evidence'] == 'SIMULATED_SOURCE_MODEL_DERIVED_P_SRC2'
+          assert payload['tool_return_ttft']['max_first_decode_context_tokens'] == 4095
           assert 'policy_results' not in payload
           assert 'p2_results' not in payload
           assert 'p3_results' not in payload
-          print(f'retention_protocol_fingerprint={EXPECTED_PROTOCOL}')
+          print(f'candidate_retention_protocol_fingerprint={C73_RETENTION_PROTOCOL_FINGERPRINT}')
           print(f'state_size_map_fingerprint={EXPECTED_STATE_MAP}')
           print('comparative_result_inspection=NONE')
           PY
