@@ -220,3 +220,75 @@ def test_lru_capacity_enforcement_handles_multiple_same_time_evictions_atomicall
     assert evicted == ["s0", "s1", "s2"]
     assert result.max_resident_bytes <= result.capacity_bytes == C73_DEFAULT_STATE_BYTES
     assert all(record.resident_bytes_after <= result.capacity_bytes for record in result.audit)
+
+
+def test_common_readmission_opportunity_is_noop_when_policy_already_retains_state() -> None:
+    case = RetentionProgramCase(
+        program_id="program-common-readmit",
+        sessions=(RetentionSessionSpec("session-1"),),
+        states=(_state("s0", 0),),
+        events=(
+            _event("a0", 0.0, 0, RetentionEventKind.ADMIT, "s0"),
+            _event("readmit-opportunity", 0.5, 0, RetentionEventKind.ADMIT, "s0"),
+            _event(
+                "reuse",
+                0.6,
+                0,
+                RetentionEventKind.REUSE,
+                "s0",
+                semantic_valid=True,
+            ),
+        ),
+        program_start_seconds=0.0,
+        program_end_seconds=1.0,
+    )
+    lru = _run(case, RetentionPolicyID.LRU, ratio=1.0)
+    ttl = _run(
+        case,
+        RetentionPolicyID.FIXED_TTL,
+        ratio=1.0,
+        ttl_seconds=0.25,
+    )
+    assert lru.consumed_reuse_opportunities == ttl.consumed_reuse_opportunities == 1
+    assert any(
+        record.kind is RetentionAuditKind.ADMISSION_SKIPPED
+        and record.state_id == "s0"
+        and record.reason == "ALREADY_RESIDENT"
+        for record in lru.audit
+    )
+    assert sum(
+        record.kind is RetentionAuditKind.ADMITTED and record.state_id == "s0"
+        for record in ttl.audit
+    ) == 2
+
+
+def test_readmission_occurrence_order_is_lru_tie_break_not_first_admission_order() -> None:
+    case = RetentionProgramCase(
+        program_id="program-readmit-order",
+        sessions=(RetentionSessionSpec("session-1"),),
+        states=(_state("s0", 0), _state("s1", 1), _state("s2", 2)),
+        events=(
+            _event("a0", 0.0, 0, RetentionEventKind.ADMIT, "s0"),
+            _event("a1", 1.0, 0, RetentionEventKind.ADMIT, "s1"),
+            _event("a2", 2.0, 0, RetentionEventKind.ADMIT, "s2"),
+            _event("readmit-s1", 3.0, 0, RetentionEventKind.ADMIT, "s1"),
+            _event("readmit-s0", 3.0, 1, RetentionEventKind.ADMIT, "s0"),
+        ),
+        program_start_seconds=0.0,
+        program_end_seconds=4.0,
+    )
+    result = _run(case, RetentionPolicyID.LRU, ratio=0.5)
+    evictions_at_readmit = [
+        record.state_id
+        for record in result.audit
+        if record.kind is RetentionAuditKind.EVICTED
+        and record.time_seconds == 3.0
+    ]
+    assert evictions_at_readmit == ["s2", "s1"]
+    final_admitted = [
+        record.state_id
+        for record in result.audit
+        if record.kind is RetentionAuditKind.ADMITTED
+        and record.time_seconds == 3.0
+    ]
+    assert final_admitted == ["s0"]
