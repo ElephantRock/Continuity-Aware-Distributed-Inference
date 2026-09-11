@@ -1,0 +1,159 @@
+name: c64f-exhaustive-source-equivalence
+
+on:
+  push:
+    branches:
+      - c6/source-kernel-v4-exhaustive-proof
+    paths:
+      - .github/workflows/c64f-exhaustive-source-equivalence.yml
+      - artifacts/c6.4f/exhaustive-source-equivalence.json
+      - experiments/c64f_exhaustive_source_equivalence.py
+      - simulator/inference_cost_v4.py
+      - tests/simulator/test_c64f_exhaustive_source_equivalence.py
+      - tests/simulator/test_inference_cost_v4.py
+      - spec/47-c6.4f-exhaustive-source-equivalence-result.md
+  pull_request:
+    paths:
+      - .github/workflows/c64f-exhaustive-source-equivalence.yml
+      - artifacts/c6.4f/exhaustive-source-equivalence.json
+      - experiments/c64f_exhaustive_source_equivalence.py
+      - simulator/inference_cost_v4.py
+      - tests/simulator/test_c64f_exhaustive_source_equivalence.py
+      - tests/simulator/test_inference_cost_v4.py
+      - spec/47-c6.4f-exhaustive-source-equivalence-result.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONHASHSEED: '0'
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  OPENBLAS_CORETYPE: 'Haswell'
+  MKL_NUM_THREADS: '1'
+  NUMEXPR_NUM_THREADS: '1'
+
+jobs:
+  exhaustive-proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Verify immutable source checkout
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+          check-latest: false
+      - name: Install frozen scientific runtime
+        run: >-
+          python -m pip install
+          pytest==8.3.5
+          numpy==1.26.4
+          pandas==2.2.3
+          scikit-learn==1.5.2
+          scipy==1.14.1
+          joblib==1.4.2
+          threadpoolctl==3.5.0
+          fasteners==0.19
+      - name: Verify frozen platform, packages, and BLAS
+        run: |
+          python - <<'PY'
+          import importlib.metadata as md
+          import os
+          import platform
+          expected_packages = {
+              'numpy': '1.26.4',
+              'pandas': '2.2.3',
+              'scikit-learn': '1.5.2',
+              'scipy': '1.14.1',
+              'joblib': '1.4.2',
+              'threadpoolctl': '3.5.0',
+              'fasteners': '0.19',
+          }
+          observed = {name: md.version(name) for name in expected_packages}
+          assert observed == expected_packages, (expected_packages, observed)
+          assert platform.python_version() == '3.12.14'
+          assert platform.python_implementation() == 'CPython'
+          assert platform.machine() == 'x86_64'
+          assert os.environ.get('ImageOS') == 'ubuntu24'
+          from simulator.inference_cost_v4 import assert_c64e_numerical_runtime
+          print('runtime=', assert_c64e_numerical_runtime())
+          print('ImageVersion=', os.environ.get('ImageVersion'))
+          PY
+      - name: Verify C6.4f harness without source execution
+        run: >-
+          python -m pytest -q -rs
+          tests/simulator/test_inference_cost_v4.py
+          tests/simulator/test_c64f_exhaustive_source_equivalence.py
+      - name: Checkout exact pinned Vidur source
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vidur.git .c64f_vidur
+          git -C .c64f_vidur checkout --detach abae7f63aa857300f5cdc6f5e0d27860cd24721b
+          test "$(git -C .c64f_vidur rev-parse HEAD)" = "abae7f63aa857300f5cdc6f5e0d27860cd24721b"
+          test -z "$(git -C .c64f_vidur status --porcelain --untracked-files=all)"
+      - name: Execute exact-source exhaustive proof twice
+        env:
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/.c64f_vidur
+        run: |
+          python experiments/c64f_exhaustive_source_equivalence.py \
+            --vidur-root .c64f_vidur \
+            --output /tmp/c64f-run-1.json | tee /tmp/c64f-run-1.log
+          python experiments/c64f_exhaustive_source_equivalence.py \
+            --vidur-root .c64f_vidur \
+            --output /tmp/c64f-run-2.json | tee /tmp/c64f-run-2.log
+          cmp /tmp/c64f-run-1.json /tmp/c64f-run-2.json
+      - name: Verify committed canonical result byte-for-byte
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          expected_protocol = 'adc341d4e3eddf72c82e3a0c7b139b703b9ed0e662a724870aa8d74abe1f7df8'
+          expected_scientific = 'cc1b62c4e38a1612720f601375c425c0bd7d67b4eff11b101bfdf87b79a7a61a'
+          expected_file_sha256 = '93990386135ecbf6fc38e579841eace3431a068b10ee59209fe6ad7084bd8889'
+          generated = Path('/tmp/c64f-run-1.json')
+          committed = Path('artifacts/c6.4f/exhaustive-source-equivalence.json')
+          if generated.read_bytes() != committed.read_bytes():
+              raise SystemExit('committed C6.4f canonical artifact differs from exact-head regeneration')
+          observed_file_sha256 = hashlib.sha256(committed.read_bytes()).hexdigest()
+          assert observed_file_sha256 == expected_file_sha256, observed_file_sha256
+          result = json.loads(committed.read_text())
+          assert result['schema'] == 'cadi.c6.4f.exhaustive-source-equivalence-result.v1'
+          assert result['result_kind'] == 'EXHAUSTIVE_FINITE_DECLARED_DOMAIN_SOURCE_EQUIVALENCE'
+          assert result['protocol_fingerprint'] == expected_protocol
+          assert result['scientific_fingerprint'] == expected_scientific
+          assert result['decision'] == 'ADEQUATE_WITHIN_DECLARED_DOMAIN'
+          assert result['boundary_accounting']['c64c_boundary_status'] == 'INVALIDATED_BY_SUPERSEDED_PREDICTOR_MATERIALIZATION'
+          assert result['boundary_accounting']['replacement_fresh_boundary'] is None
+          assert result['boundary_accounting']['holdout_claim'] is False
+          assert result['boundary_accounting']['out_of_domain_generalization_claim'] is False
+          assert result['post_hoc_repairs'] == []
+          assert len(result['hardware']) == 2
+          for hardware in result['hardware']:
+              assert hardware['decision'] == 'ADEQUATE_WITHIN_DECLARED_DOMAIN'
+              assert hardware['prefill']['point_count'] == 4096
+              assert hardware['prefill']['max_ulp_distance'] <= 8
+              assert hardware['prefill']['ulp_violation_count'] == 0
+              assert hardware['transfer']['point_count'] == 4096
+              assert hardware['transfer']['max_ulp_distance'] <= 8
+              assert hardware['transfer']['ulp_violation_count'] == 0
+              assert hardware['carried_decode']['decision'] == 'PASS'
+              assert hardware['state_memory']['decision'] == 'PASS'
+          print('decision=', result['decision'])
+          print('scientific_fingerprint=', result['scientific_fingerprint'])
+          print('artifact_sha256=', observed_file_sha256)
+          PY
+      - name: Upload verified canonical artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: c64f-exhaustive-source-equivalence-${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          path: artifacts/c6.4f/exhaustive-source-equivalence.json
+          if-no-files-found: error
+          retention-days: 30
