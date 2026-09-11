@@ -24,6 +24,7 @@ permissions:
 
 env:
   PYTHONHASHSEED: '0'
+  C7_EXPECTED_PROTOCOL_FINGERPRINT: '1ca59a03829283e97f2580f42db91a1054e91162f981b1fdbeb4f0aa195a4be6'
 
 jobs:
   protocol-freeze:
@@ -51,20 +52,24 @@ jobs:
           python -m experiments.c7_protocol > /tmp/c7-protocol-a.json
           python -m experiments.c7_protocol > /tmp/c7-protocol-b.json
           cmp /tmp/c7-protocol-a.json /tmp/c7-protocol-b.json
-      - name: Verify protocol identity and no comparative result payload
+      - name: Verify frozen protocol identity and no comparative result payload
         run: |
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
           from experiments.c7_protocol import C7_PROTOCOL_FINGERPRINT
 
+          expected = os.environ['C7_EXPECTED_PROTOCOL_FINGERPRINT']
           payload = json.loads(Path('/tmp/c7-protocol-a.json').read_text())
-          assert payload['protocol_fingerprint'] == C7_PROTOCOL_FINGERPRINT
-          assert len(C7_PROTOCOL_FINGERPRINT) == 64
+          assert C7_PROTOCOL_FINGERPRINT == expected
+          assert payload['protocol_fingerprint'] == expected
           protocol = payload['protocol']
           assert protocol['source']['clip_truncate_or_extrapolate'] is False
           assert protocol['semantic_validity']['covered_violation_excludes_efficiency_ranking'] is True
           assert protocol['statistics']['stochastic_seeds'] == list(range(64))
+          assert protocol['cost_model']['p5_state_tokens'] == [1, 4, 16, 64]
+          assert all(axis['source'] == 'P-SRC4' for axis in protocol['axes'])
           assert 'results' not in payload
           assert 'policy_comparison' not in payload
           print(f'protocol_fingerprint={C7_PROTOCOL_FINGERPRINT}')
