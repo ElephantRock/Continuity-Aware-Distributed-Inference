@@ -31,6 +31,7 @@ C64F_ARTIFACT_SHA256 = (
 )
 C64G_SUPPORTED_HARDWARE_IDS = frozenset({"a100-80gb", "h100-80gb"})
 C64G_PREFILL_TOKEN_MAX = 4096
+C64G_MAX_MODEL_LENGTH = 4096
 C64G_TRANSFER_BYTES_PER_TOKEN = 8192
 C64G_TRANSFER_PREDICTOR_TOKEN_MAX = 4096
 
@@ -364,6 +365,11 @@ def estimate_validated_runtime_cost(
         raise TypeError("workload must be InferenceCostWorkload")
 
     prefill = profile.prefill_seconds(workload.input_tokens)
+    if workload.output_tokens > 0:
+        if workload.input_tokens == 0:
+            raise ValueError("decode evaluation requires positive context in carried C6.3 domain")
+        if workload.input_tokens + workload.output_tokens > C64G_MAX_MODEL_LENGTH:
+            raise ValueError("decode composition outside C6.3 accepted max-model-length domain")
     steps = (
         workload.output_tokens * workload.input_tokens
         + workload.output_tokens * (workload.output_tokens - 1) // 2

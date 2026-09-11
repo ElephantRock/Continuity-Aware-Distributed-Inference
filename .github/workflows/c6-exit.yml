@@ -1,0 +1,229 @@
+name: c6-exit
+
+on:
+  push:
+    branches:
+      - c6/exit-reproducibility
+    paths:
+      - .github/workflows/c6-exit.yml
+      - artifacts/c6.4f/exhaustive-source-equivalence.json
+      - experiments/c6_exit.py
+      - experiments/c64f_exhaustive_source_equivalence.py
+      - simulator/inference_cost_runtime.py
+      - simulator/inference_cost_v4.py
+      - tests/simulator/test_c6_exit.py
+      - tests/simulator/test_inference_cost_runtime.py
+      - tests/simulator/test_c64f_exhaustive_source_equivalence.py
+      - tests/simulator/test_inference_cost_v4.py
+      - spec/49-c6.5-exit-reproducibility.md
+      - pyproject.toml
+  pull_request:
+    paths:
+      - .github/workflows/c6-exit.yml
+      - artifacts/c6.4f/exhaustive-source-equivalence.json
+      - experiments/c6_exit.py
+      - experiments/c64f_exhaustive_source_equivalence.py
+      - simulator/inference_cost_runtime.py
+      - simulator/inference_cost_v4.py
+      - tests/simulator/test_c6_exit.py
+      - tests/simulator/test_inference_cost_runtime.py
+      - tests/simulator/test_c64f_exhaustive_source_equivalence.py
+      - tests/simulator/test_inference_cost_v4.py
+      - spec/49-c6.5-exit-reproducibility.md
+      - pyproject.toml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONHASHSEED: '0'
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  OPENBLAS_CORETYPE: 'Haswell'
+  MKL_NUM_THREADS: '1'
+  NUMEXPR_NUM_THREADS: '1'
+
+jobs:
+  runtime-reproduction:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Verify immutable source checkout
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+          check-latest: false
+      - name: Verify request-time import without site packages
+        run: |
+          python -S - <<'PY'
+          import sys
+          from simulator.inference_cost_runtime import (
+              C64F_ARTIFACT_SHA256,
+              C64F_SCIENTIFIC_FINGERPRINT,
+          )
+          assert "numpy" not in sys.modules
+          assert "sklearn" not in sys.modules
+          assert C64F_ARTIFACT_SHA256 == "93990386135ecbf6fc38e579841eace3431a068b10ee59209fe6ad7084bd8889"
+          assert C64F_SCIENTIFIC_FINGERPRINT == "cc1b62c4e38a1612720f601375c425c0bd7d67b4eff11b101bfdf87b79a7a61a"
+          print("dependency_free_import=PASS")
+          PY
+      - name: Verify zero mandatory project dependencies
+        run: |
+          python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          assert project["project"].get("dependencies", []) == []
+          print("mandatory_dependencies=0")
+          PY
+      - name: Install test runner only
+        run: python -m pip install pytest==8.3.5
+      - name: Run C6.5 runtime contract tests
+        run: >-
+          python -m pytest -q
+          tests/simulator/test_c6_exit.py
+          tests/simulator/test_inference_cost_runtime.py
+      - name: Reproduce runtime exit summary twice
+        run: |
+          python -m experiments.c6_exit > /tmp/c6-exit-1.json
+          python -m experiments.c6_exit > /tmp/c6-exit-2.json
+          cmp /tmp/c6-exit-1.json /tmp/c6-exit-2.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          summary = json.loads(Path('/tmp/c6-exit-1.json').read_text(encoding='utf-8'))
+          assert summary['schema'] == 'cadi.c6.5.exit-reproducibility.v1'
+          assert summary['artifact_sha256'] == '93990386135ecbf6fc38e579841eace3431a068b10ee59209fe6ad7084bd8889'
+          assert summary['scientific_fingerprint'] == 'cc1b62c4e38a1612720f601375c425c0bd7d67b4eff11b101bfdf87b79a7a61a'
+          assert summary['replay_identical'] is True
+          assert summary['rejected_out_of_domain_cases'] == [
+              'decode_zero_context',
+              'decode_over_max_model_length',
+              'transfer_over_accepted_domain',
+          ]
+          PY
+      - name: Publish runtime exit summary
+        if: always()
+        run: |
+          if [ -f /tmp/c6-exit-1.json ]; then
+            {
+              echo '## C6.5 dependency-free runtime reproduction'
+              echo
+              echo '```json'
+              cat /tmp/c6-exit-1.json
+              echo
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  scientific-reproduction:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Verify immutable source checkout
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+          check-latest: false
+      - name: Install frozen scientific runtime
+        run: >-
+          python -m pip install
+          pytest==8.3.5
+          numpy==1.26.4
+          pandas==2.2.3
+          scikit-learn==1.5.2
+          scipy==1.14.1
+          joblib==1.4.2
+          threadpoolctl==3.5.0
+          fasteners==0.19
+      - name: Verify frozen platform, packages, and BLAS
+        run: |
+          python - <<'PY'
+          import importlib.metadata as md
+          import os
+          import platform
+          expected_packages = {
+              'numpy': '1.26.4',
+              'pandas': '2.2.3',
+              'scikit-learn': '1.5.2',
+              'scipy': '1.14.1',
+              'joblib': '1.4.2',
+              'threadpoolctl': '3.5.0',
+              'fasteners': '0.19',
+          }
+          observed = {name: md.version(name) for name in expected_packages}
+          assert observed == expected_packages, (expected_packages, observed)
+          assert platform.python_version() == '3.12.14'
+          assert platform.python_implementation() == 'CPython'
+          assert platform.machine() == 'x86_64'
+          assert os.environ.get('ImageOS') == 'ubuntu24'
+          from simulator.inference_cost_v4 import assert_c64e_numerical_runtime
+          print('runtime=', assert_c64e_numerical_runtime())
+          print('ImageVersion=', os.environ.get('ImageVersion'))
+          PY
+      - name: Verify C6.4f harness without source execution
+        run: >-
+          python -m pytest -q -rs
+          tests/simulator/test_inference_cost_v4.py
+          tests/simulator/test_c64f_exhaustive_source_equivalence.py
+      - name: Checkout exact pinned Vidur source
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vidur.git .c65_vidur
+          git -C .c65_vidur checkout --detach abae7f63aa857300f5cdc6f5e0d27860cd24721b
+          test "$(git -C .c65_vidur rev-parse HEAD)" = "abae7f63aa857300f5cdc6f5e0d27860cd24721b"
+          test -z "$(git -C .c65_vidur status --porcelain --untracked-files=all)"
+      - name: Reproduce exact-source C6.4f result twice
+        env:
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/.c65_vidur
+        run: |
+          python experiments/c64f_exhaustive_source_equivalence.py \
+            --vidur-root .c65_vidur \
+            --output /tmp/c65-source-1.json | tee /tmp/c65-source-1.log
+          python experiments/c64f_exhaustive_source_equivalence.py \
+            --vidur-root .c65_vidur \
+            --output /tmp/c65-source-2.json | tee /tmp/c65-source-2.log
+          cmp /tmp/c65-source-1.json /tmp/c65-source-2.json
+      - name: Verify canonical C6.4f result byte-for-byte
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          expected_protocol = 'adc341d4e3eddf72c82e3a0c7b139b703b9ed0e662a724870aa8d74abe1f7df8'
+          expected_scientific = 'cc1b62c4e38a1612720f601375c425c0bd7d67b4eff11b101bfdf87b79a7a61a'
+          expected_file_sha256 = '93990386135ecbf6fc38e579841eace3431a068b10ee59209fe6ad7084bd8889'
+
+          generated = Path('/tmp/c65-source-1.json')
+          committed = Path('artifacts/c6.4f/exhaustive-source-equivalence.json')
+          assert generated.read_bytes() == committed.read_bytes()
+          observed = hashlib.sha256(committed.read_bytes()).hexdigest()
+          assert observed == expected_file_sha256, (observed, expected_file_sha256)
+          result = json.loads(committed.read_text(encoding='utf-8'))
+          assert result['protocol_fingerprint'] == expected_protocol
+          assert result['scientific_fingerprint'] == expected_scientific
+          assert result['decision'] == 'ADEQUATE_WITHIN_DECLARED_DOMAIN'
+          assert result['evidence_class'] == 'SIMULATED_SOURCE_MODEL_DERIVED_P_SRC2'
+          assert result['boundary_accounting']['holdout_claim'] is False
+          assert result['boundary_accounting']['out_of_domain_generalization_claim'] is False
+          assert result['post_hoc_repairs'] == []
+          print('protocol_fingerprint=', expected_protocol)
+          print('scientific_fingerprint=', expected_scientific)
+          print('artifact_sha256=', observed)
+          print('scientific_reproduction=PASS')
+          PY
