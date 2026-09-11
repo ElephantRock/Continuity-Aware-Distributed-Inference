@@ -180,4 +180,4 @@ def test_resource_adapter_schedules_compute_only_and_returns_full_estimate(profi
 
 def test_runtime_package_keeps_zero_mandatory_dependencies() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert project["project"]["dependencies"] == []
+    assert project["project"].get("dependencies", []) == []
