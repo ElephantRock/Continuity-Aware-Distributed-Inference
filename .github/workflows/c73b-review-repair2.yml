@@ -1,0 +1,30 @@
+name: c73b-review-repair2
+
+on:
+  push:
+    branches:
+      - c7/retention-engine
+    paths:
+      - .github/workflows/c73b-review-repair2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: c7/retention-engine
+          fetch-depth: 0
+      - name: Apply reviewed mechanics repair
+        run: python tools/c73b_review_repair2.py
+      - name: Commit engine repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add experiments/c73_retention_engine.py
+          git commit -m "C7.3b: support re-admission and atomic multi-eviction"
+          git push origin HEAD:c7/retention-engine
