@@ -31,7 +31,6 @@ jobs:
           if text.count(old) != 1:
               raise SystemExit('module import anchor drift')
           text = text.replace(old, new)
-
           old = '    context = _positive_int(full_context_tokens, "full_context_tokens")\n    first_token_completion = start + recompute + fixed + slope * context'
           new = ('    context = _positive_int(full_context_tokens, "full_context_tokens")\n'
                  '    if context >= C6_MAX_MODEL_LENGTH:\n'
@@ -42,15 +41,13 @@ jobs:
           if text.count(old) != 1:
               raise SystemExit('module TTFT anchor drift')
           text = text.replace(old, new)
-
           old = '                "positive_context_required": True,\n                "queue_delay_included": True,'
           new = ('                "positive_context_required": True,\n'
                  '                "max_first_decode_context_tokens": C6_MAX_MODEL_LENGTH - 1,\n'
                  '                "queue_delay_included": True,')
           if text.count(old) != 1:
               raise SystemExit('module protocol TTFT anchor drift')
-          text = text.replace(old, new)
-          p.write_text(text)
+          p.write_text(text.replace(old, new))
 
           t = Path('tests/experiments/test_c73_retention_protocol.py')
           text = t.read_text()
@@ -59,38 +56,11 @@ jobs:
           if text.count(old) != 1:
               raise SystemExit('test import anchor drift')
           text = text.replace(old, new)
-          text += '''\n\ndef test_tool_return_ttft_fails_closed_at_c6_first_decode_context_boundary() -> None:\n    accepted = tool_return_ttft_seconds(\n        resume_eligibility_seconds=0.0,\n        service_start_seconds=0.0,\n        recompute_prefill_seconds=0.0,\n        decode_fixed_seconds=0.1,\n        decode_seconds_per_context_token_step=0.001,\n        full_context_tokens=C6_MAX_MODEL_LENGTH - 1,\n    )\n    assert accepted > 0.0\n    with pytest.raises(ValueError, match="accepted C6 first-token decode domain 1..4095"):\n        tool_return_ttft_seconds(\n            resume_eligibility_seconds=0.0,\n            service_start_seconds=0.0,\n            recompute_prefill_seconds=0.0,\n            decode_fixed_seconds=0.1,\n            decode_seconds_per_context_token_step=0.001,\n            full_context_tokens=C6_MAX_MODEL_LENGTH,\n        )\n\n\ndef test_protocol_serializes_finite_first_decode_context_fence() -> None:\n    rule = FROZEN_C73_RETENTION_PROTOCOL.to_dict()["tool_return_ttft"]\n    assert rule["positive_context_required"] is True\n    assert rule["max_first_decode_context_tokens"] == C6_MAX_MODEL_LENGTH - 1 == 4095\n'''
+          text += '''\n\ndef test_tool_return_ttft_fails_closed_at_c6_first_decode_context_boundary() -> None:\n    accepted = tool_return_ttft_seconds(\n        resume_eligibility_seconds=0.0, service_start_seconds=0.0,\n        recompute_prefill_seconds=0.0, decode_fixed_seconds=0.1,\n        decode_seconds_per_context_token_step=0.001,\n        full_context_tokens=C6_MAX_MODEL_LENGTH - 1,\n    )\n    assert accepted > 0.0\n    with pytest.raises(ValueError, match="accepted C6 first-token decode domain 1..4095"):\n        tool_return_ttft_seconds(\n            resume_eligibility_seconds=0.0, service_start_seconds=0.0,\n            recompute_prefill_seconds=0.0, decode_fixed_seconds=0.1,\n            decode_seconds_per_context_token_step=0.001,\n            full_context_tokens=C6_MAX_MODEL_LENGTH,\n        )\n\n\ndef test_protocol_serializes_finite_first_decode_context_fence() -> None:\n    rule = FROZEN_C73_RETENTION_PROTOCOL.to_dict()["tool_return_ttft"]\n    assert rule["positive_context_required"] is True\n    assert rule["max_first_decode_context_tokens"] == C6_MAX_MODEL_LENGTH - 1 == 4095\n'''
           t.write_text(text)
 
           f = Path('tests/experiments/test_c73_retention_fingerprint.py')
-          f.write_text('''from __future__ import annotations\n\nfrom experiments.c73_retention_protocol import (\n    C73_RETENTION_PROTOCOL_FINGERPRINT,\n    C73_STATE_SIZE_MAP_FINGERPRINT,\n)\n\nEXPECTED_C73_STATE_SIZE_MAP_FINGERPRINT = (\n    "36bacaad6462ca3e5eeb2688040e4dcf0d829849158c5b5ad9bad3c58afe173b"\n)\n\n\ndef test_candidate_retention_protocol_fingerprint_is_canonical_sha256() -> None:\n    assert len(C73_RETENTION_PROTOCOL_FINGERPRINT) == 64\n    int(C73_RETENTION_PROTOCOL_FINGERPRINT, 16)\n\n\ndef test_state_size_map_fingerprint_remains_independently_frozen() -> None:\n    assert C73_STATE_SIZE_MAP_FINGERPRINT == EXPECTED_C73_STATE_SIZE_MAP_FINGERPRINT\n''')
-
-          w = Path('.github/workflows/c73a-retention-protocol.yml')
-          text = w.read_text()
-          text = text.replace('      - name: Verify frozen pre-result identity and boundary\n',
-                              '      - name: Verify pre-result boundary and emit candidate identity\n')
-          old = "          EXPECTED_PROTOCOL = 'ab3ade7ea5ebe98f8a1e359256ceb9cf07ad48acee431cea5f36dc7aca3e5622'\n          EXPECTED_STATE_MAP = '36bacaad6462ca3e5eeb2688040e4dcf0d829849158c5b5ad9bad3c58afe173b'\n"
-          new = "          EXPECTED_STATE_MAP = '36bacaad6462ca3e5eeb2688040e4dcf0d829849158c5b5ad9bad3c58afe173b'\n"
-          if text.count(old) != 1:
-              raise SystemExit('workflow expected-fingerprint anchor drift')
-          text = text.replace(old, new)
-          old = "          assert payload['protocol_fingerprint'] == C73_RETENTION_PROTOCOL_FINGERPRINT == EXPECTED_PROTOCOL\n"
-          new = "          assert payload['protocol_fingerprint'] == C73_RETENTION_PROTOCOL_FINGERPRINT\n"
-          if text.count(old) != 1:
-              raise SystemExit('workflow protocol assertion anchor drift')
-          text = text.replace(old, new)
-          old = "          assert payload['state_size_rule']['byte_mapping_evidence'] == 'SIMULATED_SOURCE_MODEL_DERIVED_P_SRC2'\n"
-          new = ("          assert payload['state_size_rule']['byte_mapping_evidence'] == 'SIMULATED_SOURCE_MODEL_DERIVED_P_SRC2'\n"
-                 "          assert payload['tool_return_ttft']['max_first_decode_context_tokens'] == 4095\n")
-          if text.count(old) != 1:
-              raise SystemExit('workflow TTFT assertion anchor drift')
-          text = text.replace(old, new)
-          old = "          print(f'retention_protocol_fingerprint={EXPECTED_PROTOCOL}')\n"
-          new = "          print(f'candidate_retention_protocol_fingerprint={C73_RETENTION_PROTOCOL_FINGERPRINT}')\n"
-          if text.count(old) != 1:
-              raise SystemExit('workflow print anchor drift')
-          text = text.replace(old, new)
-          w.write_text(text)
+          f.write_text('''from __future__ import annotations\n\nfrom experiments.c73_retention_protocol import (\n    C73_RETENTION_PROTOCOL_FINGERPRINT, C73_STATE_SIZE_MAP_FINGERPRINT,\n)\n\nEXPECTED_C73_STATE_SIZE_MAP_FINGERPRINT = "36bacaad6462ca3e5eeb2688040e4dcf0d829849158c5b5ad9bad3c58afe173b"\n\ndef test_candidate_retention_protocol_fingerprint_is_canonical_sha256() -> None:\n    assert len(C73_RETENTION_PROTOCOL_FINGERPRINT) == 64\n    int(C73_RETENTION_PROTOCOL_FINGERPRINT, 16)\n\ndef test_state_size_map_fingerprint_remains_independently_frozen() -> None:\n    assert C73_STATE_SIZE_MAP_FINGERPRINT == EXPECTED_C73_STATE_SIZE_MAP_FINGERPRINT\n''')
 
           s = Path('spec/51-c7.3a-retention-protocol.md')
           text = s.read_text()
@@ -109,9 +79,8 @@ jobs:
           if freeze.exists():
               freeze.unlink()
           PY
-          git rm .github/workflows/c73a-context-review-repair.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add experiments/c73_retention_protocol.py tests/experiments/test_c73_retention_protocol.py tests/experiments/test_c73_retention_fingerprint.py .github/workflows/c73a-retention-protocol.yml spec/51-c7.3a-retention-protocol.md spec/53-c7.3a-retention-protocol-freeze.md
+          git add experiments/c73_retention_protocol.py tests/experiments/test_c73_retention_protocol.py tests/experiments/test_c73_retention_fingerprint.py spec/51-c7.3a-retention-protocol.md spec/53-c7.3a-retention-protocol-freeze.md
           git commit -m "C7.3a: fence TTFT to accepted C6 first-token context domain"
           git push origin HEAD:c7/retention-protocol
