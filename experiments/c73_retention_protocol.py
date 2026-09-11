@@ -11,12 +11,14 @@ from typing import Any, Iterable
 from continuity.entities import ContinuationLifecycle, StateLifecycle
 from experiments.c7_protocol import (
     AXES,
+    C6_STATE_BYTES_PER_TOKEN,
     C7_BOOTSTRAP_RESAMPLES,
     C7_BOOTSTRAP_SEED,
     C7_CONVERGENCE_PREFIXES,
     C7_PROTOCOL_FINGERPRINT,
     C7_PROTOCOL_SCHEMA,
     C7_STOCHASTIC_SEEDS,
+    ParameterSource,
 )
 from simulator.continuity_policy import RetentionDisposition
 
@@ -26,6 +28,8 @@ C73_RETENTION_MANIFEST_SCHEMA = "cadi.c7.3a.retention-manifest.v1"
 C73_BASE_COMMIT = "47f1574c79f84c2e32e432a5da0f0522a6436937"
 C73_PRIMARY_TTL_SECONDS = 5.0
 C73_TTL_SENSITIVITY_SECONDS = (0.25, 1.0, 5.0, 30.0, 120.0)
+C73_DEFAULT_STATE_TOKENS = 16
+C73_DEFAULT_STATE_BYTES = C73_DEFAULT_STATE_TOKENS * C6_STATE_BYTES_PER_TOKEN
 C73_EVENT_ORDER = (
     "VALIDITY_INVALIDATION_AND_COMMON_INVALID_RELEASE",
     "GROUND_TRUTH_CONTINUATION_SESSION_TRANSITIONS_AND_LIFECYCLE_RECOMPUTE",
@@ -232,7 +236,7 @@ def tool_return_ttft_seconds(
         decode_seconds_per_context_token_step,
         "decode_seconds_per_context_token_step",
     )
-    context = _nonnegative_int(full_context_tokens, "full_context_tokens")
+    context = _positive_int(full_context_tokens, "full_context_tokens")
     first_token_completion = start + recompute + fixed + slope * context
     return first_token_completion - resume
 
@@ -254,6 +258,10 @@ class RetentionProtocol:
             raise ValueError("primary TTL must belong to the sensitivity grid")
         if C73_TTL_SENSITIVITY_SECONDS != AXES["tool_gap_seconds"].values:
             raise ValueError("TTL sensitivity grid must equal the frozen tool-gap grid")
+        if C73_DEFAULT_STATE_TOKENS != AXES["state_tokens"].reference_value:
+            raise ValueError("C7.3a State size must use the predeclared C7.1 reference point")
+        if C73_DEFAULT_STATE_BYTES != C73_DEFAULT_STATE_TOKENS * C6_STATE_BYTES_PER_TOKEN:
+            raise AssertionError("C7.3a default State byte mapping drift")
 
     def to_dict(self) -> dict[str, Any]:
         p2_axes = {
@@ -339,6 +347,7 @@ class RetentionProtocol:
                     "admission": "every valid produced State if object size <= byte capacity; no lifecycle test",
                     "primary_ttl_seconds": C73_PRIMARY_TTL_SECONDS,
                     "sensitivity_ttl_seconds": list(C73_TTL_SENSITIVITY_SECONDS),
+                    "ttl_parameter_source": ParameterSource.P_SRC4.value,
                     "expiry": "admission_time + ttl",
                     "reuse_refreshes_expiry": False,
                     "expiry_at_equality_precedes_reuse": True,
@@ -384,8 +393,14 @@ class RetentionProtocol:
             "state_size_rule": {
                 "immutable_workload_input": True,
                 "provenance_required": True,
-                "c6_memory_mapping_evidence": "P-SRC2 when used",
-                "synthetic_state_token_choice": "P-SRC4",
+                "default_state_tokens": C73_DEFAULT_STATE_TOKENS,
+                "default_state_tokens_source": ParameterSource.P_SRC4.value,
+                "bytes_per_state_token": C6_STATE_BYTES_PER_TOKEN,
+                "byte_mapping_evidence": "P-SRC2",
+                "default_state_bytes": C73_DEFAULT_STATE_BYTES,
+                "base_c7_manifest_requirement": (
+                    "state_tokens=16 with P-SRC4 for C7.3 P2/P3 unless a new pre-result retention protocol version is approved"
+                ),
                 "new_state_size_sweep": False,
             },
             "residency_intervals": {
@@ -398,6 +413,7 @@ class RetentionProtocol:
             "tool_return_ttft": {
                 "definition": "first generated-token completion minus tool-return/resume eligibility time",
                 "first_token_service": "required recompute-prefill + first carried C6.3 decode step",
+                "positive_context_required": True,
                 "queue_delay_included": True,
                 "full_decode_substitution_forbidden": True,
             },
@@ -417,6 +433,7 @@ class RetentionProtocol:
                 "post-result TTL selection presented as ordinary baseline",
                 "LRU or fixed TTL receives Continuation lifecycle for retention decisions",
                 "lifecycle used as semantic-validity authority",
+                "C7.3 P2/P3 base manifest omits the frozen state_tokens=16 P-SRC4 design point",
                 "retention policy changes C7.1 source admissibility",
                 "observed P2/P3 result mutates this protocol in place",
             ],
