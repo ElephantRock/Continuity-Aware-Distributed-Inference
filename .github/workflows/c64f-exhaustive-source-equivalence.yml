@@ -22,9 +22,9 @@ on:
   workflow_dispatch:
 
 # Temporary recording permission for the first canonical result only. The
-# recording step is push-only, stages exactly one artifact path, and is removed
-# immediately after that artifact is committed. Scientific mechanics are
-# unchanged from the frozen C6.4e protocol.
+# recording step stages exactly one artifact path and is removed immediately
+# after that artifact is committed. Scientific mechanics are unchanged from the
+# frozen C6.4e protocol.
 permissions:
   contents: write
 
@@ -43,10 +43,12 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
-      - name: Verify immutable event checkout
-        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Verify immutable source checkout
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12.14'
@@ -140,7 +142,7 @@ jobs:
           (out / 'exhaustive-source-equivalence.json').write_bytes(path.read_bytes())
           PY
       - name: Commit canonical result artifact once
-        if: github.event_name == 'push'
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         run: |
           git add -- artifacts/c6.4f/exhaustive-source-equivalence.json
           staged="$(git diff --cached --name-only)"
@@ -156,7 +158,7 @@ jobs:
       - name: Upload canonical candidate artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: c64f-exhaustive-source-equivalence-${{ github.sha }}
+          name: c64f-exhaustive-source-equivalence-${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           path: artifacts/c6.4f/exhaustive-source-equivalence.json
           if-no-files-found: error
           retention-days: 30
