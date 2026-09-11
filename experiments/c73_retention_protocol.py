@@ -11,6 +11,7 @@ from typing import Any, Iterable
 from continuity.entities import ContinuationLifecycle, StateLifecycle
 from experiments.c7_protocol import (
     AXES,
+    C6_MAX_MODEL_LENGTH,
     C6_STATE_BYTES_PER_TOKEN,
     C7_BOOTSTRAP_RESAMPLES,
     C7_BOOTSTRAP_SEED,
@@ -253,6 +254,10 @@ def tool_return_ttft_seconds(
         "decode_seconds_per_context_token_step",
     )
     context = _positive_int(full_context_tokens, "full_context_tokens")
+    if context >= C6_MAX_MODEL_LENGTH:
+        raise ValueError(
+            "full_context_tokens must be within the accepted C6 first-token decode domain 1..4095"
+        )
     first_token_completion = start + recompute + fixed + slope * context
     return first_token_completion - resume
 
@@ -441,6 +446,7 @@ class RetentionProtocol:
                 "definition": "first generated-token completion minus tool-return/resume eligibility time",
                 "first_token_service": "required recompute-prefill + first carried C6.3 decode step",
                 "positive_context_required": True,
+                "max_first_decode_context_tokens": C6_MAX_MODEL_LENGTH - 1,
                 "queue_delay_included": True,
                 "full_decode_substitution_forbidden": True,
             },

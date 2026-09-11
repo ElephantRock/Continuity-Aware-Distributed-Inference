@@ -7,6 +7,7 @@ import pytest
 from continuity.entities import ContinuationLifecycle, StateLifecycle
 from experiments.c7_protocol import (
     AXES,
+    C6_MAX_MODEL_LENGTH,
     C6_STATE_BYTES_PER_TOKEN,
     C7_BOOTSTRAP_RESAMPLES,
     C7_BOOTSTRAP_SEED,
@@ -396,3 +397,26 @@ def test_retention_manifest_rejects_protocol_or_capacity_drift() -> None:
             cache_capacity_ratio=0.5,
             capacity_bytes=501,
         )
+
+
+def test_tool_return_ttft_fails_closed_at_c6_first_decode_context_boundary() -> None:
+    accepted = tool_return_ttft_seconds(
+        resume_eligibility_seconds=0.0, service_start_seconds=0.0,
+        recompute_prefill_seconds=0.0, decode_fixed_seconds=0.1,
+        decode_seconds_per_context_token_step=0.001,
+        full_context_tokens=C6_MAX_MODEL_LENGTH - 1,
+    )
+    assert accepted > 0.0
+    with pytest.raises(ValueError, match="accepted C6 first-token decode domain 1..4095"):
+        tool_return_ttft_seconds(
+            resume_eligibility_seconds=0.0, service_start_seconds=0.0,
+            recompute_prefill_seconds=0.0, decode_fixed_seconds=0.1,
+            decode_seconds_per_context_token_step=0.001,
+            full_context_tokens=C6_MAX_MODEL_LENGTH,
+        )
+
+
+def test_protocol_serializes_finite_first_decode_context_fence() -> None:
+    rule = FROZEN_C73_RETENTION_PROTOCOL.to_dict()["tool_return_ttft"]
+    assert rule["positive_context_required"] is True
+    assert rule["max_first_decode_context_tokens"] == C6_MAX_MODEL_LENGTH - 1 == 4095
