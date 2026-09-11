@@ -21,8 +21,12 @@ on:
       - spec/47-c6.4f-exhaustive-source-equivalence-result.md
   workflow_dispatch:
 
+# Temporary recording permission for the first canonical result only. The
+# recording step is push-only, stages exactly one artifact path, and is removed
+# immediately after that artifact is committed. Scientific mechanics are
+# unchanged from the frozen C6.4e protocol.
 permissions:
-  contents: read
+  contents: write
 
 env:
   PYTHONHASHSEED: '0'
@@ -135,6 +139,20 @@ jobs:
           out.mkdir(parents=True, exist_ok=True)
           (out / 'exhaustive-source-equivalence.json').write_bytes(path.read_bytes())
           PY
+      - name: Commit canonical result artifact once
+        if: github.event_name == 'push'
+        run: |
+          git add -- artifacts/c6.4f/exhaustive-source-equivalence.json
+          staged="$(git diff --cached --name-only)"
+          if [ -z "$staged" ]; then
+            echo "Canonical artifact already matches the regenerated result."
+            exit 0
+          fi
+          test "$staged" = "artifacts/c6.4f/exhaustive-source-equivalence.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "C6.4f: record canonical exhaustive source-equivalence result"
+          git push origin HEAD:c6/source-kernel-v4-exhaustive-proof
       - name: Upload canonical candidate artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
