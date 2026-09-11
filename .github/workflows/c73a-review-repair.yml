@@ -1,0 +1,130 @@
+name: c73a-review-repair
+
+on:
+  push:
+    branches:
+      - c7/retention-protocol
+    paths:
+      - .github/workflows/c73a-review-repair.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: c7/retention-protocol
+          fetch-depth: 0
+      - name: Apply bounded pre-result repair
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('experiments/c73_retention_protocol.py')
+          text = p.read_text()
+
+          replacements = [
+              (
+                  'C73_DEFAULT_STATE_TOKENS = 16\nC73_DEFAULT_STATE_BYTES = C73_DEFAULT_STATE_TOKENS * C6_STATE_BYTES_PER_TOKEN',
+                  'C73_DEFAULT_STATE_TOKENS = 16\nC73_C6_ACCEPTED_STATE_FIXED_BYTES = 0\nC73_DEFAULT_STATE_BYTES = (\n    C73_C6_ACCEPTED_STATE_FIXED_BYTES\n    + C73_DEFAULT_STATE_TOKENS * C6_STATE_BYTES_PER_TOKEN\n)',
+              ),
+              (
+                  'def _sha256(value: object) -> str:\n    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()\n\n\ndef _require_sha256',
+                  'def _sha256(value: object) -> str:\n    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()\n\n\nC73_STATE_SIZE_MAP = {\n    "schema": "cadi.c7.3a.state-size-map.v1",\n    "state_tokens": C73_DEFAULT_STATE_TOKENS,\n    "state_fixed_bytes": C73_C6_ACCEPTED_STATE_FIXED_BYTES,\n    "state_bytes_per_token": C6_STATE_BYTES_PER_TOKEN,\n    "state_bytes": C73_DEFAULT_STATE_BYTES,\n    "design_source": ParameterSource.P_SRC4.value,\n    "byte_mapping_evidence": "SIMULATED_SOURCE_MODEL_DERIVED_P_SRC2",\n}\nC73_STATE_SIZE_MAP_FINGERPRINT = _sha256(C73_STATE_SIZE_MAP)\n\n\ndef _require_sha256',
+              ),
+              (
+                  '        if C73_DEFAULT_STATE_BYTES != C73_DEFAULT_STATE_TOKENS * C6_STATE_BYTES_PER_TOKEN:\n            raise AssertionError("C7.3a default State byte mapping drift")',
+                  '        if C73_C6_ACCEPTED_STATE_FIXED_BYTES != 0:\n            raise AssertionError("C7.3a must preserve the accepted C6.4f zero State fixed term")\n        if C73_DEFAULT_STATE_BYTES != (\n            C73_C6_ACCEPTED_STATE_FIXED_BYTES\n            + C73_DEFAULT_STATE_TOKENS * C6_STATE_BYTES_PER_TOKEN\n        ):\n            raise AssertionError("C7.3a default State byte mapping drift")',
+              ),
+              (
+                  '                    "state_size_map_fingerprint",\n                    "reference_working_set_bytes",',
+                  '                    "state_size_map_fingerprint",\n                    "state_tokens",\n                    "state_bytes",\n                    "reference_working_set_bytes",',
+              ),
+              (
+                  '                "State-size map/provenance fingerprint",\n                "retention policy ID",',
+                  '                "State-size map/provenance fingerprint",\n                "explicit frozen State tokens and State bytes",\n                "retention policy ID",',
+              ),
+              (
+                  '            "state_size_rule": {\n                "immutable_workload_input": True,\n                "provenance_required": True,\n                "default_state_tokens": C73_DEFAULT_STATE_TOKENS,\n                "default_state_tokens_source": ParameterSource.P_SRC4.value,\n                "bytes_per_state_token": C6_STATE_BYTES_PER_TOKEN,\n                "byte_mapping_evidence": "P-SRC2",\n                "default_state_bytes": C73_DEFAULT_STATE_BYTES,\n                "base_c7_manifest_requirement": (\n                    "state_tokens=16 with P-SRC4 for C7.3 P2/P3 unless a new pre-result retention protocol version is approved"\n                ),\n                "new_state_size_sweep": False,\n            },',
+                  '            "state_size_rule": {\n                "immutable_workload_input": True,\n                "provenance_required": True,\n                "default_state_tokens": C73_DEFAULT_STATE_TOKENS,\n                "default_state_tokens_source": ParameterSource.P_SRC4.value,\n                "accepted_c6_state_fixed_bytes": C73_C6_ACCEPTED_STATE_FIXED_BYTES,\n                "accepted_c6_state_bytes_per_token": C6_STATE_BYTES_PER_TOKEN,\n                "byte_mapping_evidence": "SIMULATED_SOURCE_MODEL_DERIVED_P_SRC2",\n                "accepted_c6_record": "C6.4f carried state/memory mechanics",\n                "default_state_bytes": C73_DEFAULT_STATE_BYTES,\n                "state_size_map_fingerprint": C73_STATE_SIZE_MAP_FINGERPRINT,\n                "base_c7_manifest_requirement": (\n                    "state_tokens=16 with P-SRC4 for C7.3 P2/P3 unless a new pre-result retention protocol version is approved"\n                ),\n                "new_state_size_sweep": False,\n            },',
+              ),
+              (
+                  '                "C7.3 P2/P3 base manifest omits the frozen state_tokens=16 P-SRC4 design point",\n                "retention policy changes C7.1 source admissibility",',
+                  '                "C7.3 P2/P3 base manifest omits the frozen state_tokens=16 P-SRC4 design point",\n                "retention manifest State-size map, state_tokens, or state_bytes differs from the frozen C7.3a mapping",\n                "retention policy changes C7.1 source admissibility",',
+              ),
+              (
+                  '    state_size_map_fingerprint: str\n    reference_working_set_bytes: int',
+                  '    state_size_map_fingerprint: str\n    state_tokens: int\n    state_bytes: int\n    reference_working_set_bytes: int',
+              ),
+              (
+                  '        _require_sha256(self.program_case_fingerprint, "program_case_fingerprint")\n        _require_sha256(self.state_size_map_fingerprint, "state_size_map_fingerprint")\n        reference = _positive_int',
+                  '        _require_sha256(self.program_case_fingerprint, "program_case_fingerprint")\n        _require_sha256(self.state_size_map_fingerprint, "state_size_map_fingerprint")\n        if self.state_size_map_fingerprint != C73_STATE_SIZE_MAP_FINGERPRINT:\n            raise ValueError("state_size_map_fingerprint must bind the frozen C7.3a State-size map")\n        if self.state_tokens != C73_DEFAULT_STATE_TOKENS:\n            raise ValueError("state_tokens must equal the frozen C7.3a design point")\n        if self.state_bytes != C73_DEFAULT_STATE_BYTES:\n            raise ValueError("state_bytes must equal the frozen C7.3a State byte mapping")\n        reference = _positive_int',
+              ),
+              (
+                  '            "state_size_map_fingerprint": self.state_size_map_fingerprint,\n            "reference_working_set_bytes": self.reference_working_set_bytes,',
+                  '            "state_size_map_fingerprint": self.state_size_map_fingerprint,\n            "state_tokens": self.state_tokens,\n            "state_bytes": self.state_bytes,\n            "reference_working_set_bytes": self.reference_working_set_bytes,',
+              ),
+          ]
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'module repair anchor count {count}: {old[:80]!r}')
+              text = text.replace(old, new)
+          p.write_text(text)
+
+          t = Path('tests/experiments/test_c73_retention_protocol.py')
+          text = t.read_text()
+          old = '    C73_DEFAULT_STATE_BYTES,\n    C73_DEFAULT_STATE_TOKENS,'
+          new = ('    C73_C6_ACCEPTED_STATE_FIXED_BYTES,\n'
+                 '    C73_DEFAULT_STATE_BYTES,\n'
+                 '    C73_DEFAULT_STATE_TOKENS,')
+          if text.count(old) != 1:
+              raise SystemExit('test import anchor drift')
+          text = text.replace(old, new)
+          old = '    C73_RETENTION_PROTOCOL_SCHEMA,\n    C73_TTL_SENSITIVITY_SECONDS,'
+          new = ('    C73_RETENTION_PROTOCOL_SCHEMA,\n'
+                 '    C73_STATE_SIZE_MAP_FINGERPRINT,\n'
+                 '    C73_TTL_SENSITIVITY_SECONDS,')
+          if text.count(old) != 1:
+              raise SystemExit('test state-map import anchor drift')
+          text = text.replace(old, new)
+          old = '    assert C73_DEFAULT_STATE_BYTES == 16 * C6_STATE_BYTES_PER_TOKEN == 8_388_608\n'
+          new = ('    assert C73_C6_ACCEPTED_STATE_FIXED_BYTES == 0\n'
+                 '    assert C73_DEFAULT_STATE_BYTES == 16 * C6_STATE_BYTES_PER_TOKEN == 8_388_608\n')
+          if text.count(old) != 1:
+              raise SystemExit('test fixed-state anchor drift')
+          text = text.replace(old, new)
+          old = '    assert rule["bytes_per_state_token"] == C6_STATE_BYTES_PER_TOKEN\n    assert rule["byte_mapping_evidence"] == "P-SRC2"\n'
+          new = ('    assert rule["accepted_c6_state_fixed_bytes"] == 0\n'
+                 '    assert rule["accepted_c6_state_bytes_per_token"] == C6_STATE_BYTES_PER_TOKEN\n'
+                 '    assert rule["byte_mapping_evidence"] == "SIMULATED_SOURCE_MODEL_DERIVED_P_SRC2"\n'
+                 '    assert rule["state_size_map_fingerprint"] == C73_STATE_SIZE_MAP_FINGERPRINT\n')
+          if text.count(old) != 1:
+              raise SystemExit('test state-rule anchor drift')
+          text = text.replace(old, new)
+          old = '        state_size_map_fingerprint="3" * 64,\n'
+          new = ('        state_size_map_fingerprint=C73_STATE_SIZE_MAP_FINGERPRINT,\n'
+                 '        state_tokens=C73_DEFAULT_STATE_TOKENS,\n'
+                 '        state_bytes=C73_DEFAULT_STATE_BYTES,\n')
+          count = text.count(old)
+          if count != 3:
+              raise SystemExit(f'expected 3 manifest fixture anchors, got {count}')
+          text = text.replace(old, new)
+          t.write_text(text)
+
+          new_test = Path('tests/experiments/test_c73_retention_state_binding.py')
+          new_test.write_text('''from __future__ import annotations\n\nimport pytest\n\nfrom experiments.c73_retention_protocol import (\n    C73_C6_ACCEPTED_STATE_FIXED_BYTES,\n    C73_DEFAULT_STATE_BYTES,\n    C73_DEFAULT_STATE_TOKENS,\n    C73_RETENTION_PROTOCOL_FINGERPRINT,\n    C73_STATE_SIZE_MAP,\n    C73_STATE_SIZE_MAP_FINGERPRINT,\n    C73RetentionManifest,\n    FROZEN_C73_RETENTION_PROTOCOL,\n    RetentionPolicyID,\n)\n\n\ndef _manifest(**overrides) -> C73RetentionManifest:\n    values = dict(\n        base_c7_manifest_fingerprint="1" * 64,\n        retention_protocol_fingerprint=C73_RETENTION_PROTOCOL_FINGERPRINT,\n        retention_policy_id=RetentionPolicyID.LRU,\n        ttl_seconds=None,\n        program_case_fingerprint="2" * 64,\n        state_size_map_fingerprint=C73_STATE_SIZE_MAP_FINGERPRINT,\n        state_tokens=C73_DEFAULT_STATE_TOKENS,\n        state_bytes=C73_DEFAULT_STATE_BYTES,\n        reference_working_set_bytes=16_777_216,\n        cache_capacity_ratio=0.5,\n        capacity_bytes=8_388_608,\n    )\n    values.update(overrides)\n    return C73RetentionManifest(**values)\n\n\ndef test_accepted_c64f_state_memory_mapping_is_the_frozen_c73_reference() -> None:\n    assert C73_C6_ACCEPTED_STATE_FIXED_BYTES == 0\n    assert C73_DEFAULT_STATE_TOKENS == 16\n    assert C73_DEFAULT_STATE_BYTES == 8_388_608\n    assert C73_STATE_SIZE_MAP == {\n        "schema": "cadi.c7.3a.state-size-map.v1",\n        "state_tokens": 16,\n        "state_fixed_bytes": 0,\n        "state_bytes_per_token": 524288,\n        "state_bytes": 8_388_608,\n        "design_source": "P-SRC4",\n        "byte_mapping_evidence": "SIMULATED_SOURCE_MODEL_DERIVED_P_SRC2",\n    }\n    rule = FROZEN_C73_RETENTION_PROTOCOL.to_dict()["state_size_rule"]\n    assert rule["state_size_map_fingerprint"] == C73_STATE_SIZE_MAP_FINGERPRINT\n    assert len(C73_STATE_SIZE_MAP_FINGERPRINT) == 64\n\n\ndef test_retention_manifest_serializes_explicit_frozen_state_size() -> None:\n    payload = _manifest().to_dict()\n    assert payload["state_size_map_fingerprint"] == C73_STATE_SIZE_MAP_FINGERPRINT\n    assert payload["state_tokens"] == 16\n    assert payload["state_bytes"] == 8_388_608\n\n\n@pytest.mark.parametrize(\n    ("override", "message"),\n    [\n        ({"state_size_map_fingerprint": "3" * 64}, "State-size map"),\n        ({"state_tokens": 4}, "design point"),\n        ({"state_bytes": 2_097_152}, "State byte mapping"),\n    ],\n)\ndef test_retention_manifest_fails_closed_on_state_size_drift(override, message) -> None:\n    with pytest.raises(ValueError, match=message):\n        _manifest(**override)\n''')
+
+          addendum = Path('spec/52-c7.3a-state-size-review-resolution.md')
+          addendum.write_text('''# C7.3a State-size review resolution\n\nThis addendum records the bounded pre-result review resolution for State-size provenance. No P2/P3 comparative result was inspected.\n\nThe closed C6.4f acceptance record carries, for both accepted hardware profiles, `state_fixed_bytes = 0`, `state_bytes_per_token = 524288`, and `memory_capacity_bytes = 85899345920`. C6.4g consumes those accepted state/memory scalars. Therefore C7.3a freezes its predeclared C7.1 reference design point at `state_tokens = 16`, classified P-SRC4, and maps it through the accepted C6.4f source-model-derived State-memory mechanics to exactly `8,388,608` bytes. The evidence class remains `SIMULATED_SOURCE_MODEL_DERIVED_P_SRC2`; this is not direct hardware measurement.\n\nAn intermediate source-predictor configuration containing a nonzero fixed value is not the accepted C6.4f State-memory record and is not used by C7.3.\n\nThe retention manifest now fails closed unless all three State-size bindings match the frozen protocol: the canonical State-size-map fingerprint, `state_tokens = 16`, and `state_bytes = 8,388,608`. This removes State size as a result-dependent degree of freedom before C7.3b/C7.3c execution. Any later State-size sensitivity requires a new pre-result protocol version.\n''')
+          PY
+          git rm .github/workflows/c73a-review-repair.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add experiments/c73_retention_protocol.py tests/experiments/test_c73_retention_protocol.py tests/experiments/test_c73_retention_state_binding.py spec/52-c7.3a-state-size-review-resolution.md
+          git commit -m "C7.3a: bind accepted State size in retention manifests"
+          git push origin HEAD:c7/retention-protocol
