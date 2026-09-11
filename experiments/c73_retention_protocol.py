@@ -7,15 +7,15 @@ import json
 import math
 from typing import Any, Iterable
 
-from continuity.entities import StateLifecycle
+from continuity.entities import ContinuationLifecycle, StateLifecycle
 from experiments.c7_protocol import (
     AXES,
-    BOOTSTRAP_RESAMPLES,
-    BOOTSTRAP_SEED,
+    C7_BOOTSTRAP_RESAMPLES,
+    C7_BOOTSTRAP_SEED,
+    C7_CONVERGENCE_PREFIXES,
     C7_PROTOCOL_FINGERPRINT,
     C7_PROTOCOL_SCHEMA,
-    CONVERGENCE_PREFIXES,
-    STOCHASTIC_SEEDS,
+    C7_STOCHASTIC_SEEDS,
 )
 from simulator.continuity_policy import RetentionDisposition
 
@@ -26,8 +26,9 @@ C73_BASE_COMMIT = "47f1574c79f84c2e32e432a5da0f0522a6436937"
 C73_PRIMARY_TTL_SECONDS = 5.0
 C73_TTL_SENSITIVITY_SECONDS = (0.25, 1.0, 5.0, 30.0, 120.0)
 C73_EVENT_ORDER = (
-    "VALIDITY_OR_TERMINAL_TRANSITION",
-    "LIFECYCLE_RECOMPUTE_AND_TERMINAL_RELEASE",
+    "VALIDITY_INVALIDATION_AND_COMMON_INVALID_RELEASE",
+    "GROUND_TRUTH_CONTINUATION_SESSION_TRANSITIONS_AND_LIFECYCLE_RECOMPUTE",
+    "POLICY_SPECIFIC_LIFECYCLE_OR_SESSION_END_RELEASE",
     "FIXED_TTL_EXPIRY",
     "REUSE_LOOKUP_AND_SEMANTIC_VALIDITY",
     "SUCCESSFUL_REUSE_TOUCH",
@@ -72,6 +73,15 @@ _B4_DISPOSITION = {
     StateLifecycle.TERMINAL: RetentionDisposition.RELEASE,
 }
 
+_C73_CONTINUATION_LIFECYCLES = frozenset(
+    {
+        ContinuationLifecycle.ACTIVE,
+        ContinuationLifecycle.WAITING,
+        ContinuationLifecycle.SPECULATIVE,
+        ContinuationLifecycle.TERMINAL,
+    }
+)
+
 
 def _canonical_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -106,18 +116,21 @@ def _finite_nonnegative(value: Any, name: str) -> float:
 
 
 def derive_state_lifecycle(
-    dependent_lifecycles: Iterable[StateLifecycle],
+    dependent_lifecycles: Iterable[ContinuationLifecycle],
 ) -> StateLifecycle:
     values = tuple(dependent_lifecycles)
-    if not all(isinstance(value, StateLifecycle) for value in values):
-        raise TypeError("dependent_lifecycles must contain StateLifecycle values")
-    for lifecycle in (
-        StateLifecycle.ACTIVE,
-        StateLifecycle.WAITING,
-        StateLifecycle.SPECULATIVE,
+    if not all(isinstance(value, ContinuationLifecycle) for value in values):
+        raise TypeError("dependent_lifecycles must contain ContinuationLifecycle values")
+    unsupported = set(values) - _C73_CONTINUATION_LIFECYCLES
+    if unsupported:
+        raise ValueError("dependent Continuation lifecycle is outside the Paper-1 C7.3 minimum")
+    for continuation_lifecycle, state_lifecycle in (
+        (ContinuationLifecycle.ACTIVE, StateLifecycle.ACTIVE),
+        (ContinuationLifecycle.WAITING, StateLifecycle.WAITING),
+        (ContinuationLifecycle.SPECULATIVE, StateLifecycle.SPECULATIVE),
     ):
-        if lifecycle in values:
-            return lifecycle
+        if continuation_lifecycle in values:
+            return state_lifecycle
     return StateLifecycle.TERMINAL
 
 
@@ -270,24 +283,36 @@ class RetentionProtocol:
                     StateLifecycle.TERMINAL.name,
                 ],
                 "derivation_basis": "live dependent Continuations, not origin Continuation alone",
+                "unsupported_continuation_lifecycles_fail_closed": True,
                 "invalid_state_rule": "INVALID State is never reusable and is released independently of retention policy",
             },
             "event_order": list(C73_EVENT_ORDER),
+            "policy_visibility": {
+                "ground_truth_lifecycle_updates_are_common_harness_state": True,
+                "LRU_sees_lifecycle_for_ranking_or_release": False,
+                "FIXED_TTL_sees_lifecycle_for_ranking_or_release": False,
+                "SESSION_PINNING_sees": ["SessionID", "SessionLiveStatus"],
+                "LIFECYCLE_B4_sees_state_lifecycle": True,
+                "common_invalid_state_release": True,
+            },
             "policies": {
                 RetentionPolicyID.LRU.value: {
-                    "admission": "valid non-TERMINAL State if object size <= byte capacity",
+                    "admission": "every valid produced State if object size <= byte capacity; no lifecycle test",
                     "reuse_refreshes_recency": True,
                     "eviction": "least recently touched until within byte capacity",
                     "tie_break": ["last_touch_time_seconds", "admission_ordinal", "StateID"],
-                    "lifecycle_visible_for_ranking": False,
+                    "terminal_lifecycle_release": False,
                     "capacity_overcommit": False,
                 },
                 RetentionPolicyID.FIXED_TTL.value: {
+                    "admission": "every valid produced State if object size <= byte capacity; no lifecycle test",
                     "primary_ttl_seconds": C73_PRIMARY_TTL_SECONDS,
                     "sensitivity_ttl_seconds": list(C73_TTL_SENSITIVITY_SECONDS),
                     "expiry": "admission_time + ttl",
                     "reuse_refreshes_expiry": False,
                     "expiry_at_equality_precedes_reuse": True,
+                    "capacity_eviction": "LRU among unexpired resident State using the common LRU tie-break",
+                    "terminal_lifecycle_release": False,
                     "best_of_grid_rule": "oracle-tuned sensitivity upper bound only; never sole ordinary baseline",
                     "capacity_overcommit": False,
                 },
@@ -308,6 +333,7 @@ class RetentionProtocol:
                         }
                         for lifecycle in StateLifecycle
                     },
+                    "terminal_release": True,
                     "eviction": "lowest lifecycle priority first; equal-priority LRU tie-break",
                     "active_protected_evictable_for_ordinary_pressure": False,
                     "protected_over_capacity": CapacityOutcome.CAPACITY_INFEASIBLE.value,
@@ -316,7 +342,7 @@ class RetentionProtocol:
             },
             "capacity_normalization": {
                 "reference_working_set_bytes": (
-                    "max over event time of sum(State.size_bytes) for valid States with lifecycle != TERMINAL"
+                    "max over event time of sum(State.size_bytes) for valid States with ground-truth lifecycle != TERMINAL"
                 ),
                 "capacity_bytes": "floor(cache_capacity_ratio * reference_working_set_bytes)",
                 "reference_must_be_positive": True,
@@ -340,19 +366,17 @@ class RetentionProtocol:
             },
             "tool_return_ttft": {
                 "definition": "first generated-token completion minus tool-return/resume eligibility time",
-                "first_token_service": (
-                    "required recompute-prefill + first carried C6.3 decode step"
-                ),
+                "first_token_service": "required recompute-prefill + first carried C6.3 decode step",
                 "queue_delay_included": True,
                 "full_decode_substitution_forbidden": True,
             },
             "p2_axes": p2_axes,
             "p3_axes": p3_axes,
             "statistics": {
-                "stochastic_seeds": list(STOCHASTIC_SEEDS),
-                "convergence_prefixes": list(CONVERGENCE_PREFIXES),
-                "bootstrap_resamples": BOOTSTRAP_RESAMPLES,
-                "bootstrap_seed": BOOTSTRAP_SEED,
+                "stochastic_seeds": list(C7_STOCHASTIC_SEEDS),
+                "convergence_prefixes": list(C7_CONVERGENCE_PREFIXES),
+                "bootstrap_resamples": C7_BOOTSTRAP_RESAMPLES,
+                "bootstrap_seed": C7_BOOTSTRAP_SEED,
                 "cluster_unit": "Program; Session only when Program is not independent",
             },
             "invalid_result_conditions": [
@@ -360,6 +384,7 @@ class RetentionProtocol:
                 "capacity overcommit",
                 "silent eviction of strict pinned/protected State",
                 "post-result TTL selection presented as ordinary baseline",
+                "LRU or fixed TTL receives Continuation lifecycle for retention decisions",
                 "lifecycle used as semantic-validity authority",
                 "retention policy changes C7.1 source admissibility",
                 "observed P2/P3 result mutates this protocol in place",
