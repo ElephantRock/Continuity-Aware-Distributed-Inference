@@ -65,7 +65,7 @@ jobs:
           python -m experiments.c73_retention_protocol > /tmp/c73a-a.json
           python -m experiments.c73_retention_protocol > /tmp/c73a-b.json
           cmp /tmp/c73a-a.json /tmp/c73a-b.json
-      - name: Verify pre-result boundary and emit candidate identity
+      - name: Verify frozen pre-result identity and boundary
         run: |
           python - <<'PY'
           import json
@@ -78,6 +78,7 @@ jobs:
               C73_STATE_SIZE_MAP_FINGERPRINT,
           )
 
+          EXPECTED_PROTOCOL = 'f6165cb9248f5f4292846942e797e5ddcd8d004027ad503b2a7de35210021379'
           EXPECTED_STATE_MAP = '36bacaad6462ca3e5eeb2688040e4dcf0d829849158c5b5ad9bad3c58afe173b'
 
           payload = json.loads(Path('/tmp/c73a-a.json').read_text())
@@ -85,7 +86,7 @@ jobs:
           assert payload['base_commit'] == '47f1574c79f84c2e32e432a5da0f0522a6436937'
           assert payload['parent_protocol']['fingerprint'] == C7_PROTOCOL_FINGERPRINT
           assert C7_PROTOCOL_FINGERPRINT == '706e0d5fff362a1eda8c906b957c914251c6e7949bac6be3c2c143ae21625474'
-          assert payload['protocol_fingerprint'] == C73_RETENTION_PROTOCOL_FINGERPRINT
+          assert payload['protocol_fingerprint'] == C73_RETENTION_PROTOCOL_FINGERPRINT == EXPECTED_PROTOCOL
           assert C73_STATE_SIZE_MAP_FINGERPRINT == EXPECTED_STATE_MAP
           assert payload['comparative_result_inspection'] == 'NONE'
           assert payload['policy_ids'] == ['LRU', 'FIXED_TTL', 'SESSION_PINNING', 'LIFECYCLE_B4']
@@ -100,7 +101,7 @@ jobs:
           assert 'policy_results' not in payload
           assert 'p2_results' not in payload
           assert 'p3_results' not in payload
-          print(f'candidate_retention_protocol_fingerprint={C73_RETENTION_PROTOCOL_FINGERPRINT}')
+          print(f'retention_protocol_fingerprint={EXPECTED_PROTOCOL}')
           print(f'state_size_map_fingerprint={EXPECTED_STATE_MAP}')
           print('comparative_result_inspection=NONE')
           PY
