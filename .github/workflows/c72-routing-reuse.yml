@@ -62,8 +62,11 @@ jobs:
           from experiments.c7_protocol import C7_PROTOCOL_FINGERPRINT
 
           payload = json.loads(Path('/tmp/c72-a.json').read_text())
+          assert payload['schema'] == 'cadi.c7.2.routing-reuse-harness.v2'
           assert payload['protocol_fingerprint'] == C7_PROTOCOL_FINGERPRINT
           assert payload['protocol_fingerprint'] == '706e0d5fff362a1eda8c906b957c914251c6e7949bac6be3c2c143ae21625474'
+          assert payload['result_schema'] == 'cadi.c7.2.routing-reuse-result.v2'
+          assert payload['routing_control_cost_model'] == 'ZERO_UNEVIDENCED_COMPONENT'
           assert payload['comparative_result_inspection'] == 'NONE'
           assert 'policy_results' not in payload
           print(json.dumps(payload, sort_keys=True, separators=(',', ':')))
@@ -113,8 +116,11 @@ jobs:
           payload = json.loads(Path('/tmp/c72-source-a.json').read_text())
           assert payload['source_dataset_fingerprint'] == '22ead90d97ae218f229f94378f8f019499ede0e4050e6cbf8092b455ae047718'
           assert payload['total_records'] == 12031
+          assert payload['excluded_records'] == payload['total_records'] - payload['retained_records']
           assert 0 < payload['retained_records'] < payload['total_records']
-          assert payload['input_max'] + payload['output_min'] <= 4096 or payload['input_max'] <= 4095
+          assert payload['total_tokens_max'] <= 4096
+          assert payload['input_min'] >= 1
+          assert payload['output_min'] >= 1
           print('source_admissibility_establishment=DESCRIPTIVE_ONLY')
           print('comparative_result_inspection=NONE')
           PY
