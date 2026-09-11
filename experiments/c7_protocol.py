@@ -125,7 +125,6 @@ def _nonnegative_float(value: float, name: str) -> float:
 
 def source_request_c6_admissible(input_tokens: int, output_tokens: int) -> bool:
     """Return whether an unmodified source row lies inside the frozen C6 domain."""
-
     _nonnegative_int(input_tokens, "input_tokens")
     _nonnegative_int(output_tokens, "output_tokens")
     return (
@@ -137,7 +136,6 @@ def source_request_c6_admissible(input_tokens: int, output_tokens: int) -> bool:
 
 def synthetic_request_c6_admissible(input_tokens: int, output_tokens: int) -> bool:
     """Return whether a synthetic control is executable by the frozen C6 runtime."""
-
     _nonnegative_int(input_tokens, "input_tokens")
     _nonnegative_int(output_tokens, "output_tokens")
     if input_tokens == 0 and output_tokens == 0:
@@ -149,7 +147,6 @@ def synthetic_request_c6_admissible(input_tokens: int, output_tokens: int) -> bo
 
 def validated_transfer_state_admissible(state_tokens: int) -> bool:
     """P-SRC2 C7.1 transfer points are exactly the predeclared P5 State sizes."""
-
     _nonnegative_int(state_tokens, "state_tokens")
     return state_tokens in C7_P5_STATE_TOKENS
 
@@ -571,6 +568,8 @@ class C7ExperimentManifest:
         _nonempty(self.program_objective, "program_objective")
         if self.seed is not None:
             _nonnegative_int(self.seed, "seed")
+            if self.seed not in C7_STOCHASTIC_SEEDS:
+                raise ValueError("stochastic seed must come from the frozen C7.1 sequence 0..63")
         if self.source_dataset_fingerprint is not None:
             _nonempty(self.source_dataset_fingerprint, "source_dataset_fingerprint")
         if self.augmentation_fingerprint is not None:
@@ -606,9 +605,17 @@ class C7ExperimentManifest:
             raise ValueError("parameter_sources must have unique canonically ordered names")
         if parameter_names != source_names:
             raise ValueError("every parameter must have exactly one source classification")
+
+        parameter_source_map = dict(self.parameter_sources)
         for name, value in self.parameters:
             _nonempty(name, "parameter name")
             _nonnegative_float(value, f"parameter {name}")
+            axis = AXES.get(name)
+            if axis is not None:
+                if value not in axis.values:
+                    raise ValueError(f"parameter {name} is outside the frozen C7.1 axis values")
+                if parameter_source_map[name] is not axis.source:
+                    raise ValueError(f"parameter {name} must retain its frozen C7.1 source class")
         for name, source in self.parameter_sources:
             _nonempty(name, "parameter source name")
             if not isinstance(source, ParameterSource):
