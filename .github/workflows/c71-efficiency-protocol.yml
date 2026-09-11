@@ -1,0 +1,84 @@
+name: c71-efficiency-protocol
+
+on:
+  push:
+    branches:
+      - c7/efficiency-protocol
+    paths:
+      - .github/workflows/c71-efficiency-protocol.yml
+      - experiments/c7_protocol.py
+      - tests/experiments/test_c7_protocol.py
+      - spec/50-c7.1-efficiency-protocol.md
+      - pyproject.toml
+  pull_request:
+    paths:
+      - .github/workflows/c71-efficiency-protocol.yml
+      - experiments/c7_protocol.py
+      - tests/experiments/test_c7_protocol.py
+      - spec/50-c7.1-efficiency-protocol.md
+      - pyproject.toml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONHASHSEED: '0'
+  C7_EXPECTED_PROTOCOL_FINGERPRINT: '706e0d5fff362a1eda8c906b957c914251c6e7949bac6be3c2c143ae21625474'
+
+jobs:
+  protocol-freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Verify immutable checkout
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+          check-latest: false
+      - name: Print candidate protocol fingerprint
+        run: |
+          python - <<'PY'
+          from experiments.c7_protocol import C7_PROTOCOL_FINGERPRINT
+          print(f'candidate_protocol_fingerprint={C7_PROTOCOL_FINGERPRINT}')
+          PY
+      - name: Install test runner only
+        run: python -m pip install 'pytest==8.4.2'
+      - name: Run C7.1 protocol contract tests
+        run: python -m pytest -q tests/experiments/test_c7_protocol.py
+      - name: Reproduce protocol artifact twice
+        run: |
+          python -m experiments.c7_protocol > /tmp/c7-protocol-a.json
+          python -m experiments.c7_protocol > /tmp/c7-protocol-b.json
+          cmp /tmp/c7-protocol-a.json /tmp/c7-protocol-b.json
+      - name: Verify frozen protocol identity and no comparative result payload
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from experiments.c7_protocol import C7_PROTOCOL_FINGERPRINT
+
+          expected = os.environ['C7_EXPECTED_PROTOCOL_FINGERPRINT']
+          payload = json.loads(Path('/tmp/c7-protocol-a.json').read_text())
+          assert C7_PROTOCOL_FINGERPRINT == expected
+          assert payload['protocol_fingerprint'] == expected
+          protocol = payload['protocol']
+          assert protocol['source']['clip_truncate_or_extrapolate'] is False
+          assert protocol['semantic_validity']['covered_violation_excludes_efficiency_ranking'] is True
+          assert protocol['statistics']['stochastic_seeds'] == list(range(64))
+          assert protocol['cost_model']['p5_state_tokens'] == [1, 4, 16, 64]
+          assert protocol['cost_model']['supported_hardware_ids'] == ['a100-80gb', 'h100-80gb']
+          assert all(axis['source'] == 'P-SRC4' for axis in protocol['axes'])
+          assert 'results' not in payload
+          assert 'policy_comparison' not in payload
+          print(f'protocol_fingerprint={C7_PROTOCOL_FINGERPRINT}')
+          print('comparative_result_inspection=NONE')
+          PY
