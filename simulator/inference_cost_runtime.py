@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import Enum
 import hashlib
 import json
 import math
@@ -178,20 +179,22 @@ class ValidatedRuntimeCostEstimate:
     recompute_tokens: int
     decode_context_token_steps: int
 
-    @property
-    def compute_seconds(self) -> float:
-        return self.prefill_seconds + self.decode_seconds + self.recompute_seconds
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema": C64G_ESTIMATE_SCHEMA,
             **{name: getattr(self, name) for name in self.__dataclass_fields__},
-            "compute_seconds": self.compute_seconds,
         }
+
+
+class ValidatedComputePhase(str, Enum):
+    PREFILL = "PREFILL"
+    DECODE = "DECODE"
+    RECOMPUTE = "RECOMPUTE"
 
 
 @dataclass(frozen=True, slots=True)
 class ScheduledValidatedInference:
+    phase: ValidatedComputePhase
     task: ResourceTask
     estimate: ValidatedRuntimeCostEstimate
 
@@ -401,17 +404,25 @@ def enqueue_validated_inference_task(
     profile: ValidatedRuntimeCostProfile,
     workload: InferenceCostWorkload,
     *,
+    phase: ValidatedComputePhase,
     worker_id: str,
     task_id: str,
 ) -> ScheduledValidatedInference:
-    """Schedule only inference compute; transfer remains explicit ResourceModel networking."""
+    """Schedule one explicit compute phase; transfer remains ResourceModel networking."""
 
     if not isinstance(resources, ResourceModel):
         raise TypeError("resources must be ResourceModel")
+    if not isinstance(phase, ValidatedComputePhase):
+        raise TypeError("phase must be ValidatedComputePhase")
     estimate = estimate_validated_runtime_cost(profile, workload)
+    duration = {
+        ValidatedComputePhase.PREFILL: estimate.prefill_seconds,
+        ValidatedComputePhase.DECODE: estimate.decode_seconds,
+        ValidatedComputePhase.RECOMPUTE: estimate.recompute_seconds,
+    }[phase]
     task = resources.enqueue_task(
         worker_id,
         task_id,
-        duration=estimate.compute_seconds,
+        duration=duration,
     )
-    return ScheduledValidatedInference(task=task, estimate=estimate)
+    return ScheduledValidatedInference(phase=phase, task=task, estimate=estimate)

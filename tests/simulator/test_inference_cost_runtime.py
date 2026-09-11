@@ -13,6 +13,7 @@ from simulator.inference_cost_runtime import (
     C64F_REPRESENTATION_ID,
     C64F_SCIENTIFIC_FINGERPRINT,
     C64G_TRANSFER_BYTES_PER_TOKEN,
+    ValidatedComputePhase,
     estimate_validated_runtime_cost,
     enqueue_validated_inference_task,
     load_c64f_runtime_profiles,
@@ -97,9 +98,6 @@ def test_runtime_estimate_preserves_v4_decode_recompute_state_and_transfer(
     assert estimate.state_bytes == expected_state
     assert estimate.transfer_seconds == profile.transfer_seconds(expected_state)
     assert estimate.memory_capacity_fraction == expected_state / profile.memory_capacity_bytes
-    assert estimate.compute_seconds == (
-        estimate.prefill_seconds + estimate.decode_seconds + estimate.recompute_seconds
-    )
 
 
 @pytest.mark.parametrize("hardware_id", ["a100-80gb", "h100-80gb"])
@@ -119,7 +117,6 @@ def test_zero_workload_is_exact_zero(profiles, hardware_id: str) -> None:
     assert estimate.transfer_seconds == 0.0
     assert estimate.state_bytes == 0.0
     assert estimate.memory_capacity_fraction == 0.0
-    assert estimate.compute_seconds == 0.0
 
 
 def test_transfer_domain_failure_propagates_from_state_size(profiles) -> None:
@@ -151,13 +148,23 @@ def test_artifact_tampering_fails_before_runtime_projection(tmp_path: Path) -> N
         load_c64f_runtime_profiles(path)
 
 
-def test_resource_adapter_schedules_compute_only_and_returns_full_estimate(profiles) -> None:
+@pytest.mark.parametrize(
+    ("phase", "field_name"),
+    [
+        (ValidatedComputePhase.PREFILL, "prefill_seconds"),
+        (ValidatedComputePhase.DECODE, "decode_seconds"),
+        (ValidatedComputePhase.RECOMPUTE, "recompute_seconds"),
+    ],
+)
+def test_resource_adapter_schedules_only_explicit_compute_phase(
+    profiles, phase: ValidatedComputePhase, field_name: str
+) -> None:
     simulator = DiscreteEventSimulator(seed=7)
     resources = ResourceModel(simulator)
     resources.add_worker("worker-a")
     workload = InferenceCostWorkload(
-        input_tokens=1,
-        output_tokens=1,
+        input_tokens=4,
+        output_tokens=2,
         reusable_prefix_tokens=1,
         state_tokens=0,
     )
@@ -166,16 +173,34 @@ def test_resource_adapter_schedules_compute_only_and_returns_full_estimate(profi
         resources,
         profiles["a100-80gb"],
         workload,
+        phase=phase,
         worker_id="worker-a",
-        task_id="request-1",
+        task_id=f"request-{phase.value.lower()}",
     )
 
-    assert scheduled.task.duration == scheduled.estimate.compute_seconds
+    expected_duration = getattr(scheduled.estimate, field_name)
+    assert scheduled.phase is phase
+    assert scheduled.task.duration == expected_duration
     assert scheduled.estimate.transfer_seconds == 0.0
     simulator.run()
-    completed = resources.tasks["request-1"]
+    completed = resources.tasks[scheduled.task.id]
     assert completed.status is TaskStatus.COMPLETED
-    assert completed.completed_at == scheduled.estimate.compute_seconds
+    assert completed.completed_at == expected_duration
+
+
+def test_resource_adapter_rejects_implicit_phase_aggregation(profiles) -> None:
+    simulator = DiscreteEventSimulator(seed=7)
+    resources = ResourceModel(simulator)
+    resources.add_worker("worker-a")
+    with pytest.raises(TypeError, match="phase"):
+        enqueue_validated_inference_task(
+            resources,
+            profiles["a100-80gb"],
+            InferenceCostWorkload(1, 0, 1, 0),
+            phase="PREFILL",  # type: ignore[arg-type]
+            worker_id="worker-a",
+            task_id="request-implicit",
+        )
 
 
 def test_runtime_package_keeps_zero_mandatory_dependencies() -> None:
