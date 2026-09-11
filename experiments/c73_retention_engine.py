@@ -355,7 +355,7 @@ class RetentionProgramCase:
             )
             if event_key < first_admit_key[event.state_id]:  # type: ignore[index]
                 raise ValueError(
-                    f"{event.kind.value} cannot occur before first ADMIT for the same State"
+                    f"{event.kind.value} cannot occur before ADMIT (first admission) for the same State"
                 )
 
     @property
