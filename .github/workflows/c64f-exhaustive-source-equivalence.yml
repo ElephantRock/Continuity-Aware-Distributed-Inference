@@ -6,6 +6,7 @@ on:
       - c6/source-kernel-v4-exhaustive-proof
     paths:
       - .github/workflows/c64f-exhaustive-source-equivalence.yml
+      - artifacts/c6.4f/exhaustive-source-equivalence.json
       - experiments/c64f_exhaustive_source_equivalence.py
       - simulator/inference_cost_v4.py
       - tests/simulator/test_c64f_exhaustive_source_equivalence.py
@@ -14,6 +15,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/c64f-exhaustive-source-equivalence.yml
+      - artifacts/c6.4f/exhaustive-source-equivalence.json
       - experiments/c64f_exhaustive_source_equivalence.py
       - simulator/inference_cost_v4.py
       - tests/simulator/test_c64f_exhaustive_source_equivalence.py
@@ -21,12 +23,8 @@ on:
       - spec/47-c6.4f-exhaustive-source-equivalence-result.md
   workflow_dispatch:
 
-# Temporary recording permission for the first canonical result only. The
-# recording step stages exactly one artifact path and is removed immediately
-# after that artifact is committed. Scientific mechanics are unchanged from the
-# frozen C6.4e protocol.
 permissions:
-  contents: write
+  contents: read
 
 env:
   PYTHONHASHSEED: '0'
@@ -111,51 +109,48 @@ jobs:
             --vidur-root .c64f_vidur \
             --output /tmp/c64f-run-2.json | tee /tmp/c64f-run-2.log
           cmp /tmp/c64f-run-1.json /tmp/c64f-run-2.json
-      - name: Validate and stage canonical candidate
+      - name: Verify committed canonical result byte-for-byte
         run: |
           python - <<'PY'
+          import hashlib
           import json
           from pathlib import Path
           expected_protocol = 'adc341d4e3eddf72c82e3a0c7b139b703b9ed0e662a724870aa8d74abe1f7df8'
-          path = Path('/tmp/c64f-run-1.json')
-          result = json.loads(path.read_text())
+          expected_scientific = 'cc1b62c4e38a1612720f601375c425c0bd7d67b4eff11b101bfdf87b79a7a61a'
+          expected_file_sha256 = '93990386135ecbf6fc38e579841eace3431a068b10ee59209fe6ad7084bd8889'
+          generated = Path('/tmp/c64f-run-1.json')
+          committed = Path('artifacts/c6.4f/exhaustive-source-equivalence.json')
+          if generated.read_bytes() != committed.read_bytes():
+              raise SystemExit('committed C6.4f canonical artifact differs from exact-head regeneration')
+          observed_file_sha256 = hashlib.sha256(committed.read_bytes()).hexdigest()
+          assert observed_file_sha256 == expected_file_sha256, observed_file_sha256
+          result = json.loads(committed.read_text())
           assert result['schema'] == 'cadi.c6.4f.exhaustive-source-equivalence-result.v1'
+          assert result['result_kind'] == 'EXHAUSTIVE_FINITE_DECLARED_DOMAIN_SOURCE_EQUIVALENCE'
           assert result['protocol_fingerprint'] == expected_protocol
+          assert result['scientific_fingerprint'] == expected_scientific
+          assert result['decision'] == 'ADEQUATE_WITHIN_DECLARED_DOMAIN'
+          assert result['boundary_accounting']['c64c_boundary_status'] == 'INVALIDATED_BY_SUPERSEDED_PREDICTOR_MATERIALIZATION'
           assert result['boundary_accounting']['replacement_fresh_boundary'] is None
           assert result['boundary_accounting']['holdout_claim'] is False
+          assert result['boundary_accounting']['out_of_domain_generalization_claim'] is False
           assert result['post_hoc_repairs'] == []
           assert len(result['hardware']) == 2
           for hardware in result['hardware']:
+              assert hardware['decision'] == 'ADEQUATE_WITHIN_DECLARED_DOMAIN'
               assert hardware['prefill']['point_count'] == 4096
+              assert hardware['prefill']['max_ulp_distance'] <= 8
+              assert hardware['prefill']['ulp_violation_count'] == 0
               assert hardware['transfer']['point_count'] == 4096
-          assert isinstance(result['scientific_fingerprint'], str)
+              assert hardware['transfer']['max_ulp_distance'] <= 8
+              assert hardware['transfer']['ulp_violation_count'] == 0
+              assert hardware['carried_decode']['decision'] == 'PASS'
+              assert hardware['state_memory']['decision'] == 'PASS'
           print('decision=', result['decision'])
           print('scientific_fingerprint=', result['scientific_fingerprint'])
-          for hardware in result['hardware']:
-              print(hardware['hardware_id'], 'decision=', hardware['decision'])
-              print('  prefill max_ulp=', hardware['prefill']['max_ulp_distance'],
-                    'violations=', hardware['prefill']['ulp_violation_count'])
-              print('  transfer max_ulp=', hardware['transfer']['max_ulp_distance'],
-                    'violations=', hardware['transfer']['ulp_violation_count'])
-          out = Path('artifacts/c6.4f')
-          out.mkdir(parents=True, exist_ok=True)
-          (out / 'exhaustive-source-equivalence.json').write_bytes(path.read_bytes())
+          print('artifact_sha256=', observed_file_sha256)
           PY
-      - name: Commit canonical result artifact once
-        if: github.event_name == 'pull_request' || github.event_name == 'push'
-        run: |
-          git add -- artifacts/c6.4f/exhaustive-source-equivalence.json
-          staged="$(git diff --cached --name-only)"
-          if [ -z "$staged" ]; then
-            echo "Canonical artifact already matches the regenerated result."
-            exit 0
-          fi
-          test "$staged" = "artifacts/c6.4f/exhaustive-source-equivalence.json"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "C6.4f: record canonical exhaustive source-equivalence result"
-          git push origin HEAD:c6/source-kernel-v4-exhaustive-proof
-      - name: Upload canonical candidate artifact
+      - name: Upload verified canonical artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: c64f-exhaustive-source-equivalence-${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
