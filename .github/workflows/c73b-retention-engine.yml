@@ -10,6 +10,7 @@ on:
       - experiments/c73_retention_protocol.py
       - experiments/c7_protocol.py
       - tests/experiments/test_c73_retention_engine.py
+      - tests/experiments/test_c73_retention_engine_review.py
       - spec/54-c7.3b-retention-engine.md
       - pyproject.toml
   pull_request:
@@ -19,6 +20,7 @@ on:
       - experiments/c73_retention_protocol.py
       - experiments/c7_protocol.py
       - tests/experiments/test_c73_retention_engine.py
+      - tests/experiments/test_c73_retention_engine_review.py
       - spec/54-c7.3b-retention-engine.md
       - pyproject.toml
   workflow_dispatch:
@@ -49,7 +51,10 @@ jobs:
       - name: Install test runner only
         run: python -m pip install 'pytest==8.4.2'
       - name: Run C7.3b deterministic mechanics tests
-        run: python -m pytest -q tests/experiments/test_c73_retention_engine.py
+        run: >-
+          python -m pytest -q
+          tests/experiments/test_c73_retention_engine.py
+          tests/experiments/test_c73_retention_engine_review.py
       - name: Reproduce engine identity twice
         run: |
           python -m experiments.c73_retention_engine > /tmp/c73b-a.json
