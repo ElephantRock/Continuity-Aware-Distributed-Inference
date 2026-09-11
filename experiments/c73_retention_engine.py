@@ -593,6 +593,19 @@ class _RetentionRun:
         self.specs = {item.state_id: item for item in case.states}
         self.truth = {item.state_id: _Truth(True, item.initial_lifecycle) for item in case.states}
         self.sessions = {item.session_id: item.initially_live for item in case.sessions}
+        ordered_admissions = sorted(
+            (event for event in case.events if event.kind is RetentionEventKind.ADMIT),
+            key=lambda event: (
+                event.time_seconds,
+                event.phase,
+                event.ordinal,
+                event.event_id,
+            ),
+        )
+        self.admission_occurrence_ordinals = {
+            event.event_id: ordinal
+            for ordinal, event in enumerate(ordered_admissions)
+        }
         self.resident: dict[str, _Resident] = {}
         self.capacity_outcome = CapacityOutcome.ELIGIBLE
         self.eligible_reuse_opportunities = 0
@@ -750,7 +763,16 @@ class _RetentionRun:
             self._record(event.time_seconds, RetentionAuditKind.ADMISSION_SKIPPED, state_id, "INVALID_STATE")
             return
         if state_id in self.resident:
-            raise ValueError("State cannot be admitted while already resident")
+            # ADMIT is a common admission/re-admission opportunity in the shared
+            # Program event stream. Policies that already retain the immutable
+            # State consume no new admission and do not refresh recency or TTL.
+            self._record(
+                event.time_seconds,
+                RetentionAuditKind.ADMISSION_SKIPPED,
+                state_id,
+                "ALREADY_RESIDENT",
+            )
+            return
         if self.policy in {RetentionPolicyID.LRU, RetentionPolicyID.FIXED_TTL}:
             if spec.size_bytes > self.manifest.capacity_bytes:
                 self._record(event.time_seconds, RetentionAuditKind.ADMISSION_SKIPPED, state_id, "OBJECT_EXCEEDS_CAPACITY")
@@ -781,7 +803,7 @@ class _RetentionRun:
             event.time_seconds,
             event.time_seconds,
             event.time_seconds,
-            spec.admission_ordinal,
+            self.admission_occurrence_ordinals[event.event_id],
             expiry,
         )
         # Admission precedes capacity enforcement. The audit snapshot is emitted only
