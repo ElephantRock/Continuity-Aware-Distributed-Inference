@@ -1,0 +1,88 @@
+name: c73b-retention-engine
+
+on:
+  push:
+    branches:
+      - c7/retention-engine
+    paths:
+      - .github/workflows/c73b-retention-engine.yml
+      - experiments/c73_retention_engine.py
+      - experiments/c73_retention_protocol.py
+      - experiments/c7_protocol.py
+      - tests/experiments/test_c73_retention_engine.py
+      - tests/experiments/test_c73_retention_engine_review.py
+      - spec/54-c7.3b-retention-engine.md
+      - pyproject.toml
+  pull_request:
+    paths:
+      - .github/workflows/c73b-retention-engine.yml
+      - experiments/c73_retention_engine.py
+      - experiments/c73_retention_protocol.py
+      - experiments/c7_protocol.py
+      - tests/experiments/test_c73_retention_engine.py
+      - tests/experiments/test_c73_retention_engine_review.py
+      - spec/54-c7.3b-retention-engine.md
+      - pyproject.toml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONHASHSEED: '0'
+
+jobs:
+  engine-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Verify immutable checkout
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+          check-latest: false
+      - name: Install test runner only
+        run: python -m pip install 'pytest==8.4.2'
+      - name: Run C7.3b deterministic mechanics tests
+        run: >-
+          python -m pytest -q
+          tests/experiments/test_c73_retention_engine.py
+          tests/experiments/test_c73_retention_engine_review.py
+      - name: Reproduce engine identity twice
+        run: |
+          python -m experiments.c73_retention_engine > /tmp/c73b-a.json
+          python -m experiments.c73_retention_engine > /tmp/c73b-b.json
+          cmp /tmp/c73b-a.json /tmp/c73b-b.json
+      - name: Verify frozen parent identities and no comparative result payload
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from experiments.c73_retention_engine import (
+              C73B_BASE_COMMIT,
+              C73B_FROZEN_RETENTION_PROTOCOL_FINGERPRINT,
+              C73B_FROZEN_STATE_SIZE_MAP_FINGERPRINT,
+          )
+
+          payload = json.loads(Path('/tmp/c73b-a.json').read_text())
+          assert payload['schema'] == 'cadi.c7.3b.retention-engine.v1'
+          assert C73B_BASE_COMMIT == '2b8a76c54501d9728d6520c5847b41c0e5bb2e82'
+          assert payload['base_commit'] == C73B_BASE_COMMIT
+          assert payload['retention_protocol_fingerprint'] == C73B_FROZEN_RETENTION_PROTOCOL_FINGERPRINT
+          assert C73B_FROZEN_RETENTION_PROTOCOL_FINGERPRINT == 'f6165cb9248f5f4292846942e797e5ddcd8d004027ad503b2a7de35210021379'
+          assert payload['state_size_map_fingerprint'] == C73B_FROZEN_STATE_SIZE_MAP_FINGERPRINT
+          assert C73B_FROZEN_STATE_SIZE_MAP_FINGERPRINT == '36bacaad6462ca3e5eeb2688040e4dcf0d829849158c5b5ad9bad3c58afe173b'
+          assert payload['comparative_result_inspection'] == 'NONE'
+          assert payload['supported_policies'] == ['LRU', 'FIXED_TTL', 'SESSION_PINNING', 'LIFECYCLE_B4']
+          assert 'policy_results' not in payload
+          assert 'p2_results' not in payload
+          assert 'p3_results' not in payload
+          print('comparative_result_inspection=NONE')
+          PY
