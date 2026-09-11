@@ -17,6 +17,7 @@ from experiments.c7_protocol import (
 )
 from experiments.c73_retention_protocol import (
     C73_BASE_COMMIT,
+    C73_C6_ACCEPTED_STATE_FIXED_BYTES,
     C73_DEFAULT_STATE_BYTES,
     C73_DEFAULT_STATE_TOKENS,
     C73_EVENT_ORDER,
@@ -24,6 +25,7 @@ from experiments.c73_retention_protocol import (
     C73_RETENTION_MANIFEST_SCHEMA,
     C73_RETENTION_PROTOCOL_FINGERPRINT,
     C73_RETENTION_PROTOCOL_SCHEMA,
+    C73_STATE_SIZE_MAP_FINGERPRINT,
     C73_TTL_SENSITIVITY_SECONDS,
     C73RetentionManifest,
     CapacityOutcome,
@@ -160,12 +162,15 @@ def test_fixed_ttl_is_from_admission_and_expires_at_equality() -> None:
 def test_fixed_state_size_design_point_is_frozen_before_results() -> None:
     assert C73_DEFAULT_STATE_TOKENS == 16
     assert C73_DEFAULT_STATE_TOKENS == AXES["state_tokens"].reference_value
+    assert C73_C6_ACCEPTED_STATE_FIXED_BYTES == 0
     assert C73_DEFAULT_STATE_BYTES == 16 * C6_STATE_BYTES_PER_TOKEN == 8_388_608
     rule = FROZEN_C73_RETENTION_PROTOCOL.to_dict()["state_size_rule"]
     assert rule["default_state_tokens"] == 16
     assert rule["default_state_tokens_source"] == "P-SRC4"
-    assert rule["bytes_per_state_token"] == C6_STATE_BYTES_PER_TOKEN
-    assert rule["byte_mapping_evidence"] == "P-SRC2"
+    assert rule["accepted_c6_state_fixed_bytes"] == 0
+    assert rule["accepted_c6_state_bytes_per_token"] == C6_STATE_BYTES_PER_TOKEN
+    assert rule["byte_mapping_evidence"] == "SIMULATED_SOURCE_MODEL_DERIVED_P_SRC2"
+    assert rule["state_size_map_fingerprint"] == C73_STATE_SIZE_MAP_FINGERPRINT
     assert rule["default_state_bytes"] == 8_388_608
     assert rule["new_state_size_sweep"] is False
 
@@ -332,7 +337,9 @@ def _manifest(policy: RetentionPolicyID, ttl_seconds: float | None = None) -> C7
         retention_policy_id=policy,
         ttl_seconds=ttl_seconds,
         program_case_fingerprint="2" * 64,
-        state_size_map_fingerprint="3" * 64,
+        state_size_map_fingerprint=C73_STATE_SIZE_MAP_FINGERPRINT,
+        state_tokens=C73_DEFAULT_STATE_TOKENS,
+        state_bytes=C73_DEFAULT_STATE_BYTES,
         reference_working_set_bytes=1000,
         cache_capacity_ratio=0.5,
         capacity_bytes=500,
@@ -368,7 +375,9 @@ def test_retention_manifest_rejects_protocol_or_capacity_drift() -> None:
             retention_policy_id=RetentionPolicyID.LRU,
             ttl_seconds=None,
             program_case_fingerprint="2" * 64,
-            state_size_map_fingerprint="3" * 64,
+            state_size_map_fingerprint=C73_STATE_SIZE_MAP_FINGERPRINT,
+        state_tokens=C73_DEFAULT_STATE_TOKENS,
+        state_bytes=C73_DEFAULT_STATE_BYTES,
             reference_working_set_bytes=1000,
             cache_capacity_ratio=0.5,
             capacity_bytes=500,
@@ -380,7 +389,9 @@ def test_retention_manifest_rejects_protocol_or_capacity_drift() -> None:
             retention_policy_id=RetentionPolicyID.SESSION_PINNING,
             ttl_seconds=None,
             program_case_fingerprint="2" * 64,
-            state_size_map_fingerprint="3" * 64,
+            state_size_map_fingerprint=C73_STATE_SIZE_MAP_FINGERPRINT,
+        state_tokens=C73_DEFAULT_STATE_TOKENS,
+        state_bytes=C73_DEFAULT_STATE_BYTES,
             reference_working_set_bytes=1000,
             cache_capacity_ratio=0.5,
             capacity_bytes=501,

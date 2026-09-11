@@ -29,7 +29,11 @@ C73_BASE_COMMIT = "47f1574c79f84c2e32e432a5da0f0522a6436937"
 C73_PRIMARY_TTL_SECONDS = 5.0
 C73_TTL_SENSITIVITY_SECONDS = (0.25, 1.0, 5.0, 30.0, 120.0)
 C73_DEFAULT_STATE_TOKENS = 16
-C73_DEFAULT_STATE_BYTES = C73_DEFAULT_STATE_TOKENS * C6_STATE_BYTES_PER_TOKEN
+C73_C6_ACCEPTED_STATE_FIXED_BYTES = 0
+C73_DEFAULT_STATE_BYTES = (
+    C73_C6_ACCEPTED_STATE_FIXED_BYTES
+    + C73_DEFAULT_STATE_TOKENS * C6_STATE_BYTES_PER_TOKEN
+)
 C73_EVENT_ORDER = (
     "VALIDITY_INVALIDATION_AND_COMMON_INVALID_RELEASE",
     "GROUND_TRUTH_CONTINUATION_SESSION_TRANSITIONS_AND_LIFECYCLE_RECOMPUTE",
@@ -95,6 +99,18 @@ def _canonical_json(value: object) -> str:
 
 def _sha256(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+C73_STATE_SIZE_MAP = {
+    "schema": "cadi.c7.3a.state-size-map.v1",
+    "state_tokens": C73_DEFAULT_STATE_TOKENS,
+    "state_fixed_bytes": C73_C6_ACCEPTED_STATE_FIXED_BYTES,
+    "state_bytes_per_token": C6_STATE_BYTES_PER_TOKEN,
+    "state_bytes": C73_DEFAULT_STATE_BYTES,
+    "design_source": ParameterSource.P_SRC4.value,
+    "byte_mapping_evidence": "SIMULATED_SOURCE_MODEL_DERIVED_P_SRC2",
+}
+C73_STATE_SIZE_MAP_FINGERPRINT = _sha256(C73_STATE_SIZE_MAP)
 
 
 def _require_sha256(value: Any, name: str) -> str:
@@ -260,7 +276,12 @@ class RetentionProtocol:
             raise ValueError("TTL sensitivity grid must equal the frozen tool-gap grid")
         if C73_DEFAULT_STATE_TOKENS != AXES["state_tokens"].reference_value:
             raise ValueError("C7.3a State size must use the predeclared C7.1 reference point")
-        if C73_DEFAULT_STATE_BYTES != C73_DEFAULT_STATE_TOKENS * C6_STATE_BYTES_PER_TOKEN:
+        if C73_C6_ACCEPTED_STATE_FIXED_BYTES != 0:
+            raise AssertionError("C7.3a must preserve the accepted C6.4f zero State fixed term")
+        if C73_DEFAULT_STATE_BYTES != (
+            C73_C6_ACCEPTED_STATE_FIXED_BYTES
+            + C73_DEFAULT_STATE_TOKENS * C6_STATE_BYTES_PER_TOKEN
+        ):
             raise AssertionError("C7.3a default State byte mapping drift")
 
     def to_dict(self) -> dict[str, Any]:
@@ -298,6 +319,8 @@ class RetentionProtocol:
                     "ttl_seconds",
                     "program_case_fingerprint",
                     "state_size_map_fingerprint",
+                    "state_tokens",
+                    "state_bytes",
                     "reference_working_set_bytes",
                     "cache_capacity_ratio",
                     "capacity_bytes",
@@ -309,6 +332,7 @@ class RetentionProtocol:
                 "retention protocol fingerprint",
                 "immutable Program-case fingerprint",
                 "State-size map/provenance fingerprint",
+                "explicit frozen State tokens and State bytes",
                 "retention policy ID",
                 "capacity outcome including CAPACITY_INFEASIBLE",
             ],
@@ -395,9 +419,12 @@ class RetentionProtocol:
                 "provenance_required": True,
                 "default_state_tokens": C73_DEFAULT_STATE_TOKENS,
                 "default_state_tokens_source": ParameterSource.P_SRC4.value,
-                "bytes_per_state_token": C6_STATE_BYTES_PER_TOKEN,
-                "byte_mapping_evidence": "P-SRC2",
+                "accepted_c6_state_fixed_bytes": C73_C6_ACCEPTED_STATE_FIXED_BYTES,
+                "accepted_c6_state_bytes_per_token": C6_STATE_BYTES_PER_TOKEN,
+                "byte_mapping_evidence": "SIMULATED_SOURCE_MODEL_DERIVED_P_SRC2",
+                "accepted_c6_record": "C6.4f carried state/memory mechanics",
                 "default_state_bytes": C73_DEFAULT_STATE_BYTES,
+                "state_size_map_fingerprint": C73_STATE_SIZE_MAP_FINGERPRINT,
                 "base_c7_manifest_requirement": (
                     "state_tokens=16 with P-SRC4 for C7.3 P2/P3 unless a new pre-result retention protocol version is approved"
                 ),
@@ -434,6 +461,7 @@ class RetentionProtocol:
                 "LRU or fixed TTL receives Continuation lifecycle for retention decisions",
                 "lifecycle used as semantic-validity authority",
                 "C7.3 P2/P3 base manifest omits the frozen state_tokens=16 P-SRC4 design point",
+                "retention manifest State-size map, state_tokens, or state_bytes differs from the frozen C7.3a mapping",
                 "retention policy changes C7.1 source admissibility",
                 "observed P2/P3 result mutates this protocol in place",
             ],
@@ -459,6 +487,8 @@ class C73RetentionManifest:
     ttl_seconds: float | None
     program_case_fingerprint: str
     state_size_map_fingerprint: str
+    state_tokens: int
+    state_bytes: int
     reference_working_set_bytes: int
     cache_capacity_ratio: float
     capacity_bytes: int
@@ -480,6 +510,12 @@ class C73RetentionManifest:
             raise ValueError("ttl_seconds is valid only for FIXED_TTL")
         _require_sha256(self.program_case_fingerprint, "program_case_fingerprint")
         _require_sha256(self.state_size_map_fingerprint, "state_size_map_fingerprint")
+        if self.state_size_map_fingerprint != C73_STATE_SIZE_MAP_FINGERPRINT:
+            raise ValueError("state_size_map_fingerprint must bind the frozen C7.3a State-size map")
+        if self.state_tokens != C73_DEFAULT_STATE_TOKENS:
+            raise ValueError("state_tokens must equal the frozen C7.3a design point")
+        if self.state_bytes != C73_DEFAULT_STATE_BYTES:
+            raise ValueError("state_bytes must equal the frozen C7.3a State byte mapping")
         reference = _positive_int(self.reference_working_set_bytes, "reference_working_set_bytes")
         ratio = _finite_nonnegative(self.cache_capacity_ratio, "cache_capacity_ratio")
         expected_capacity = capacity_bytes(
@@ -498,6 +534,8 @@ class C73RetentionManifest:
             "ttl_seconds": self.ttl_seconds,
             "program_case_fingerprint": self.program_case_fingerprint,
             "state_size_map_fingerprint": self.state_size_map_fingerprint,
+            "state_tokens": self.state_tokens,
+            "state_bytes": self.state_bytes,
             "reference_working_set_bytes": self.reference_working_set_bytes,
             "cache_capacity_ratio": self.cache_capacity_ratio,
             "capacity_bytes": self.capacity_bytes,
