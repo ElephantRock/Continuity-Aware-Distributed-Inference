@@ -211,7 +211,7 @@ def test_failover_manifest_binds_scenario_policy_and_all_common_fingerprints() -
     payload = manifest.to_dict()
     assert payload["scenario_id"] == "STALE_BINDING_RESIDUAL"
     assert payload["scenario_ranking"] == "RANKABLE"
-    assert payload["policy_id"] == "B4_CONTINUITY_AWARE"
+    assert payload["policy_id"] == "B4"
     assert payload["seed"] == 0
     assert manifest.fingerprint == manifest.fingerprint
 
