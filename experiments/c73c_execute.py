@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 from collections import deque
 from dataclasses import dataclass
+from functools import lru_cache
 import hashlib
 import json
-import math
 from pathlib import Path
 import re
 from typing import Any, Mapping, Sequence
@@ -70,6 +70,7 @@ C73C2_SUPPORT_METRICS = ("USR", "RR", "P2_TOOL_RETURN_TTFT", "CCR")
 C73C2_SUPPORTED = "SUPPORTED_WITHIN_DECLARED_PHASE_SPACE"
 C73C2_COMPARABLE = "COMPARABLE"
 C73C2_TTFT_DESCRIPTIVE_ONLY = "DESCRIPTIVE_ONLY_INSUFFICIENT_RETURNING_PROGRAMS"
+C73C2_SEMANTIC_INVALID = "SEMANTICALLY_INVALID_FOR_EFFICIENCY_RANKING"
 _SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 
 if C73C_PROTOCOL_FINGERPRINT != C73C2_FROZEN_PROTOCOL_FINGERPRINT:
@@ -182,7 +183,12 @@ def _result_invariance_tuple(result: RetentionPolicyResult) -> tuple[Any, ...]:
     )
 
 
-def _ratio_components_dict(result: RetentionPolicyResult) -> dict[str, RatioComponents]:
+def _ratio_components_dict(
+    result: RetentionPolicyResult,
+) -> dict[str, RatioComponents] | None:
+    """Return efficiency components only when semantic ranking is admissible."""
+    if result.semantic_rejection_count:
+        return None
     components = metric_components(result)
     return {
         "USR": components.useful_state_residency,
@@ -196,44 +202,81 @@ def _ratio_value(items: Sequence[RatioComponents]) -> float | None:
     return aggregate_ratio(items).value
 
 
-def paired_ratio_comparison(
-    b4: Sequence[RatioComponents],
-    baseline: Sequence[RatioComponents],
-) -> dict[str, Any]:
+@lru_cache(maxsize=None)
+def _bootstrap_indices_cached(sample_size: int, resample_index: int) -> tuple[int, ...]:
+    """Cache only the already-frozen SHA-256 bootstrap schedule."""
+    return bootstrap_resample_indices(sample_size, resample_index)
+
+
+@lru_cache(maxsize=None)
+def _paired_ratio_comparison_cached(
+    b4: tuple[RatioComponents, ...],
+    baseline: tuple[RatioComponents, ...],
+) -> tuple[str, float | None, tuple[float, float] | None]:
     if len(b4) != len(baseline) or not b4:
         raise ValueError("paired ratio comparison requires equal non-empty Program sequences")
     b4_total = aggregate_ratio(b4)
     base_total = aggregate_ratio(baseline)
     if b4_total.value is None or base_total.value is None:
-        return {
-            "status": C73C_INSUFFICIENT_DENOMINATOR_LABEL,
-            "point_difference": None,
-            "ci95": None,
-            "favorable": False,
-        }
+        return C73C_INSUFFICIENT_DENOMINATOR_LABEL, None, None
 
     diffs: list[float] = []
     n = len(b4)
     for resample_index in range(C7_BOOTSTRAP_RESAMPLES):
-        indices = bootstrap_resample_indices(n, resample_index)
+        indices = _bootstrap_indices_cached(n, resample_index)
         rb4 = aggregate_ratio(tuple(b4[index] for index in indices))
         rbase = aggregate_ratio(tuple(baseline[index] for index in indices))
         if rb4.value is None or rbase.value is None:
-            return {
-                "status": C73C_INSUFFICIENT_DENOMINATOR_LABEL,
-                "point_difference": b4_total.value - base_total.value,
-                "ci95": None,
-                "favorable": False,
-            }
+            return (
+                C73C_INSUFFICIENT_DENOMINATOR_LABEL,
+                b4_total.value - base_total.value,
+                None,
+            )
         diffs.append(rb4.value - rbase.value)
 
-    lo, hi = percentile_95_interval(diffs)
+    return (
+        C73C2_COMPARABLE,
+        b4_total.value - base_total.value,
+        percentile_95_interval(diffs),
+    )
+
+
+def paired_ratio_comparison(
+    b4: Sequence[RatioComponents],
+    baseline: Sequence[RatioComponents],
+) -> dict[str, Any]:
+    status, point, interval = _paired_ratio_comparison_cached(tuple(b4), tuple(baseline))
     return {
-        "status": C73C2_COMPARABLE,
-        "point_difference": b4_total.value - base_total.value,
-        "ci95": [lo, hi],
+        "status": status,
+        "point_difference": point,
+        "ci95": None if interval is None else list(interval),
         "favorable": False,
     }
+
+
+@lru_cache(maxsize=None)
+def _paired_mean_comparison_cached(
+    b4: tuple[float, ...],
+    baseline: tuple[float, ...],
+    minimum_sample_size: int,
+) -> tuple[str, int, float | None, tuple[float, float] | None, bool]:
+    if len(b4) != len(baseline):
+        raise ValueError("paired mean comparison requires equal Program sequences")
+    if len(b4) < minimum_sample_size:
+        point = None if not b4 else sum(b4) / len(b4) - sum(baseline) / len(baseline)
+        return C73C2_TTFT_DESCRIPTIVE_ONLY, len(b4), point, None, False
+
+    point = sum(b4) / len(b4) - sum(baseline) / len(baseline)
+    diffs: list[float] = []
+    n = len(b4)
+    for resample_index in range(C7_BOOTSTRAP_RESAMPLES):
+        indices = _bootstrap_indices_cached(n, resample_index)
+        diffs.append(
+            sum(b4[index] for index in indices) / n
+            - sum(baseline[index] for index in indices) / n
+        )
+    lo, hi = percentile_95_interval(diffs)
+    return C73C2_COMPARABLE, n, point, (lo, hi), hi < 0.0
 
 
 def paired_mean_comparison(
@@ -242,41 +285,19 @@ def paired_mean_comparison(
     *,
     minimum_sample_size: int,
 ) -> dict[str, Any]:
-    if len(b4) != len(baseline):
-        raise ValueError("paired mean comparison requires equal Program sequences")
-    if len(b4) < minimum_sample_size:
-        return {
-            "status": C73C2_TTFT_DESCRIPTIVE_ONLY,
-            "sample_size": len(b4),
-            "point_difference": (
-                None
-                if not b4
-                else sum(b4) / len(b4) - sum(baseline) / len(baseline)
-            ),
-            "ci95": None,
-            "favorable": False,
-        }
-
-    point = sum(b4) / len(b4) - sum(baseline) / len(baseline)
-    diffs: list[float] = []
-    n = len(b4)
-    for resample_index in range(C7_BOOTSTRAP_RESAMPLES):
-        indices = bootstrap_resample_indices(n, resample_index)
-        diffs.append(
-            sum(b4[index] for index in indices) / n
-            - sum(baseline[index] for index in indices) / n
-        )
-    lo, hi = percentile_95_interval(diffs)
+    status, sample_size, point, interval, favorable = _paired_mean_comparison_cached(
+        tuple(b4), tuple(baseline), minimum_sample_size
+    )
     return {
-        "status": C73C2_COMPARABLE,
-        "sample_size": n,
+        "status": status,
+        "sample_size": sample_size,
         "point_difference": point,
-        "ci95": [lo, hi],
-        "favorable": hi < 0.0,
+        "ci95": None if interval is None else list(interval),
+        "favorable": favorable,
     }
 
 
-def _apply_favorable_direction(metric: str, comparison: dict[str, Any]) -> dict[str, Any]:
+def _apply_favorable_direction(metric: str, comparison: Mapping[str, Any]) -> dict[str, Any]:
     result = dict(comparison)
     ci = result.get("ci95")
     if result.get("status") != C73C2_COMPARABLE or ci is None:
@@ -284,6 +305,34 @@ def _apply_favorable_direction(metric: str, comparison: dict[str, Any]) -> dict[
         return result
     lo, hi = ci
     result["favorable"] = lo > 0.0 if metric == "USR" else hi < 0.0
+    return result
+
+
+def wsr_from_usr_comparison(usr: Mapping[str, Any]) -> dict[str, Any]:
+    """Derive the exact WSR comparison from WSR == 1 - USR."""
+    result = {
+        "status": usr["status"],
+        "point_difference": None,
+        "ci95": None,
+        "favorable": False,
+        "derived_from": "EXACT_USR_COMPLEMENT",
+    }
+    if usr["point_difference"] is not None:
+        result["point_difference"] = -float(usr["point_difference"])
+    if usr["ci95"] is not None:
+        lo, hi = usr["ci95"]
+        result["ci95"] = [-hi, -lo]
+        if result["status"] == C73C2_COMPARABLE:
+            result["favorable"] = result["ci95"][1] < 0.0
+    return result
+
+
+def ccr_from_rr_comparison(rr: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy the exact RR comparison under the frozen 1024-token identity."""
+    result = dict(rr)
+    if rr.get("ci95") is not None:
+        result["ci95"] = list(rr["ci95"])
+    result["derived_from"] = "EXACT_RR_FIXED_1024_TOKEN_IDENTITY"
     return result
 
 
@@ -382,11 +431,19 @@ def _cell_seed_execution(
             },
             "capacity_outcome": result.capacity_outcome.value,
             "semantic_rejection_count": result.semantic_rejection_count,
+            "efficiency_ranking_eligibility": (
+                "ELIGIBLE" if components is not None else C73C2_SEMANTIC_INVALID
+            ),
             "eligible_reuse_opportunities": result.eligible_reuse_opportunities,
             "consumed_reuse_opportunities": result.consumed_reuse_opportunities,
-            "metric_components": {
-                metric: components[metric].to_dict() for metric in C73C2_RATIO_METRICS
-            },
+            "metric_components": (
+                None
+                if components is None
+                else {
+                    metric: components[metric].to_dict()
+                    for metric in C73C2_RATIO_METRICS
+                }
+            ),
             "tool_return_ttft_seconds": ttft_by_hardware,
         }
         internal[key] = {
@@ -409,6 +466,18 @@ def _cell_seed_execution(
         "policy_records": policy_payloads,
     }
     return seed_record, internal
+
+
+def _invalid_metric_comparisons(status: str) -> dict[str, Any]:
+    return {
+        metric: {
+            "status": status,
+            "point_difference": None,
+            "ci95": None,
+            "favorable": False,
+        }
+        for metric in C73C2_RATIO_METRICS
+    }
 
 
 def _cell_summary(
@@ -440,6 +509,24 @@ def _cell_summary(
     for key in policy_keys:
         results = [record[key]["result"] for record in internal_by_seed]
         components_by_seed = [record[key]["components"] for record in internal_by_seed]
+        semantically_valid = all(components is not None for components in components_by_seed)
+        if semantically_valid:
+            typed_components = [
+                components for components in components_by_seed if components is not None
+            ]
+            ratio_values = {
+                metric: _ratio_value(
+                    tuple(components[metric] for components in typed_components)
+                )
+                for metric in C73C2_RATIO_METRICS
+            }
+            prefix_diagnostics[key] = _prefix_ratio_diagnostics(typed_components)
+        else:
+            ratio_values = {metric: None for metric in C73C2_RATIO_METRICS}
+            prefix_diagnostics[key] = {
+                "status": C73C2_SEMANTIC_INVALID,
+                "prefixes": None,
+            }
         policy_metrics[key] = {
             "capacity_infeasible_rate": sum(
                 result.capacity_outcome is CapacityOutcome.CAPACITY_INFEASIBLE
@@ -449,14 +536,11 @@ def _cell_summary(
             "semantic_rejection_count": sum(
                 result.semantic_rejection_count for result in results
             ),
-            **{
-                metric: _ratio_value(
-                    tuple(components[metric] for components in components_by_seed)
-                )
-                for metric in C73C2_RATIO_METRICS
-            },
+            "efficiency_ranking_eligibility": (
+                "ELIGIBLE" if semantically_valid else C73C2_SEMANTIC_INVALID
+            ),
+            **ratio_values,
         }
-        prefix_diagnostics[key] = _prefix_ratio_diagnostics(components_by_seed)
 
     comparisons: dict[str, Any] = {}
     b4_records = [record["LIFECYCLE_B4"] for record in internal_by_seed]
@@ -475,34 +559,38 @@ def _cell_summary(
             for b4, base in zip(b4_records, baseline_records)
         )
 
-        metric_comparisons: dict[str, Any] = {}
         if not all_capacity_eligible:
-            metric_comparisons = {
-                metric: {
-                    "status": C73C_INFEASIBLE_LABEL,
-                    "point_difference": None,
-                    "ci95": None,
-                    "favorable": False,
-                }
-                for metric in C73C2_RATIO_METRICS
-            }
+            metric_comparisons = _invalid_metric_comparisons(C73C_INFEASIBLE_LABEL)
         elif not no_semantic_violation:
-            metric_comparisons = {
-                metric: {
-                    "status": "SEMANTICALLY_INVALID_FOR_EFFICIENCY_RANKING",
-                    "point_difference": None,
-                    "ci95": None,
-                    "favorable": False,
-                }
-                for metric in C73C2_RATIO_METRICS
-            }
+            metric_comparisons = _invalid_metric_comparisons(C73C2_SEMANTIC_INVALID)
         else:
-            for metric in C73C2_RATIO_METRICS:
-                raw = paired_ratio_comparison(
-                    tuple(record["components"][metric] for record in b4_records),
-                    tuple(record["components"][metric] for record in baseline_records),
-                )
-                metric_comparisons[metric] = _apply_favorable_direction(metric, raw)
+            b4_components = [record["components"] for record in b4_records]
+            base_components = [record["components"] for record in baseline_records]
+            if any(item is None for item in b4_components + base_components):
+                raise AssertionError("semantic eligibility and metric components disagree")
+            b4_typed = [item for item in b4_components if item is not None]
+            base_typed = [item for item in base_components if item is not None]
+
+            usr = _apply_favorable_direction(
+                "USR",
+                paired_ratio_comparison(
+                    tuple(record["USR"] for record in b4_typed),
+                    tuple(record["USR"] for record in base_typed),
+                ),
+            )
+            rr = _apply_favorable_direction(
+                "RR",
+                paired_ratio_comparison(
+                    tuple(record["RR"] for record in b4_typed),
+                    tuple(record["RR"] for record in base_typed),
+                ),
+            )
+            metric_comparisons = {
+                "USR": usr,
+                "WSR": wsr_from_usr_comparison(usr),
+                "RR": rr,
+                "CCR": ccr_from_rr_comparison(rr),
+            }
 
         comparison_payload: dict[str, Any] = {
             "ratio_metrics": metric_comparisons,
@@ -529,7 +617,7 @@ def _cell_summary(
                         "status": (
                             C73C_INFEASIBLE_LABEL
                             if not all_capacity_eligible
-                            else "SEMANTICALLY_INVALID_FOR_EFFICIENCY_RANKING"
+                            else C73C2_SEMANTIC_INVALID
                         ),
                         "sample_size": len(returning_indices),
                         "point_difference": None,
@@ -735,6 +823,9 @@ def execute_c73c2(*, execution_git_sha: str) -> dict[str, Any]:
             "bootstrap_seed": C7_BOOTSTRAP_SEED,
             "convergence_prefixes": list(C7_CONVERGENCE_PREFIXES),
             "adaptive_early_stop": False,
+            "bootstrap_index_schedule_cached_without_statistical_change": True,
+            "wsr_bootstrap_derived_from_exact_usr_complement": True,
+            "ccr_bootstrap_derived_from_exact_rr_fixed_token_identity": True,
             "rr_ccr_independent_corroboration_claim": False,
         },
         "cells": list(summaries),
