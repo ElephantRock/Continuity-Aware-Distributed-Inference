@@ -2,24 +2,34 @@ from __future__ import annotations
 
 import pytest
 
-from experiments.c73_retention_protocol import RetentionPolicyID
+from experiments.c73_retention_engine import RetentionPolicyResult
+from experiments.c73_retention_protocol import (
+    CapacityOutcome,
+    RetentionPolicyID,
+)
 from experiments.c73c_execute import (
     C73C2_BASE_COMMIT,
     C73C2_COMPARABLE,
     C73C2_FROZEN_PROTOCOL_FINGERPRINT,
     C73C2_HARDWARE_STRATA,
     C73C2_PRIMARY_BASELINES,
+    C73C2_SEMANTIC_INVALID,
     C73C2_TTFT_DESCRIPTIVE_ONLY,
+    _bootstrap_indices_cached,
+    _ratio_components_dict,
+    ccr_from_rr_comparison,
     logical_primary_cells,
     paired_mean_comparison,
     paired_ratio_comparison,
     policy_key,
     support_components_for_surface,
+    wsr_from_usr_comparison,
 )
 from experiments.c73c_protocol import (
     C73C_PROTOCOL_FINGERPRINT,
     C73CSurfaceID,
     RatioComponents,
+    bootstrap_resample_indices,
 )
 
 
@@ -58,6 +68,12 @@ def test_compact_surfaces_collapse_to_51_unique_logical_cells() -> None:
     assert len({cell.cell_id for cell in cells}) == 51
 
 
+def test_cached_bootstrap_schedule_is_exact_frozen_schedule() -> None:
+    observed = _bootstrap_indices_cached(8, 0)
+    assert observed == bootstrap_resample_indices(8, 0)
+    assert _bootstrap_indices_cached(8, 0) is observed
+
+
 def test_paired_ratio_zero_difference_is_not_favorable() -> None:
     b4 = tuple(RatioComponents(1.0, 2.0) for _ in range(8))
     baseline = tuple(RatioComponents(1.0, 2.0) for _ in range(8))
@@ -74,6 +90,56 @@ def test_paired_ratio_fails_closed_on_zero_denominator() -> None:
     assert result["status"] == "INSUFFICIENT_METRIC_DENOMINATOR"
     assert result["ci95"] is None
     assert result["favorable"] is False
+
+
+def test_wsr_and_ccr_use_only_frozen_exact_algebraic_identities() -> None:
+    usr = {
+        "status": C73C2_COMPARABLE,
+        "point_difference": 0.2,
+        "ci95": [0.1, 0.3],
+        "favorable": True,
+    }
+    wsr = wsr_from_usr_comparison(usr)
+    assert wsr["point_difference"] == pytest.approx(-0.2)
+    assert wsr["ci95"] == pytest.approx([-0.3, -0.1])
+    assert wsr["favorable"] is True
+    assert wsr["derived_from"] == "EXACT_USR_COMPLEMENT"
+
+    rr = {
+        "status": C73C2_COMPARABLE,
+        "point_difference": -0.125,
+        "ci95": [-0.25, -0.01],
+        "favorable": True,
+    }
+    ccr = ccr_from_rr_comparison(rr)
+    assert ccr["point_difference"] == rr["point_difference"]
+    assert ccr["ci95"] == rr["ci95"]
+    assert ccr["favorable"] is True
+    assert ccr["derived_from"] == "EXACT_RR_FIXED_1024_TOKEN_IDENTITY"
+
+
+def test_semantic_rejection_fails_closed_without_efficiency_components() -> None:
+    result = RetentionPolicyResult(
+        base_c7_manifest_fingerprint="0" * 64,
+        retention_manifest_fingerprint="1" * 64,
+        retention_protocol_fingerprint="2" * 64,
+        program_case_fingerprint="3" * 64,
+        policy_id=RetentionPolicyID.LRU,
+        capacity_outcome=CapacityOutcome.ELIGIBLE,
+        eligible_reuse_opportunities=1,
+        consumed_reuse_opportunities=0,
+        semantic_rejection_count=1,
+        useful_byte_seconds=0.0,
+        wasted_byte_seconds=1.0,
+        total_classified_byte_seconds=1.0,
+        useful_residency_fraction=0.0,
+        wasted_residency_fraction=1.0,
+        max_resident_bytes=0,
+        capacity_bytes=1,
+        audit=(),
+    )
+    assert _ratio_components_dict(result) is None
+    assert C73C2_SEMANTIC_INVALID == "SEMANTICALLY_INVALID_FOR_EFFICIENCY_RANKING"
 
 
 def test_ttft_minimum_sample_and_favorable_direction() -> None:
