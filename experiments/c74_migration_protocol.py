@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 import hashlib
 import json
+import math
 import re
 from typing import Any, Mapping
 
@@ -14,12 +15,18 @@ from experiments.c7_protocol import (
     C6_SCIENTIFIC_FINGERPRINT,
     C7_PROTOCOL_FINGERPRINT,
     C7_SUPPORTED_HARDWARE_IDS,
+    C7ExperimentManifest,
     ExperimentSeries,
     ParameterSource,
     WorkloadClass,
     validated_transfer_bytes_for_state_tokens,
 )
-from simulator.policies import POLICY_CONTRACT_SCHEMA, PolicyID
+from simulator.policies import (
+    INFORMATION_CONTRACTS,
+    POLICY_CONTRACT_SCHEMA,
+    InformationField,
+    PolicyID,
+)
 
 
 C74_PROTOCOL_SCHEMA = "cadi.c7.4a.migration-efficiency-protocol.v1"
@@ -68,6 +75,22 @@ if AXES["recompute_tokens"].source is not ParameterSource.P_SRC4:
     raise RuntimeError("C7.4a recompute-token design source drift")
 if tuple(C7_SUPPORTED_HARDWARE_IDS) != ("a100-80gb", "h100-80gb"):
     raise RuntimeError("C7.4a accepted hardware family drift")
+if INFORMATION_CONTRACTS[PolicyID.B3].allows(InformationField.BINDING_ID):
+    raise RuntimeError("C7.4a B3 must remain Binding-blind")
+if INFORMATION_CONTRACTS[PolicyID.B3].allows(InformationField.BINDING_EPOCH):
+    raise RuntimeError("C7.4a B3 must remain Binding-epoch-blind")
+if INFORMATION_CONTRACTS[PolicyID.B3].allows(InformationField.RECONCILIATION):
+    raise RuntimeError("C7.4a B3 must remain reconciliation-blind")
+for required_b4_field in (
+    InformationField.EXACT_STATE_ID,
+    InformationField.STATE_LOCATION,
+    InformationField.STATE_PROVENANCE,
+    InformationField.BINDING_ID,
+    InformationField.BINDING_EPOCH,
+    InformationField.RECONCILIATION,
+):
+    if not INFORMATION_CONTRACTS[PolicyID.B4].allows(required_b4_field):
+        raise RuntimeError(f"C7.4a B4 information contract lost {required_b4_field.value}")
 
 
 def _json(value: object) -> str:
@@ -96,6 +119,15 @@ def _p5_axis(name: str, value: int) -> int:
     if value not in AXES[name].values:
         raise ValueError(f"{name} must be a frozen C7.1 P5 axis value")
     return value
+
+
+def _finite_nonnegative(value: int | float, name: str) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise TypeError(f"{name} must be numeric")
+    result = float(value)
+    if not math.isfinite(result) or result < 0.0:
+        raise ValueError(f"{name} must be finite and non-negative")
+    return result
 
 
 class C74Track(str, Enum):
@@ -140,14 +172,123 @@ class C74EfficiencyDecision(str, Enum):
     NOT_STRENGTHENED = C74_EFFICIENCY_NOT_STRENGTHENED
 
 
-C74_RANKABLE_SCENARIOS = (
-    C74ScenarioID.MATCHED_PLANNED_MIGRATION,
-    C74ScenarioID.SOURCE_FAILURE_VALID_REMOTE,
-    C74ScenarioID.DESTINATION_FAILURE_AFTER_TRANSFER_BEFORE_COMMIT,
-    C74ScenarioID.STALE_BINDING_RESIDUAL,
-    C74ScenarioID.CONCURRENT_CANDIDATE_LOSER,
+@dataclass(frozen=True, slots=True)
+class C74ScenarioSpec:
+    scenario_id: C74ScenarioID
+    ranking: C74ScenarioRanking
+    exact_state_physically_available_at_decision: bool
+    b3_exact_state_location_visible: bool
+    b4_reconciliation_at_decision: str
+    transfer_authoritatively_committable_at_decision: bool
+    destination_failure_after_service_before_commit: bool
+    common_c1_commit_required_for_transfer: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scenario_id, C74ScenarioID):
+            raise TypeError("scenario_id must be C74ScenarioID")
+        if not isinstance(self.ranking, C74ScenarioRanking):
+            raise TypeError("ranking must be C74ScenarioRanking")
+        for name in (
+            "exact_state_physically_available_at_decision",
+            "b3_exact_state_location_visible",
+            "transfer_authoritatively_committable_at_decision",
+            "destination_failure_after_service_before_commit",
+            "common_c1_commit_required_for_transfer",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"{name} must be bool")
+        if self.b4_reconciliation_at_decision not in {"MATCHED", "WAIT"}:
+            raise ValueError("b4_reconciliation_at_decision must be MATCHED or WAIT")
+        if self.b3_exact_state_location_visible and not self.exact_state_physically_available_at_decision:
+            raise ValueError("B3 exact-State visibility requires a complete physically available State")
+        if self.b4_reconciliation_at_decision == "WAIT" and self.transfer_authoritatively_committable_at_decision:
+            raise ValueError("WAIT scenario cannot be authoritatively committable at decision time")
+        if self.destination_failure_after_service_before_commit:
+            if self.b4_reconciliation_at_decision != "MATCHED":
+                raise ValueError("destination failure scenario must be MATCHED before service")
+            if not self.transfer_authoritatively_committable_at_decision:
+                raise ValueError("destination failure must become non-committable only after service")
+        if not self.common_c1_commit_required_for_transfer:
+            raise ValueError("all C7.4 transfer paths must retain common C1 semantic authority")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "scenario_id": self.scenario_id.value,
+            "ranking": self.ranking.value,
+            "exact_state_physically_available_at_decision": self.exact_state_physically_available_at_decision,
+            "b3_exact_state_location_visible": self.b3_exact_state_location_visible,
+            "b4_reconciliation_at_decision": self.b4_reconciliation_at_decision,
+            "transfer_authoritatively_committable_at_decision": self.transfer_authoritatively_committable_at_decision,
+            "destination_failure_after_service_before_commit": self.destination_failure_after_service_before_commit,
+            "common_c1_commit_required_for_transfer": self.common_c1_commit_required_for_transfer,
+        }
+
+
+C74_SCENARIO_SPECS = (
+    C74ScenarioSpec(
+        C74ScenarioID.MATCHED_PLANNED_MIGRATION,
+        C74ScenarioRanking.RANKABLE,
+        True,
+        True,
+        "MATCHED",
+        True,
+        False,
+    ),
+    C74ScenarioSpec(
+        C74ScenarioID.SOURCE_FAILURE_VALID_REMOTE,
+        C74ScenarioRanking.RANKABLE,
+        True,
+        True,
+        "MATCHED",
+        True,
+        False,
+    ),
+    C74ScenarioSpec(
+        C74ScenarioID.DESTINATION_FAILURE_AFTER_TRANSFER_BEFORE_COMMIT,
+        C74ScenarioRanking.RANKABLE,
+        True,
+        True,
+        "MATCHED",
+        True,
+        True,
+    ),
+    C74ScenarioSpec(
+        C74ScenarioID.STALE_BINDING_RESIDUAL,
+        C74ScenarioRanking.RANKABLE,
+        True,
+        True,
+        "WAIT",
+        False,
+        False,
+    ),
+    C74ScenarioSpec(
+        C74ScenarioID.CONCURRENT_CANDIDATE_LOSER,
+        C74ScenarioRanking.RANKABLE,
+        True,
+        True,
+        "WAIT",
+        False,
+        False,
+    ),
+    C74ScenarioSpec(
+        C74ScenarioID.PARTIAL_MATERIALIZATION_NO_COMMIT,
+        C74ScenarioRanking.UNRANKED_NO_PARTIAL_TRANSFER_FRACTION_EVIDENCE,
+        False,
+        False,
+        "WAIT",
+        False,
+        False,
+    ),
 )
-C74_UNRANKED_SCENARIOS = (C74ScenarioID.PARTIAL_MATERIALIZATION_NO_COMMIT,)
+C74_SCENARIO_BY_ID = {item.scenario_id: item for item in C74_SCENARIO_SPECS}
+if set(C74_SCENARIO_BY_ID) != set(C74ScenarioID):
+    raise RuntimeError("C7.4a scenario table must cover every scenario exactly once")
+C74_RANKABLE_SCENARIOS = tuple(
+    item.scenario_id for item in C74_SCENARIO_SPECS if item.ranking is C74ScenarioRanking.RANKABLE
+)
+C74_UNRANKED_SCENARIOS = tuple(
+    item.scenario_id for item in C74_SCENARIO_SPECS if item.ranking is not C74ScenarioRanking.RANKABLE
+)
 
 C74_EVENT_ORDER = (
     "FAULT_OR_MIGRATION_TRIGGER",
@@ -201,14 +342,14 @@ C74_POLICY_ACTION_RULES: Mapping[PolicyID, Mapping[str, Any]] = {
 }
 
 
-def scenario_ranking(scenario_id: C74ScenarioID) -> C74ScenarioRanking:
+def scenario_spec(scenario_id: C74ScenarioID) -> C74ScenarioSpec:
     if not isinstance(scenario_id, C74ScenarioID):
         raise TypeError("scenario_id must be C74ScenarioID")
-    return (
-        C74ScenarioRanking.UNRANKED_NO_PARTIAL_TRANSFER_FRACTION_EVIDENCE
-        if scenario_id is C74ScenarioID.PARTIAL_MATERIALIZATION_NO_COMMIT
-        else C74ScenarioRanking.RANKABLE
-    )
+    return C74_SCENARIO_BY_ID[scenario_id]
+
+
+def scenario_ranking(scenario_id: C74ScenarioID) -> C74ScenarioRanking:
+    return scenario_spec(scenario_id).ranking
 
 
 def p5_state_bytes(state_tokens: int) -> int:
@@ -248,15 +389,11 @@ def p5_cells_adjacent(a: tuple[int, int], b: tuple[int, int]) -> bool:
 
 
 def crossover_class(*, transfer_seconds: float, recompute_seconds: float) -> C74CrossoverClass:
-    for value, name in (
-        (transfer_seconds, "transfer_seconds"),
-        (recompute_seconds, "recompute_seconds"),
-    ):
-        if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
-            raise ValueError(f"{name} must be finite and non-negative")
-    if transfer_seconds < recompute_seconds:
+    transfer = _finite_nonnegative(transfer_seconds, "transfer_seconds")
+    recompute = _finite_nonnegative(recompute_seconds, "recompute_seconds")
+    if transfer < recompute:
         return C74CrossoverClass.TRANSFER_FASTER
-    if transfer_seconds > recompute_seconds:
+    if transfer > recompute:
         return C74CrossoverClass.RECOMPUTE_FASTER
     return C74CrossoverClass.TIE
 
@@ -294,6 +431,8 @@ class C74MigrationEfficiencyProtocol:
             raise RuntimeError("C7.4a deterministic manifest seed drift")
         if len(p5_cells()) != 20:
             raise RuntimeError("C7.4a P5 grid must contain exactly 20 cells")
+        if len(C74_RANKABLE_SCENARIOS) != 5 or len(C74_UNRANKED_SCENARIOS) != 1:
+            raise RuntimeError("C7.4a scenario cardinality drift")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -339,10 +478,17 @@ class C74MigrationEfficiencyProtocol:
                     "scenario_construction_uses_seed": False,
                     "artificial_repeated_seeds": False,
                     "bootstrap_applied": False,
+                    "scenario_specs": [item.to_dict() for item in C74_SCENARIO_SPECS],
                     "rankable_scenarios": [item.value for item in C74_RANKABLE_SCENARIOS],
                     "unranked_scenarios": [item.value for item in C74_UNRANKED_SCENARIOS],
                     "partial_materialization_label": C74_PARTIAL_UNRANKED_LABEL,
                     "event_order": list(C74_EVENT_ORDER),
+                    "destination_failure_visibility": (
+                        "MATCHED and committable at ACTION_SELECTION; failure occurs only after completed transfer service"
+                    ),
+                    "stale_and_loser_visibility": (
+                        "B3 sees exact State/location while Binding-blind; B4 sees WAIT before service"
+                    ),
                     "one_recovery_action_at_a_time": True,
                     "concurrent_candidate_means_semantic_not_link_overlap": True,
                 },
@@ -438,6 +584,7 @@ class C74MigrationEfficiencyProtocol:
                         "recompute_tokens": ParameterSource.P_SRC4.value,
                         "state_tokens": ParameterSource.P_SRC4.value,
                     },
+                    "cross_binding_validation_required": True,
                 },
             },
             "result_identity_requirements": [
@@ -473,6 +620,7 @@ class C74MigrationEfficiencyProtocol:
                 "B3 receives Binding generation or reconciliation information",
                 "B4 bypasses common C1 commit authority",
                 "baseline correctness weakened",
+                "Track-B extension not cross-bound to exact P5 C7 base manifest",
                 "partial-materialization efficiency ranked without independently frozen byte fraction evidence",
                 "post-result scenario, threshold, or comparator change",
                 "semantic-invalid outcome counted as efficiency support",
@@ -595,6 +743,46 @@ class C74FailoverManifest:
     @property
     def fingerprint(self) -> str:
         return _fp(self.to_dict())
+
+
+def validate_c74_base_manifest(
+    base_manifest: C7ExperimentManifest,
+    failover_manifest: C74FailoverManifest,
+) -> None:
+    if not isinstance(base_manifest, C7ExperimentManifest):
+        raise TypeError("base_manifest must be C7ExperimentManifest")
+    if not isinstance(failover_manifest, C74FailoverManifest):
+        raise TypeError("failover_manifest must be C74FailoverManifest")
+    if base_manifest.fingerprint != failover_manifest.base_c7_manifest_fingerprint:
+        raise ValueError("base C7 manifest fingerprint does not match C7.4 failover manifest")
+    if base_manifest.git_commit != failover_manifest.execution_git_commit:
+        raise ValueError("base C7 manifest execution Git commit drift")
+    if base_manifest.series is not ExperimentSeries.P5_MIGRATION_VS_RECOMPUTE:
+        raise ValueError("C7.4 Track-B base manifest must be P5_MIGRATION_VS_RECOMPUTE")
+    if base_manifest.workload_class is not WorkloadClass.SYNTHETIC_STRESS:
+        raise ValueError("C7.4 Track-B base manifest must be SYNTHETIC_STRESS")
+    if base_manifest.seed != C74_CANONICAL_DETERMINISTIC_SEED:
+        raise ValueError("C7.4 Track-B base manifest seed must equal canonical seed 0")
+    if base_manifest.policy_id is not failover_manifest.policy_id:
+        raise ValueError("base C7 manifest policy must match C7.4 failover policy")
+    if base_manifest.hardware_id != failover_manifest.hardware_id:
+        raise ValueError("base C7 manifest hardware must match C7.4 failover hardware")
+    expected_parameters = (
+        ("recompute_tokens", failover_manifest.recompute_tokens),
+        ("state_tokens", failover_manifest.state_tokens),
+    )
+    if base_manifest.parameters != expected_parameters:
+        raise ValueError("C7.4 Track-B base manifest must bind exactly the current P5 cell")
+    expected_sources = (
+        ("recompute_tokens", ParameterSource.P_SRC4),
+        ("state_tokens", ParameterSource.P_SRC4),
+    )
+    if base_manifest.parameter_sources != expected_sources:
+        raise ValueError("C7.4 Track-B P5 parameter sources must remain exactly P-SRC4")
+    if base_manifest.source_dataset_fingerprint is not None:
+        raise ValueError("synthetic C7.4 Track-B base manifest cannot claim source data")
+    if base_manifest.augmentation_fingerprint is not None:
+        raise ValueError("synthetic C7.4 Track-B base manifest cannot claim trace augmentation")
 
 
 def protocol_identity() -> dict[str, Any]:
