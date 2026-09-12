@@ -13,6 +13,7 @@ on:
       - experiments/c7_protocol.py
       - tests/experiments/test_c73c_execute.py
       - spec/56-c7.3c2-retention-results.md
+      - artifacts/c7.3c2/paired-retention-results.json
       - pyproject.toml
   pull_request:
     paths:
@@ -24,17 +25,19 @@ on:
       - experiments/c7_protocol.py
       - tests/experiments/test_c73c_execute.py
       - spec/56-c7.3c2-retention-results.md
+      - artifacts/c7.3c2/paired-retention-results.json
       - pyproject.toml
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   PYTHONHASHSEED: '0'
+  RESULT_PATH: artifacts/c7.3c2/paired-retention-results.json
 
 jobs:
-  preflight-contract:
+  contract:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -52,9 +55,9 @@ jobs:
           check-latest: false
       - name: Install test runner only
         run: python -m pip install 'pytest==8.4.2'
-      - name: Run C7.3c2 pre-execution contract tests
+      - name: Run C7.3c2 contract tests
         run: python -m pytest -q tests/experiments/test_c73c_execute.py
-      - name: Verify frozen parent identities without executing outcomes
+      - name: Verify frozen identities
         run: |
           python - <<'PY'
           from experiments.c73c_execute import (
@@ -69,5 +72,136 @@ jobs:
           cells = logical_primary_cells()
           assert len(cells) == 51
           assert sum(len(cell.memberships) for cell in cells) == 56
-          print('comparative_execution=NOT_RUN')
+          print('c73c2_contract=PASS')
+          PY
+
+  execute-and-record:
+    if: >-
+      github.event_name == 'push' &&
+      !contains(github.event.head_commit.message, 'record paired retention result artifact')
+    needs: contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Verify immutable execution checkout
+        run: test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+          check-latest: false
+      - name: Execute frozen C7.3c2 experiment
+        run: |
+          mkdir -p "$(dirname "$RESULT_PATH")"
+          python -m experiments.c73c_execute \
+            --execution-git-sha "$(git rev-parse HEAD)" \
+            --output "$RESULT_PATH"
+      - name: Validate and summarize result artifact
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ['RESULT_PATH'])
+          raw = path.read_bytes()
+          payload = json.loads(raw)
+          result = payload['result']
+          assert result['schema'] == 'cadi.c7.3c2.paired-retention-result.v1'
+          assert result['execution_git_sha'] == os.environ['GITHUB_SHA']
+          assert result['frozen_identities']['c7_3c_protocol_fingerprint'] == '694f3c4e24ecca61b5c265e26f8417eafbcd4c932af3f9e60813fbb76d1b6800'
+          assert result['execution_contract']['unique_logical_cell_count'] == 51
+          assert result['execution_contract']['surface_membership_count'] == 56
+          assert result['execution_contract']['seed_count'] == 64
+          assert all(cell['hardware_invariance_pass'] for cell in result['cells'])
+          semantic_rejections = sum(
+              record['semantic_rejection_count']
+              for cell in result['cells']
+              for seed in cell['seed_records']
+              for record in seed['policy_records'].values()
+          )
+          print('artifact_sha256=' + hashlib.sha256(raw).hexdigest())
+          print('result_fingerprint=' + payload['result_fingerprint'])
+          print('h5_decision=' + result['h5']['decision'])
+          print('supporting_region_count=' + str(len(result['h5']['supporting_regions'])))
+          print('semantic_rejection_count=' + str(semantic_rejections))
+          print('hardware_invariance=PASS')
+          PY
+      - name: Record result artifact on execution branch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add "$RESULT_PATH"
+          git diff --cached --quiet && { echo 'result artifact already recorded'; exit 0; }
+          git commit -m 'C7.3c2: record paired retention result artifact'
+          git push origin HEAD:c7/retention-eval-results
+
+  verify-recorded-result:
+    if: github.event_name == 'pull_request'
+    needs: contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+          check-latest: false
+      - name: Detect recorded artifact
+        id: artifact
+        run: |
+          if test -f "$RESULT_PATH"; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'present=false' >> "$GITHUB_OUTPUT"
+            echo 'recorded_result=NOT_YET_PRESENT'
+          fi
+      - name: Recompute recorded artifact byte-identically
+        if: steps.artifact.outputs.present == 'true'
+        run: |
+          EXECUTION_SHA=$(python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          print(json.loads(Path(os.environ['RESULT_PATH']).read_text())['result']['execution_git_sha'])
+          PY
+          )
+          git cat-file -e "$EXECUTION_SHA^{commit}"
+          git diff --exit-code "$EXECUTION_SHA"..HEAD -- \
+            experiments/c73c_execute.py \
+            experiments/c73c_protocol.py \
+            experiments/c73_retention_engine.py \
+            experiments/c73_retention_protocol.py \
+            experiments/c7_protocol.py \
+            spec/56-c7.3c2-retention-results.md
+          python -m experiments.c73c_execute \
+            --execution-git-sha "$EXECUTION_SHA" \
+            --output /tmp/c73c2-recomputed.json
+          cmp "$RESULT_PATH" /tmp/c73c2-recomputed.json
+          sha256sum "$RESULT_PATH"
+          echo 'byte_identical_reproduction=PASS'
+      - name: Verify recorded result summary
+        if: steps.artifact.outputs.present == 'true'
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          raw = Path(os.environ['RESULT_PATH']).read_bytes()
+          payload = json.loads(raw)
+          result = payload['result']
+          print('artifact_sha256=' + hashlib.sha256(raw).hexdigest())
+          print('result_fingerprint=' + payload['result_fingerprint'])
+          print('execution_git_sha=' + result['execution_git_sha'])
+          print('h5_decision=' + result['h5']['decision'])
+          print('supporting_region_count=' + str(len(result['h5']['supporting_regions'])))
+          print('hardware_invariance=' + ('PASS' if all(cell['hardware_invariance_pass'] for cell in result['cells']) else 'FAIL'))
           PY
