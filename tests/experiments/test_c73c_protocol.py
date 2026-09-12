@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -278,6 +279,26 @@ def test_retention_manifest_rejects_case_base_axis_or_seed_mismatch() -> None:
         retention_manifest_variants(case=right_case_wrong_seed, base_manifest=base)
 
 
+def test_case_base_cross_binding_rejects_extra_axes_and_wrong_underlying_policy() -> None:
+    cell = _p2_gap_cache(5.0, 1.0)
+    case = build_primary_program_case(cell, seed=5)
+    base = build_base_manifest(
+        cell,
+        seed=5,
+        hardware_id="a100-80gb",
+        execution_git_commit=C73C_BASE_COMMIT,
+    )
+    extra_params = tuple(sorted(base.parameters + (("extra_axis", 1.0),)))
+    extra_sources = tuple(sorted(base.parameter_sources + (("extra_axis", ParameterSource.P_SRC4),)))
+    extra = replace(base, parameters=extra_params, parameter_sources=extra_sources)
+    with pytest.raises(ValueError, match="exactly the frozen P2/P3 parameter set"):
+        retention_manifest_variants(case=case, base_manifest=extra)
+
+    wrong_policy = replace(base, policy_id=PolicyID.LRU)
+    with pytest.raises(ValueError, match="PolicyID.B4"):
+        retention_manifest_variants(case=case, base_manifest=wrong_policy)
+
+
 def test_metric_components_preserve_ratio_numerators_and_zero_denominators() -> None:
     result = RetentionPolicyResult(
         "0" * 64,
@@ -377,6 +398,8 @@ def test_h5_contract_keeps_infeasibility_and_null_outcome_explicit() -> None:
     assert payload["h5_rule"]["primary_baselines"] == [
         "LRU", "FIXED_TTL(5s)", "SESSION_PINNING"
     ]
+    assert payload["h5_rule"]["single_hardware_ttft_can_trigger_h5"] is False
+    assert "both accepted C6 hardware-profile strata" in payload["h5_rule"]["ttft_hardware_support_rule"]
     assert payload["metric_estimators"]["p2_ttft_minimum_returning_programs_for_inference"] == 8
     assert payload["paired_fairness"]["case_must_regenerate_exactly_from_base_manifest_parameters_and_seed"] is True
     assert payload["metric_estimators"][

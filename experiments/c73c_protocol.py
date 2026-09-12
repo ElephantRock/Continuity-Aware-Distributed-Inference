@@ -670,9 +670,38 @@ def validate_case_matches_base_manifest(
         raise TypeError("case must be RetentionProgramCase")
     if not isinstance(base_manifest, C7ExperimentManifest):
         raise TypeError("base_manifest must be C7ExperimentManifest")
+    if base_manifest.policy_id is not PolicyID.B4:
+        raise ValueError("C7.3c base manifest must hold underlying routing/control PolicyID.B4")
+    if base_manifest.workload_class is not WorkloadClass.SYNTHETIC_STRESS:
+        raise ValueError("C7.3c base manifest must be SYNTHETIC_STRESS")
+    if base_manifest.hardware_id not in C7_SUPPORTED_HARDWARE_IDS:
+        raise ValueError("C7.3c base manifest hardware is outside the accepted C6 runtime family")
     if base_manifest.seed is None:
         raise ValueError("C7.3c synthetic base manifest requires a frozen seed")
     params = dict(base_manifest.parameters)
+    sources = dict(base_manifest.parameter_sources)
+    required_parameters = {
+        ExperimentSeries.P2_TOOL_GAP_RETENTION: {
+            "cache_capacity_ratio",
+            "state_tokens",
+            "tool_gap_seconds",
+            "tool_return_probability",
+        },
+        ExperimentSeries.P3_BRANCH_CACHE_PRESSURE: {
+            "branch_width",
+            "cache_capacity_ratio",
+            "speculative_fraction",
+            "state_tokens",
+        },
+    }.get(base_manifest.series)
+    if required_parameters is None:
+        raise ValueError("C7.3c base manifest must be P2 or P3")
+    if set(params) != required_parameters or set(sources) != required_parameters:
+        raise ValueError("C7.3c base manifest must contain exactly the frozen P2/P3 parameter set")
+    if any(source is not ParameterSource.P_SRC4 for source in sources.values()):
+        raise ValueError("C7.3c base manifest parameters must all retain P-SRC4 classification")
+    if params["state_tokens"] != C73_DEFAULT_STATE_TOKENS:
+        raise ValueError("C7.3c base manifest must retain frozen state_tokens=16")
     if base_manifest.series is ExperimentSeries.P2_TOOL_GAP_RETENTION:
         expected = _p2_program_case(
             tool_gap_seconds=float(params["tool_gap_seconds"]),
@@ -906,6 +935,7 @@ class C73CPairedEvaluationProtocol:
                 "same_program_case_fingerprint": True,
                 "same_base_c7_manifest_fingerprint": True,
                 "case_must_regenerate_exactly_from_base_manifest_parameters_and_seed": True,
+                "base_manifest_exact_series_parameter_set_and_psrc4_required": True,
                 "same_semantic_validity_outcomes": True,
                 "same_event_stream": True,
                 "same_state_size_and_capacity": True,
@@ -1034,6 +1064,11 @@ class C73CPairedEvaluationProtocol:
                 ),
                 "adjacency": "one primary-surface axis changes by one neighboring frozen value",
                 "support_metrics": ["USR", "RR", "P2_TOOL_RETURN_TTFT", "CCR"],
+                "ttft_hardware_support_rule": (
+                    "same P2 cell must be favorable versus all primary baselines on both "
+                    "accepted C6 hardware-profile strata"
+                ),
+                "single_hardware_ttft_can_trigger_h5": False,
                 "wsr_can_trigger_support": False,
                 "null_decision": C73C_H5_NOT_SUPPORTED,
                 "familywise_error_rate_claim": False,
