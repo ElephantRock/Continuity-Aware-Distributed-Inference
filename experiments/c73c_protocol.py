@@ -663,6 +663,36 @@ def build_base_manifest(
     )
 
 
+def validate_case_matches_base_manifest(
+    case: RetentionProgramCase, base_manifest: C7ExperimentManifest
+) -> None:
+    if not isinstance(case, RetentionProgramCase):
+        raise TypeError("case must be RetentionProgramCase")
+    if not isinstance(base_manifest, C7ExperimentManifest):
+        raise TypeError("base_manifest must be C7ExperimentManifest")
+    if base_manifest.seed is None:
+        raise ValueError("C7.3c synthetic base manifest requires a frozen seed")
+    params = dict(base_manifest.parameters)
+    if base_manifest.series is ExperimentSeries.P2_TOOL_GAP_RETENTION:
+        expected = _p2_program_case(
+            tool_gap_seconds=float(params["tool_gap_seconds"]),
+            tool_return_probability=float(params["tool_return_probability"]),
+            seed=base_manifest.seed,
+        )
+    elif base_manifest.series is ExperimentSeries.P3_BRANCH_CACHE_PRESSURE:
+        expected = _p3_program_case(
+            branch_width=int(params["branch_width"]),
+            speculative_fraction=float(params["speculative_fraction"]),
+            seed=base_manifest.seed,
+        )
+    else:
+        raise ValueError("C7.3c base manifest must be P2 or P3")
+    if case.fingerprint != expected.fingerprint:
+        raise ValueError(
+            "Program case does not match deterministic realization of the base C7 manifest"
+        )
+
+
 def build_retention_manifest(
     *,
     case: RetentionProgramCase,
@@ -670,6 +700,7 @@ def build_retention_manifest(
     policy_id: RetentionPolicyID,
     ttl_seconds: float | None = None,
 ) -> C73RetentionManifest:
+    validate_case_matches_base_manifest(case, base_manifest)
     if base_manifest.policy_id is not PolicyID.B4:
         raise ValueError("C7.3c must hold the underlying routing/control policy at B4")
     if base_manifest.workload_class is not WorkloadClass.SYNTHETIC_STRESS:
@@ -874,6 +905,7 @@ class C73CPairedEvaluationProtocol:
             "paired_fairness": {
                 "same_program_case_fingerprint": True,
                 "same_base_c7_manifest_fingerprint": True,
+                "case_must_regenerate_exactly_from_base_manifest_parameters_and_seed": True,
                 "same_semantic_validity_outcomes": True,
                 "same_event_stream": True,
                 "same_state_size_and_capacity": True,
@@ -927,8 +959,8 @@ class C73CPairedEvaluationProtocol:
                 "target_lifecycle_during_gap": "WAITING",
                 "pressure_admission_gap_fractions": [0.25, 0.5, 0.75],
                 "tool_return_is_common_bernoulli_threshold": True,
-                "return_event": "WAITING target -> ACTIVE -> semantically-valid reuse lookup",
-                "no_return_event": "WAITING target -> TERMINAL; Session ends; no reuse opportunity",
+                "return_event": "WAITING-only State dependency set gains ACTIVE child dependency; semantically-valid reuse lookup; waiting ancestor completes",
+                "no_return_event": "WAITING dependency completes to TERMINAL; Session ends; no reuse opportunity",
                 "reference_working_set_states": 4,
             },
             "p3_realization": {
@@ -939,7 +971,7 @@ class C73CPairedEvaluationProtocol:
                     "WAITING": "otherwise",
                 },
                 "resolution": {
-                    "WAITING": "ACTIVE then semantically-valid reuse lookup",
+                    "WAITING": "required branch gains ACTIVE continuation dependency before semantically-valid reuse lookup",
                     "SPECULATIVE": "TERMINAL without reuse lookup",
                 },
                 "extra_waiting_active_ratio_parameter": False,
@@ -952,6 +984,8 @@ class C73CPairedEvaluationProtocol:
                 "CCR": "ratio-of-sums cold eligible executions / eligible continuation executions",
                 "P2_TOOL_RETURN_TTFT": "arithmetic mean over common returning-Program subset",
                 "zero_denominator_label": C73C_INSUFFICIENT_DENOMINATOR_LABEL,
+                "zero_denominator_bootstrap_resample_rule": "fail cell/metric interval closed; never skip or replace a resample",
+                "p2_ttft_minimum_returning_programs_for_inference": C7_CONVERGENCE_PREFIXES[0],
                 "rr_ccr_algebraically_identical_under_fixed_1024_token_projection": True,
                 "rr_ccr_independent_corroboration_claim": False,
             },
@@ -980,6 +1014,7 @@ class C73CPairedEvaluationProtocol:
                 "primary_baselines": [
                     RetentionPolicyID.LRU.value,
                     f"{RetentionPolicyID.FIXED_TTL.value}({C73_PRIMARY_TTL_SECONDS:g}s)",
+                    RetentionPolicyID.SESSION_PINNING.value,
                 ],
                 "difference_orientation": "LIFECYCLE_B4 - baseline",
                 "favorable_direction": {
@@ -991,7 +1026,7 @@ class C73CPairedEvaluationProtocol:
                 },
                 "cell_support": (
                     "capacity-comparable for all 64 Programs; no semantic violation; "
-                    "paired 95% interval favorable versus both primary baselines"
+                    "paired 95% interval favorable versus all three primary baselines"
                 ),
                 "meaningful_range": (
                     "connected component of >=2 immediately adjacent cells on one primary surface "
