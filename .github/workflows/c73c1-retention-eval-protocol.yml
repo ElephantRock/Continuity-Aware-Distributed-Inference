@@ -57,7 +57,7 @@ jobs:
           python -m experiments.c73c_protocol > /tmp/c73c1-a.json
           python -m experiments.c73c_protocol > /tmp/c73c1-b.json
           cmp /tmp/c73c1-a.json /tmp/c73c1-b.json
-      - name: Verify parent identities and pre-result boundary
+      - name: Verify frozen identities and pre-result boundary
         run: |
           python - <<'PY'
           import json
@@ -67,8 +67,10 @@ jobs:
               C73C_FROZEN_C71_FINGERPRINT,
               C73C_FROZEN_C73A_FINGERPRINT,
               C73C_FROZEN_STATE_SIZE_MAP_FINGERPRINT,
+              C73C_PROTOCOL_FINGERPRINT,
           )
 
+          expected = '694f3c4e24ecca61b5c265e26f8417eafbcd4c932af3f9e60813fbb76d1b6800'
           payload = json.loads(Path('/tmp/c73c1-a.json').read_text())
           protocol = payload['protocol']
           assert protocol['schema'] == 'cadi.c7.3c.paired-retention-evaluation-protocol.v1'
@@ -76,15 +78,20 @@ jobs:
           assert C73C_FROZEN_C71_FINGERPRINT == '706e0d5fff362a1eda8c906b957c914251c6e7949bac6be3c2c143ae21625474'
           assert C73C_FROZEN_C73A_FINGERPRINT == 'f6165cb9248f5f4292846942e797e5ddcd8d004027ad503b2a7de35210021379'
           assert C73C_FROZEN_STATE_SIZE_MAP_FINGERPRINT == '36bacaad6462ca3e5eeb2688040e4dcf0d829849158c5b5ad9bad3c58afe173b'
+          assert C73C_PROTOCOL_FINGERPRINT == expected
+          assert payload['protocol_fingerprint'] == expected
           assert protocol['comparative_result_inspection'] == 'NONE'
           assert protocol['full_cartesian_search_forbidden'] is True
           assert protocol['statistics']['bootstrap_resamples'] == 10000
           assert protocol['statistics']['bootstrap_seed'] == 20260911
+          assert protocol['paired_fairness']['base_manifest_exact_series_parameter_set_and_psrc4_required'] is True
+          assert protocol['h5_rule']['primary_baselines'] == ['LRU', 'FIXED_TTL(5s)', 'SESSION_PINNING']
+          assert protocol['h5_rule']['single_hardware_ttft_can_trigger_h5'] is False
           assert 'policy_results' not in protocol
           assert 'p2_results' not in protocol
           assert 'p3_results' not in protocol
           source = Path('experiments/c73c_protocol.py').read_text()
           assert 'run_retention_program(' not in source
-          print('candidate_protocol_fingerprint=' + payload['protocol_fingerprint'])
+          print('frozen_protocol_fingerprint=' + payload['protocol_fingerprint'])
           print('comparative_result_inspection=NONE')
           PY
