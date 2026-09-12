@@ -1,0 +1,179 @@
+name: c73c2-retention-eval-results
+
+on:
+  push:
+    branches:
+      - c7/retention-eval-results
+    paths:
+      - .github/workflows/c73c2-retention-eval-results.yml
+      - experiments/c73c_execute.py
+      - experiments/c73c_protocol.py
+      - experiments/c73_retention_engine.py
+      - experiments/c73_retention_protocol.py
+      - experiments/c7_protocol.py
+      - tests/experiments/test_c73c_execute.py
+      - spec/56-c7.3c2-retention-results.md
+      - artifacts/c7.3c2/paired-retention-results.json
+      - pyproject.toml
+  pull_request:
+    paths:
+      - .github/workflows/c73c2-retention-eval-results.yml
+      - experiments/c73c_execute.py
+      - experiments/c73c_protocol.py
+      - experiments/c73_retention_engine.py
+      - experiments/c73_retention_protocol.py
+      - experiments/c7_protocol.py
+      - tests/experiments/test_c73c_execute.py
+      - spec/56-c7.3c2-retention-results.md
+      - artifacts/c7.3c2/paired-retention-results.json
+      - pyproject.toml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONHASHSEED: '0'
+  RESULT_PATH: artifacts/c7.3c2/paired-retention-results.json
+
+jobs:
+  verify-frozen-result:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Verify immutable checkout
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+          check-latest: false
+      - name: Install test runner only
+        run: python -m pip install 'pytest==8.4.2'
+      - name: Run C7.3c2 contract tests
+        run: python -m pytest -q tests/experiments/test_c73c_execute.py
+      - name: Recompute frozen artifact byte-identically
+        run: |
+          EXECUTION_SHA='8d241311bd2f457c0d22404f467d3e1b7fc757ae'
+          git cat-file -e "$EXECUTION_SHA^{commit}"
+          git diff --exit-code "$EXECUTION_SHA"..HEAD -- \
+            experiments/c73c_execute.py \
+            experiments/c73c_protocol.py \
+            experiments/c73_retention_engine.py \
+            experiments/c73_retention_protocol.py \
+            experiments/c7_protocol.py \
+            tests/experiments/test_c73c_execute.py \
+            spec/56-c7.3c2-retention-results.md
+          python -m experiments.c73c_execute \
+            --execution-git-sha "$EXECUTION_SHA" \
+            --output /tmp/c73c2-recomputed.json
+          cmp "$RESULT_PATH" /tmp/c73c2-recomputed.json
+          sha256sum "$RESULT_PATH"
+          echo 'byte_identical_reproduction=PASS'
+      - name: Verify frozen recorded artifact and print bounded review summary
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          EXPECTED_EXECUTION_SHA = '8d241311bd2f457c0d22404f467d3e1b7fc757ae'
+          EXPECTED_ARTIFACT_SHA = 'f725c4b8f0c56e24a6b8304d608bacf4b6c3c00b899a012898383cbfd9f45fa5'
+          EXPECTED_RESULT_FP = '911d1a6cd4cc6d65c41005187c1dedc93094c5a3e0e3f435aaff1690379908dc'
+          EXPECTED_PROTOCOL_FP = '694f3c4e24ecca61b5c265e26f8417eafbcd4c932af3f9e60813fbb76d1b6800'
+          EXPECTED_H5 = 'SUPPORTED_WITHIN_DECLARED_PHASE_SPACE'
+          PRIMARY_BASELINES = ('LRU', 'FIXED_TTL(5s)', 'SESSION_PINNING')
+
+          path = Path(os.environ['RESULT_PATH'])
+          raw = path.read_bytes()
+          assert hashlib.sha256(raw).hexdigest() == EXPECTED_ARTIFACT_SHA
+          payload = json.loads(raw)
+          result = payload['result']
+          canonical = json.dumps(
+              result, sort_keys=True, separators=(',', ':'), allow_nan=False
+          ).encode('utf-8')
+          assert hashlib.sha256(canonical).hexdigest() == payload['result_fingerprint']
+          assert payload['result_fingerprint'] == EXPECTED_RESULT_FP
+          assert result['schema'] == 'cadi.c7.3c2.paired-retention-result.v1'
+          assert result['execution_git_sha'] == EXPECTED_EXECUTION_SHA
+          assert result['frozen_identities']['c7_3c_protocol_fingerprint'] == EXPECTED_PROTOCOL_FP
+          assert result['execution_contract']['unique_logical_cell_count'] == 51
+          assert result['execution_contract']['surface_membership_count'] == 56
+          assert result['execution_contract']['seed_count'] == 64
+          assert result['execution_contract']['primary_baselines'] == list(PRIMARY_BASELINES)
+          assert result['execution_contract']['adaptive_early_stop'] is False
+          assert result['execution_contract']['rr_ccr_independent_corroboration_claim'] is False
+          assert result['h5']['decision'] == EXPECTED_H5
+          assert len(result['h5']['supporting_regions']) == 1
+          assert all(cell['hardware_invariance_pass'] for cell in result['cells'])
+
+          semantic_rejections = sum(
+              record['semantic_rejection_count']
+              for cell in result['cells']
+              for seed in cell['seed_records']
+              for record in seed['policy_records'].values()
+          )
+          assert semantic_rejections == 0
+
+          print('artifact_sha256=' + EXPECTED_ARTIFACT_SHA)
+          print('result_fingerprint=' + EXPECTED_RESULT_FP)
+          print('execution_git_sha=' + EXPECTED_EXECUTION_SHA)
+          print('h5_decision=' + EXPECTED_H5)
+          print('supporting_region_count=1')
+          print('semantic_rejection_count=0')
+          print('hardware_invariance=PASS')
+
+          cells_by_id = {cell['cell_id']: cell for cell in result['cells']}
+          for region_index, region in enumerate(result['h5']['supporting_regions']):
+              print('support_region=' + json.dumps({
+                  'index': region_index,
+                  'surface_id': region['surface_id'],
+                  'metric': region['metric'],
+                  'cell_count': len(region['cells']),
+                  'cells': region['cells'],
+              }, sort_keys=True, separators=(',', ':')))
+              assert len(region['cells']) >= 2
+              metric = region['metric']
+              for cell_ref in region['cells']:
+                  cell = cells_by_id[cell_ref['cell_id']]
+                  review = {
+                      'cell_id': cell['cell_id'],
+                      'parameters': cell['parameters'],
+                      'policy_metrics_seed64': {
+                          key: cell['policy_metrics_seed64'][key]
+                          for key in sorted(cell['policy_metrics_seed64'])
+                      },
+                      'primary_comparisons': {},
+                  }
+                  for baseline in PRIMARY_BASELINES:
+                      comp = cell['comparisons_vs_lifecycle_b4'][baseline]
+                      if metric == 'P2_TOOL_RETURN_TTFT':
+                          selected = comp['P2_TOOL_RETURN_TTFT']
+                      else:
+                          selected = comp['ratio_metrics'][metric]
+                      review['primary_comparisons'][baseline] = {
+                          'all_64_capacity_eligible_for_pair': comp['all_64_capacity_eligible_for_pair'],
+                          'no_semantic_violation': comp['no_semantic_violation'],
+                          'metric': selected,
+                      }
+                      assert comp['all_64_capacity_eligible_for_pair'] is True
+                      assert comp['no_semantic_violation'] is True
+                      if metric == 'P2_TOOL_RETURN_TTFT':
+                          assert selected['returning_program_count'] >= 32
+                          for hardware in ('a100-80gb', 'h100-80gb'):
+                              hw = selected['hardware'][hardware]
+                              assert hw['status'] == 'COMPARABLE'
+                              assert hw['favorable'] is True
+                      else:
+                          assert selected['status'] == 'COMPARABLE'
+                          assert selected['favorable'] is True
+                  print('support_cell_review=' + json.dumps(
+                      review, sort_keys=True, separators=(',', ':')
+                  ))
+          PY
