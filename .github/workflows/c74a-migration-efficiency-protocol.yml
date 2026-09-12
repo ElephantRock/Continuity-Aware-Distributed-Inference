@@ -1,0 +1,80 @@
+name: c74a-migration-efficiency-protocol
+
+on:
+  push:
+    branches:
+      - c7/migration-efficiency-protocol
+    paths:
+      - .github/workflows/c74a-migration-efficiency-protocol.yml
+      - experiments/c74_migration_protocol.py
+      - experiments/c7_protocol.py
+      - simulator/policies.py
+      - tests/experiments/test_c74_migration_protocol.py
+      - spec/57-c7.4a-migration-efficiency-protocol.md
+      - pyproject.toml
+  pull_request:
+    paths:
+      - .github/workflows/c74a-migration-efficiency-protocol.yml
+      - experiments/c74_migration_protocol.py
+      - experiments/c7_protocol.py
+      - simulator/policies.py
+      - tests/experiments/test_c74_migration_protocol.py
+      - spec/57-c7.4a-migration-efficiency-protocol.md
+      - pyproject.toml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONHASHSEED: '0'
+
+jobs:
+  protocol-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Verify immutable checkout
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+          check-latest: false
+      - name: Install test runner only
+        run: python -m pip install 'pytest==8.4.2'
+      - name: Run C7.4a contract tests
+        run: python -m pytest -q tests/experiments/test_c74_migration_protocol.py
+      - name: Reproduce protocol identity byte-identically
+        run: |
+          python -m experiments.c74_migration_protocol > /tmp/c74a-1.json
+          python -m experiments.c74_migration_protocol > /tmp/c74a-2.json
+          cmp /tmp/c74a-1.json /tmp/c74a-2.json
+          cat /tmp/c74a-1.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from experiments.c74_migration_protocol import (
+              C74_BASE_COMMIT,
+              C74_COMPARATIVE_RESULT_INSPECTION,
+              C74_FROZEN_C71_FINGERPRINT,
+              C74MigrationEfficiencyProtocol,
+          )
+
+          payload = json.loads(Path('/tmp/c74a-1.json').read_text())
+          assert C74_BASE_COMMIT == '32d77b6082583724ddace6e47856aa4db47f2957'
+          assert C74_FROZEN_C71_FINGERPRINT == '706e0d5fff362a1eda8c906b957c914251c6e7949bac6be3c2c143ae21625474'
+          assert C74_COMPARATIVE_RESULT_INSPECTION == 'NONE'
+          assert payload['comparative_result_inspection'] == 'NONE'
+          assert payload['p5_cell_count'] == 20
+          assert payload['rankable_scenario_count'] == 5
+          assert payload['unranked_scenario_count'] == 1
+          assert payload['protocol_fingerprint'] == C74MigrationEfficiencyProtocol().fingerprint
+          print('comparative_result_inspection=NONE')
+          print('candidate_protocol_fingerprint=' + payload['protocol_fingerprint'])
+          PY
