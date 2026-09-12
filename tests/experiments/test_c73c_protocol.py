@@ -294,7 +294,7 @@ def test_case_base_cross_binding_rejects_extra_axes_and_wrong_underlying_policy(
     with pytest.raises(ValueError, match="exactly the frozen P2/P3 parameter set"):
         retention_manifest_variants(case=case, base_manifest=extra)
 
-    wrong_policy = replace(base, policy_id=PolicyID.LRU)
+    wrong_policy = replace(base, policy_id=PolicyID.B0)
     with pytest.raises(ValueError, match="PolicyID.B4"):
         retention_manifest_variants(case=case, base_manifest=wrong_policy)
 
