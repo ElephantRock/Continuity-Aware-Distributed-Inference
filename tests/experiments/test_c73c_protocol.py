@@ -52,6 +52,11 @@ from experiments.c73c_protocol import (
 from simulator.policies import PolicyID
 
 
+C73C_EXPECTED_PROTOCOL_FINGERPRINT = (
+    "694f3c4e24ecca61b5c265e26f8417eafbcd4c932af3f9e60813fbb76d1b6800"
+)
+
+
 def _p2_gap_cache(gap: float = 5.0, ratio: float = 1.0) -> C73CPrimaryCell:
     return C73CPrimaryCell(C73CSurfaceID.P2_GAP_CACHE, gap, ratio)
 
@@ -70,11 +75,12 @@ def test_parent_identities_and_pre_result_boundary() -> None:
     assert C73C_BASE_COMMIT == "451cafddb21d667f6abb73f48477560c850cda20"
     assert C73C_FROZEN_C71_FINGERPRINT == C7_PROTOCOL_FINGERPRINT
     assert C73C_FROZEN_C73A_FINGERPRINT == C73_RETENTION_PROTOCOL_FINGERPRINT
+    assert C73C_PROTOCOL_FINGERPRINT == C73C_EXPECTED_PROTOCOL_FINGERPRINT
+    assert protocol.fingerprint == C73C_EXPECTED_PROTOCOL_FINGERPRINT
     assert payload["comparative_result_inspection"] == "NONE"
     assert "policy_results" not in payload
     assert "p2_results" not in payload
     assert "p3_results" not in payload
-    assert len(C73C_PROTOCOL_FINGERPRINT) == 64
 
 
 def test_primary_surfaces_are_compact_and_hold_reference_axes() -> None:
@@ -402,6 +408,7 @@ def test_h5_contract_keeps_infeasibility_and_null_outcome_explicit() -> None:
     assert "both accepted C6 hardware-profile strata" in payload["h5_rule"]["ttft_hardware_support_rule"]
     assert payload["metric_estimators"]["p2_ttft_minimum_returning_programs_for_inference"] == 8
     assert payload["paired_fairness"]["case_must_regenerate_exactly_from_base_manifest_parameters_and_seed"] is True
+    assert payload["paired_fairness"]["base_manifest_exact_series_parameter_set_and_psrc4_required"] is True
     assert payload["metric_estimators"][
         "rr_ccr_independent_corroboration_claim"
     ] is False
