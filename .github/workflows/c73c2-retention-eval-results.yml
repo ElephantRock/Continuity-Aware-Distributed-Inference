@@ -1,0 +1,73 @@
+name: c73c2-retention-eval-results
+
+on:
+  push:
+    branches:
+      - c7/retention-eval-results
+    paths:
+      - .github/workflows/c73c2-retention-eval-results.yml
+      - experiments/c73c_execute.py
+      - experiments/c73c_protocol.py
+      - experiments/c73_retention_engine.py
+      - experiments/c73_retention_protocol.py
+      - experiments/c7_protocol.py
+      - tests/experiments/test_c73c_execute.py
+      - spec/56-c7.3c2-retention-results.md
+      - pyproject.toml
+  pull_request:
+    paths:
+      - .github/workflows/c73c2-retention-eval-results.yml
+      - experiments/c73c_execute.py
+      - experiments/c73c_protocol.py
+      - experiments/c73_retention_engine.py
+      - experiments/c73_retention_protocol.py
+      - experiments/c7_protocol.py
+      - tests/experiments/test_c73c_execute.py
+      - spec/56-c7.3c2-retention-results.md
+      - pyproject.toml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONHASHSEED: '0'
+
+jobs:
+  preflight-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Verify immutable checkout
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+          check-latest: false
+      - name: Install test runner only
+        run: python -m pip install 'pytest==8.4.2'
+      - name: Run C7.3c2 pre-execution contract tests
+        run: python -m pytest -q tests/experiments/test_c73c_execute.py
+      - name: Verify frozen parent identities without executing outcomes
+        run: |
+          python - <<'PY'
+          from experiments.c73c_execute import (
+              C73C2_BASE_COMMIT,
+              C73C2_FROZEN_PROTOCOL_FINGERPRINT,
+              C73C2_PRIMARY_BASELINES,
+              logical_primary_cells,
+          )
+          assert C73C2_BASE_COMMIT == 'e8eb46b482c89c9bd32d820c1ef5cbecbff15d66'
+          assert C73C2_FROZEN_PROTOCOL_FINGERPRINT == '694f3c4e24ecca61b5c265e26f8417eafbcd4c932af3f9e60813fbb76d1b6800'
+          assert C73C2_PRIMARY_BASELINES == ('LRU', 'FIXED_TTL(5s)', 'SESSION_PINNING')
+          cells = logical_primary_cells()
+          assert len(cells) == 51
+          assert sum(len(cell.memberships) for cell in cells) == 56
+          print('comparative_execution=NOT_RUN')
+          PY
