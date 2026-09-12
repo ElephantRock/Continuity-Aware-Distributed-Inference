@@ -57,6 +57,24 @@ jobs:
         run: python -m pip install 'pytest==8.4.2'
       - name: Run C7.3c2 contract tests
         run: python -m pytest -q tests/experiments/test_c73c_execute.py
+      - name: Recompute frozen artifact byte-identically
+        run: |
+          EXECUTION_SHA='8d241311bd2f457c0d22404f467d3e1b7fc757ae'
+          git cat-file -e "$EXECUTION_SHA^{commit}"
+          git diff --exit-code "$EXECUTION_SHA"..HEAD -- \
+            experiments/c73c_execute.py \
+            experiments/c73c_protocol.py \
+            experiments/c73_retention_engine.py \
+            experiments/c73_retention_protocol.py \
+            experiments/c7_protocol.py \
+            tests/experiments/test_c73c_execute.py \
+            spec/56-c7.3c2-retention-results.md
+          python -m experiments.c73c_execute \
+            --execution-git-sha "$EXECUTION_SHA" \
+            --output /tmp/c73c2-recomputed.json
+          cmp "$RESULT_PATH" /tmp/c73c2-recomputed.json
+          sha256sum "$RESULT_PATH"
+          echo 'byte_identical_reproduction=PASS'
       - name: Verify frozen recorded artifact and print bounded review summary
         run: |
           python - <<'PY'
