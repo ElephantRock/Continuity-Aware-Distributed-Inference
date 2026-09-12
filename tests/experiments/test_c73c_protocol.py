@@ -260,6 +260,24 @@ def test_retention_manifest_variants_share_case_base_and_capacity() -> None:
     assert C73_PRIMARY_TTL_SECONDS in ttl_values
 
 
+def test_retention_manifest_rejects_case_base_axis_or_seed_mismatch() -> None:
+    base_cell = _p2_gap_cache(5.0, 1.0)
+    mismatched_cell = _p2_gap_cache(30.0, 1.0)
+    base = build_base_manifest(
+        base_cell,
+        seed=5,
+        hardware_id="a100-80gb",
+        execution_git_commit=C73C_BASE_COMMIT,
+    )
+    wrong_case = build_primary_program_case(mismatched_cell, seed=5)
+    with pytest.raises(ValueError, match="does not match deterministic realization"):
+        retention_manifest_variants(case=wrong_case, base_manifest=base)
+
+    right_case_wrong_seed = build_primary_program_case(base_cell, seed=6)
+    with pytest.raises(ValueError, match="does not match deterministic realization"):
+        retention_manifest_variants(case=right_case_wrong_seed, base_manifest=base)
+
+
 def test_metric_components_preserve_ratio_numerators_and_zero_denominators() -> None:
     result = RetentionPolicyResult(
         "0" * 64,
@@ -356,7 +374,11 @@ def test_h5_contract_keeps_infeasibility_and_null_outcome_explicit() -> None:
     assert payload["capacity_infeasibility"]["label"] == C73C_INFEASIBLE_LABEL
     assert payload["capacity_infeasibility"]["infeasible_is_policy_win"] is False
     assert payload["h5_rule"]["null_decision"] == C73C_H5_NOT_SUPPORTED
-    assert payload["h5_rule"]["primary_baselines"] == ["LRU", "FIXED_TTL(5s)"]
+    assert payload["h5_rule"]["primary_baselines"] == [
+        "LRU", "FIXED_TTL(5s)", "SESSION_PINNING"
+    ]
+    assert payload["metric_estimators"]["p2_ttft_minimum_returning_programs_for_inference"] == 8
+    assert payload["paired_fairness"]["case_must_regenerate_exactly_from_base_manifest_parameters_and_seed"] is True
     assert payload["metric_estimators"][
         "rr_ccr_independent_corroboration_claim"
     ] is False
