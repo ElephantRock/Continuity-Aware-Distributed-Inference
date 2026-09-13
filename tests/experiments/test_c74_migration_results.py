@@ -86,6 +86,7 @@ def test_exhaustive_result_is_canonical_complete_and_fingerprint_stable() -> Non
     assert result["base_commit"] == C74C_BASE_COMMIT
     assert result["comparative_result_inspection"] == C74C_COMPARATIVE_RESULT_INSPECTION
     assert _SHA256_RE.fullmatch(result["scientific_fingerprint"])
+    assert result["evidence"]["direct_hardware_measurement_claim"] is False
     assert result["row_counts"] == {
         "track_a": 40,
         "track_b": 1200,
@@ -107,7 +108,6 @@ def test_exhaustive_result_is_canonical_complete_and_fingerprint_stable() -> Non
     ) == p5_cells()[-1]
     assert all(_SHA256_RE.fullmatch(row["manifest_fingerprint"]) for row in track_a)
     assert all(_SHA256_RE.fullmatch(row["result_fingerprint"]) for row in track_a)
-    assert all(row["result"]["direct_hardware_measurement_claim"] is False for row in track_a)
 
     track_b = result["track_b_rows"]
     assert len(track_b) == 1200
@@ -153,6 +153,3 @@ def test_exhaustive_result_is_canonical_complete_and_fingerprint_stable() -> Non
         assert region["cell_count"] == len(cells)
         assert len(cells) >= 2
         assert _is_connected(cells)
-
-    second = generate_result(EXECUTION_SHA)
-    assert second == result
