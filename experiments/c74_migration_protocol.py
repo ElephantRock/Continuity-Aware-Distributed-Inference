@@ -429,7 +429,11 @@ class C74MigrationEfficiencyProtocol:
         _git_sha(self.c44_binding_safety_merge, "c44_binding_safety_merge")
         if self.c44_binding_safety_merge != C74_C44_BINDING_SAFETY_MERGE:
             raise ValueError("C7.4a must bind frozen C4.4 Binding-safety merge")
-        if C74_CANONICAL_DETERMINISTIC_SEED != 0:
+        if (
+            not isinstance(C74_CANONICAL_DETERMINISTIC_SEED, int)
+            or isinstance(C74_CANONICAL_DETERMINISTIC_SEED, bool)
+            or C74_CANONICAL_DETERMINISTIC_SEED != 0
+        ):
             raise RuntimeError("C7.4a deterministic manifest seed drift")
         if len(p5_cells()) != 20:
             raise RuntimeError("C7.4a P5 grid must contain exactly 20 cells")
@@ -493,12 +497,20 @@ class C74MigrationEfficiencyProtocol:
                     ),
                     "one_recovery_action_at_a_time": True,
                     "concurrent_candidate_means_semantic_not_link_overlap": True,
+                    "resource_assumptions": {
+                        "source_availability_is_common_scenario_fact": True,
+                        "selected_transfer_uses_one_predeclared_source": True,
+                        "destination_capacity_available_for_selected_state": True,
+                        "capacity_pressure_or_eviction_faults": False,
+                    },
                 },
             },
             "strategy_contract": {
                 "same_physical_fault_realization": True,
                 "same_cost_tables": True,
                 "same_cost_comparison": True,
+                "transfer_cost_rule": "transfer_seconds <= recompute_seconds",
+                "transfer_cost_tie_action": C74RecoveryAction.TRANSFER.value,
                 "same_common_c1_commit_authority": True,
                 "cost_knowledge_is_b4_only": False,
                 "policy_rules": {
