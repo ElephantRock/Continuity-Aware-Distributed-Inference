@@ -10,11 +10,9 @@ on:
       - experiments/c74_migration_engine.py
       - experiments/c74_migration_protocol.py
       - experiments/c7_protocol.py
-      - simulator/inference_cost_runtime.py
-      - simulator/policies.py
-      - continuity/core.py
-      - continuity/core_base.py
-      - continuity/invariants.py
+      - simulator/**
+      - continuity/**
+      - artifacts/c6.4f/exhaustive-source-equivalence.json
       - tests/experiments/test_c74_migration_results.py
       - tests/experiments/test_c74c_result_freeze.py
       - artifacts/c7.4c/migration-efficiency-result-manifest.json
@@ -27,11 +25,9 @@ on:
       - experiments/c74_migration_engine.py
       - experiments/c74_migration_protocol.py
       - experiments/c7_protocol.py
-      - simulator/inference_cost_runtime.py
-      - simulator/policies.py
-      - continuity/core.py
-      - continuity/core_base.py
-      - continuity/invariants.py
+      - simulator/**
+      - continuity/**
+      - artifacts/c6.4f/exhaustive-source-equivalence.json
       - tests/experiments/test_c74_migration_results.py
       - tests/experiments/test_c74c_result_freeze.py
       - artifacts/c7.4c/migration-efficiency-result-manifest.json
@@ -44,6 +40,7 @@ permissions:
 
 env:
   PYTHONHASHSEED: '0'
+  REVIEWED_C74B_MERGE: '9227e36883af785aef1dc7d253404cee0e8675d1'
   FROZEN_GENERATION_SHA: '4e9d9ad5fd119a266dfb9282274cd414354d0d72'
   EXPECTED_SCIENTIFIC_FINGERPRINT: 'a8d435456b1d784592eda96e3352190456fb9aeb34dda6c12c5a0edb58b54944'
   EXPECTED_ARTIFACT_SHA256: '3550516d9d2355849f5d6a731d7577f906856ec94a60d8947ad81e8382e25e18'
@@ -62,6 +59,15 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Verify generation used the reviewed C7.4b mechanics tree
+        run: |
+          git diff --exit-code "$REVIEWED_C74B_MERGE" "$FROZEN_GENERATION_SHA" -- \
+            experiments/c74_migration_engine.py \
+            experiments/c74_migration_protocol.py \
+            experiments/c7_protocol.py \
+            simulator \
+            continuity \
+            artifacts/c6.4f/exhaustive-source-equivalence.json
       - name: Verify frozen scientific code is unchanged since result generation
         run: |
           git diff --exit-code "$FROZEN_GENERATION_SHA" HEAD -- \
@@ -69,11 +75,9 @@ jobs:
             experiments/c74_migration_engine.py \
             experiments/c74_migration_protocol.py \
             experiments/c7_protocol.py \
-            simulator/inference_cost_runtime.py \
-            simulator/policies.py \
-            continuity/core.py \
-            continuity/core_base.py \
-            continuity/invariants.py
+            simulator \
+            continuity \
+            artifacts/c6.4f/exhaustive-source-equivalence.json
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12.14'
@@ -123,6 +127,7 @@ jobs:
           assert manifest['h6_efficiency'] == payload['h6_efficiency']
           assert manifest['track_a_summary'] == payload['track_a_summary']
           assert manifest['track_b_summary'] == payload['track_b_summary']
+          print('reviewed_c74b_merge=' + os.environ['REVIEWED_C74B_MERGE'])
           print('frozen_generation_sha=' + os.environ['FROZEN_GENERATION_SHA'])
           print('scientific_fingerprint=' + payload['scientific_fingerprint'])
           print('artifact_sha256=' + os.environ['EXPECTED_ARTIFACT_SHA256'])
