@@ -1,0 +1,123 @@
+name: c74c-migration-efficiency-results
+
+on:
+  push:
+    branches:
+      - c7/migration-efficiency-results
+    paths:
+      - .github/workflows/c74c-migration-efficiency-results.yml
+      - experiments/c74_migration_results.py
+      - experiments/c74_migration_engine.py
+      - experiments/c74_migration_protocol.py
+      - experiments/c7_protocol.py
+      - simulator/inference_cost_runtime.py
+      - simulator/policies.py
+      - continuity/core.py
+      - continuity/core_base.py
+      - continuity/invariants.py
+      - tests/experiments/test_c74_migration_results.py
+      - pyproject.toml
+  pull_request:
+    paths:
+      - .github/workflows/c74c-migration-efficiency-results.yml
+      - experiments/c74_migration_results.py
+      - experiments/c74_migration_engine.py
+      - experiments/c74_migration_protocol.py
+      - experiments/c7_protocol.py
+      - simulator/inference_cost_runtime.py
+      - simulator/policies.py
+      - continuity/core.py
+      - continuity/core_base.py
+      - continuity/invariants.py
+      - tests/experiments/test_c74_migration_results.py
+      - pyproject.toml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONHASHSEED: '0'
+
+jobs:
+  frozen-result:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Verify immutable checkout
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+          check-latest: false
+      - name: Install test runner only
+        run: python -m pip install 'pytest==8.4.2'
+      - name: Run C7.4c result-contract tests
+        run: python -m pytest -q tests/experiments/test_c74_migration_results.py
+      - name: Generate frozen result twice
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python -m experiments.c74_migration_results \
+            --execution-git-commit "$EXPECTED_SHA" \
+            --output /tmp/c74c-1.json
+          python -m experiments.c74_migration_results \
+            --execution-git-commit "$EXPECTED_SHA" \
+            --output /tmp/c74c-2.json
+          cmp /tmp/c74c-1.json /tmp/c74c-2.json
+      - name: Verify and summarize frozen result
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          ARTIFACT_SHA256="$(sha256sum /tmp/c74c-1.json | awk '{print $1}')"
+          export ARTIFACT_SHA256
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          payload = json.loads(Path('/tmp/c74c-1.json').read_text())
+          assert payload['schema'] == 'cadi.c7.4c.migration-efficiency-result.v1'
+          assert payload['execution_git_commit'] == os.environ['EXPECTED_SHA']
+          assert payload['base_commit'] == '9227e36883af785aef1dc7d253404cee0e8675d1'
+          assert payload['identities']['c74b_engine_fingerprint'] == '2083e1a227330ea1a0ac57caf166cf8777865cbe6e3c6d259796cfd56fe02c32'
+          assert payload['row_counts'] == {
+              'track_a': 40,
+              'track_b': 1200,
+              'track_b_rankable': 1000,
+              'track_b_partial_unranked': 200,
+          }
+          assert payload['evidence']['direct_hardware_measurement_claim'] is False
+          assert re.fullmatch(r'[0-9a-f]{64}', payload['scientific_fingerprint'])
+          assert re.fullmatch(r'[0-9a-f]{64}', os.environ['ARTIFACT_SHA256'])
+          assert payload['h6_efficiency']['h6_efficiency_classification'] in {
+              'EFFICIENCY_STRENGTHENED_WITHIN_DECLARED_PHASE_SPACE',
+              'EFFICIENCY_NOT_STRENGTHENED_WITHIN_DECLARED_PHASE_SPACE',
+          }
+          print('execution_git_commit=' + payload['execution_git_commit'])
+          print('scientific_fingerprint=' + payload['scientific_fingerprint'])
+          print('artifact_sha256=' + os.environ['ARTIFACT_SHA256'])
+          print('h6_efficiency=' + payload['h6_efficiency']['h6_efficiency_classification'])
+          print('support_region_count=' + str(payload['h6_efficiency']['support_region_count']))
+          print('track_a_summary=' + json.dumps(payload['track_a_summary'], sort_keys=True, separators=(',', ':')))
+          print('track_b_summary=' + json.dumps(payload['track_b_summary'], sort_keys=True, separators=(',', ':')))
+          print('scenario_summaries=' + json.dumps(payload['h6_efficiency']['scenario_summaries'], sort_keys=True, separators=(',', ':')))
+          PY
+      - name: Stage canonical result artifact
+        run: |
+          mkdir -p /tmp/c74c-artifact
+          cp /tmp/c74c-1.json /tmp/c74c-artifact/migration-efficiency-result.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: c74c-migration-efficiency-result
+          path: /tmp/c74c-artifact/migration-efficiency-result.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
