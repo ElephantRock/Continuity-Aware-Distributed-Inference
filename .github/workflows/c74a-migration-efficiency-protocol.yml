@@ -10,6 +10,7 @@ on:
       - experiments/c7_protocol.py
       - simulator/policies.py
       - tests/experiments/test_c74_migration_protocol.py
+      - tests/experiments/test_c74_protocol_fingerprint_freeze.py
       - spec/57-c7.4a-migration-efficiency-protocol.md
       - pyproject.toml
   pull_request:
@@ -19,6 +20,7 @@ on:
       - experiments/c7_protocol.py
       - simulator/policies.py
       - tests/experiments/test_c74_migration_protocol.py
+      - tests/experiments/test_c74_protocol_fingerprint_freeze.py
       - spec/57-c7.4a-migration-efficiency-protocol.md
       - pyproject.toml
   workflow_dispatch:
@@ -49,7 +51,10 @@ jobs:
       - name: Install test runner only
         run: python -m pip install 'pytest==8.4.2'
       - name: Run C7.4a contract tests
-        run: python -m pytest -q tests/experiments/test_c74_migration_protocol.py
+        run: |
+          python -m pytest -q \
+            tests/experiments/test_c74_migration_protocol.py \
+            tests/experiments/test_c74_protocol_fingerprint_freeze.py
       - name: Reproduce protocol identity byte-identically
         run: |
           python -m experiments.c74_migration_protocol > /tmp/c74a-1.json
@@ -66,6 +71,9 @@ jobs:
               C74MigrationEfficiencyProtocol,
           )
 
+          EXPECTED_C74_PROTOCOL_FINGERPRINT = (
+              '21601257767442204f1acfae4c6e2e42959e37701c9236a2d2b560a2dda486b6'
+          )
           payload = json.loads(Path('/tmp/c74a-1.json').read_text())
           assert C74_BASE_COMMIT == '32d77b6082583724ddace6e47856aa4db47f2957'
           assert C74_FROZEN_C71_FINGERPRINT == '706e0d5fff362a1eda8c906b957c914251c6e7949bac6be3c2c143ae21625474'
@@ -74,7 +82,8 @@ jobs:
           assert payload['p5_cell_count'] == 20
           assert payload['rankable_scenario_count'] == 5
           assert payload['unranked_scenario_count'] == 1
-          assert payload['protocol_fingerprint'] == C74MigrationEfficiencyProtocol().fingerprint
+          assert payload['protocol_fingerprint'] == EXPECTED_C74_PROTOCOL_FINGERPRINT
+          assert C74MigrationEfficiencyProtocol().fingerprint == EXPECTED_C74_PROTOCOL_FINGERPRINT
           print('comparative_result_inspection=NONE')
-          print('candidate_protocol_fingerprint=' + payload['protocol_fingerprint'])
+          print('frozen_protocol_fingerprint=' + EXPECTED_C74_PROTOCOL_FINGERPRINT)
           PY
