@@ -129,6 +129,11 @@ def test_parent_identities_and_pre_result_boundary_are_exact() -> None:
     assert C74_TIMING_EVIDENCE == "SIMULATED_SOURCE_MODEL_DERIVED_P_SRC2"
 
 
+def test_protocol_rejects_closed_correctness_dependency_drift() -> None:
+    with pytest.raises(ValueError, match="frozen C4.4 Binding-safety merge"):
+        C74MigrationEfficiencyProtocol(c44_binding_safety_merge="f" * 40)
+
+
 def test_p5_grid_is_exact_and_state_bytes_are_source_domain_points() -> None:
     cells = p5_cells()
     assert len(cells) == 20
@@ -349,6 +354,33 @@ def test_manifest_rejects_protocol_axis_seed_and_hash_drift() -> None:
             64,
             seed=1,
         )
+    with pytest.raises(TypeError, match="seed must be an integer"):
+        C74CrossoverManifest(
+            EXECUTION_SHA,
+            C74_PROTOCOL_FINGERPRINT,
+            "a100-80gb",
+            1,
+            64,
+            seed=False,
+        )
+
+    base = _base_manifest()
+    with pytest.raises(TypeError, match="seed must be an integer"):
+        C74FailoverManifest(
+            execution_git_commit=EXECUTION_SHA,
+            base_c7_manifest_fingerprint=base.fingerprint,
+            protocol_fingerprint=C74_PROTOCOL_FINGERPRINT,
+            scenario_id=C74ScenarioID.MATCHED_PLANNED_MIGRATION,
+            policy_id=PolicyID.B4,
+            hardware_id="h100-80gb",
+            state_tokens=4,
+            recompute_tokens=256,
+            program_case_fingerprint=ONE_SHA256,
+            physical_fault_fingerprint=TWO_SHA256,
+            policy_view_fingerprint=THREE_SHA256,
+            seed=False,
+        )
+
     with pytest.raises(ValueError, match="SHA-256"):
         C74FailoverManifest(
             execution_git_commit=EXECUTION_SHA,
