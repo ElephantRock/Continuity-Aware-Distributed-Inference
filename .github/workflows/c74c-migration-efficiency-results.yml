@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - c7/migration-efficiency-results
+      - main
     paths:
       - .github/workflows/c74c-migration-efficiency-results.yml
       - experiments/c74_migration_results.py
