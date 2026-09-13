@@ -31,7 +31,6 @@ from simulator.policies import PolicyID, project_observation
 
 EXECUTION_SHA = "a" * 40
 TRANSFER_FIXTURE = ("a100-80gb", 1, 4096)
-RECOMPUTE_FIXTURE = ("a100-80gb", 64, 64)
 
 
 def _manifests(
@@ -51,6 +50,24 @@ def _manifests(
         state_tokens=state_tokens,
         recompute_tokens=recompute_tokens,
         observed_reconciliation=observed_reconciliation,
+    )
+
+
+def _synthetic_cost(
+    *,
+    transfer_seconds: float,
+    recompute_seconds: float,
+    crossover: C74CrossoverClass,
+) -> C74BCrossoverPoint:
+    return C74BCrossoverPoint(
+        manifest_fingerprint="0" * 64,
+        hardware_id="a100-80gb",
+        state_tokens=1,
+        state_bytes=524_288,
+        recompute_tokens=64,
+        transfer_seconds=transfer_seconds,
+        recompute_seconds=recompute_seconds,
+        crossover=crossover,
     )
 
 
@@ -83,8 +100,8 @@ def test_exact_c6_single_cell_lookup_is_deterministic_and_finite() -> None:
     assert first.crossover in set(C74CrossoverClass)
 
 
-def test_fixture_cells_cover_transfer_and_recompute_mechanics_without_full_sweep() -> None:
-    transfer = evaluate_crossover_cell(
+def test_mechanics_branch_coverage_does_not_inspect_full_p5_outcome() -> None:
+    accepted_single_cell = evaluate_crossover_cell(
         build_crossover_manifest(
             execution_git_commit=EXECUTION_SHA,
             hardware_id=TRANSFER_FIXTURE[0],
@@ -92,18 +109,37 @@ def test_fixture_cells_cover_transfer_and_recompute_mechanics_without_full_sweep
             recompute_tokens=TRANSFER_FIXTURE[2],
         )
     )
-    recompute = evaluate_crossover_cell(
+    assert accepted_single_cell.transfer_seconds < accepted_single_cell.recompute_seconds
+    assert accepted_single_cell.crossover is C74CrossoverClass.TRANSFER_FASTER
+
+    synthetic_recompute = _synthetic_cost(
+        transfer_seconds=2.0,
+        recompute_seconds=1.0,
+        crossover=C74CrossoverClass.RECOMPUTE_FASTER,
+    )
+    assert synthetic_recompute.crossover is C74CrossoverClass.RECOMPUTE_FASTER
+
+
+def test_nonfinite_and_out_of_domain_cost_inputs_fail_closed() -> None:
+    with pytest.raises(ValueError, match="frozen C7.1 P5 axis"):
         build_crossover_manifest(
             execution_git_commit=EXECUTION_SHA,
-            hardware_id=RECOMPUTE_FIXTURE[0],
-            state_tokens=RECOMPUTE_FIXTURE[1],
-            recompute_tokens=RECOMPUTE_FIXTURE[2],
+            hardware_id="a100-80gb",
+            state_tokens=2,
+            recompute_tokens=64,
         )
-    )
-    assert transfer.transfer_seconds < transfer.recompute_seconds
-    assert transfer.crossover is C74CrossoverClass.TRANSFER_FASTER
-    assert recompute.transfer_seconds > recompute.recompute_seconds
-    assert recompute.crossover is C74CrossoverClass.RECOMPUTE_FASTER
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        _synthetic_cost(
+            transfer_seconds=math.nan,
+            recompute_seconds=1.0,
+            crossover=C74CrossoverClass.TIE,
+        )
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        _synthetic_cost(
+            transfer_seconds=1.0,
+            recompute_seconds=math.inf,
+            crossover=C74CrossoverClass.TRANSFER_FASTER,
+        )
 
 
 def test_b0_b1_b2_remain_conservative_recompute() -> None:
@@ -203,37 +239,31 @@ def test_destination_failure_charges_completed_transfer_before_safe_recompute() 
     assert result.semantic_violation_count == 0
 
 
-def test_recompute_faster_mechanics_apply_equally_to_b3_and_b4() -> None:
-    for policy_id in (PolicyID.B3, PolicyID.B4):
-        base, manifest = _manifests(
-            C74ScenarioID.MATCHED_PLANNED_MIGRATION,
-            policy_id,
-            hardware_id=RECOMPUTE_FIXTURE[0],
-            state_tokens=RECOMPUTE_FIXTURE[1],
-            recompute_tokens=RECOMPUTE_FIXTURE[2],
-        )
-        result = run_failover_cell(base, manifest)
-        assert result.action is C74RecoveryAction.RECOMPUTE
-        assert result.commit_attempted is False
-        assert result.state_transfer_volume_bytes == 0
-        assert result.semantic_violation_count == 0
-
-
-def test_exact_cost_tie_selects_transfer_for_b3_and_b4_when_otherwise_eligible() -> None:
+def test_recompute_faster_mechanics_apply_equally_to_b3_and_b4_without_result_scan() -> None:
+    synthetic_recompute = _synthetic_cost(
+        transfer_seconds=2.0,
+        recompute_seconds=1.0,
+        crossover=C74CrossoverClass.RECOMPUTE_FASTER,
+    )
     for policy_id in (PolicyID.B3, PolicyID.B4):
         runtime = _build_scenario_runtime(C74ScenarioID.MATCHED_PLANNED_MIGRATION)
         observation = _policy_observation(runtime, observed_reconciliation="MATCHED")
         view = project_observation(observation, policy_id)
-        synthetic_tie = C74BCrossoverPoint(
-            manifest_fingerprint="0" * 64,
-            hardware_id="a100-80gb",
-            state_tokens=1,
-            state_bytes=524_288,
-            recompute_tokens=64,
-            transfer_seconds=1.0,
-            recompute_seconds=1.0,
-            crossover=C74CrossoverClass.TIE,
-        )
+        action, reason = _select_action(runtime, policy_id, view, synthetic_recompute)
+        assert action is C74RecoveryAction.RECOMPUTE
+        assert "RECOMPUTE_FASTER" in reason
+
+
+def test_exact_cost_tie_selects_transfer_for_b3_and_b4_when_otherwise_eligible() -> None:
+    synthetic_tie = _synthetic_cost(
+        transfer_seconds=1.0,
+        recompute_seconds=1.0,
+        crossover=C74CrossoverClass.TIE,
+    )
+    for policy_id in (PolicyID.B3, PolicyID.B4):
+        runtime = _build_scenario_runtime(C74ScenarioID.MATCHED_PLANNED_MIGRATION)
+        observation = _policy_observation(runtime, observed_reconciliation="MATCHED")
+        view = project_observation(observation, policy_id)
         action, _ = _select_action(runtime, policy_id, view, synthetic_tie)
         assert action is C74RecoveryAction.TRANSFER
 
