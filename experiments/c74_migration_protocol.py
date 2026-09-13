@@ -427,6 +427,8 @@ class C74MigrationEfficiencyProtocol:
         if self.c6_artifact_sha256 != C6_ARTIFACT_SHA256:
             raise ValueError("C7.4a must bind frozen C6 artifact")
         _git_sha(self.c44_binding_safety_merge, "c44_binding_safety_merge")
+        if self.c44_binding_safety_merge != C74_C44_BINDING_SAFETY_MERGE:
+            raise ValueError("C7.4a must bind frozen C4.4 Binding-safety merge")
         if C74_CANONICAL_DETERMINISTIC_SEED != 0:
             raise RuntimeError("C7.4a deterministic manifest seed drift")
         if len(p5_cells()) != 20:
@@ -653,6 +655,8 @@ class C74CrossoverManifest:
         if self.hardware_id not in C7_SUPPORTED_HARDWARE_IDS:
             raise ValueError("hardware_id is outside accepted C6 source-model family")
         p5_point(self.state_tokens, self.recompute_tokens)
+        if not isinstance(self.seed, int) or isinstance(self.seed, bool):
+            raise TypeError("deterministic C7.4a manifest seed must be an integer")
         if self.seed != C74_CANONICAL_DETERMINISTIC_SEED:
             raise ValueError("deterministic C7.4a manifest seed is frozen to 0")
 
@@ -713,6 +717,8 @@ class C74FailoverManifest:
             (self.policy_view_fingerprint, "policy_view_fingerprint"),
         ):
             _sha256(value, name)
+        if not isinstance(self.seed, int) or isinstance(self.seed, bool):
+            raise TypeError("deterministic C7.4a manifest seed must be an integer")
         if self.seed != C74_CANONICAL_DETERMINISTIC_SEED:
             raise ValueError("deterministic C7.4a manifest seed is frozen to 0")
 
