@@ -43,6 +43,7 @@ env:
   PYTHONHASHSEED: '0'
   REVIEWED_C74B_MERGE: '9227e36883af785aef1dc7d253404cee0e8675d1'
   FROZEN_GENERATION_SHA: '4e9d9ad5fd119a266dfb9282274cd414354d0d72'
+  FROZEN_GENERATION_PR_REF: 'refs/pull/161/head'
   EXPECTED_SCIENTIFIC_FINGERPRINT: 'a8d435456b1d784592eda96e3352190456fb9aeb34dda6c12c5a0edb58b54944'
   EXPECTED_ARTIFACT_SHA256: '3550516d9d2355849f5d6a731d7577f906856ec94a60d8947ad81e8382e25e18'
   EXPECTED_MANIFEST_SHA256: '84c7f62ecf9f799cc87f1750cfd58507d760d69afba6321f97471540410ebee7'
@@ -60,6 +61,14 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Materialize frozen generation ancestry
+        run: |
+          git fetch --no-tags origin \
+            "+${FROZEN_GENERATION_PR_REF}:refs/remotes/origin/c74c-frozen-generation"
+          git cat-file -e "${FROZEN_GENERATION_SHA}^{commit}"
+          git merge-base --is-ancestor \
+            "$FROZEN_GENERATION_SHA" \
+            refs/remotes/origin/c74c-frozen-generation
       - name: Verify generation used the reviewed C7.4b mechanics tree
         run: |
           git diff --exit-code "$REVIEWED_C74B_MERGE" "$FROZEN_GENERATION_SHA" -- \
