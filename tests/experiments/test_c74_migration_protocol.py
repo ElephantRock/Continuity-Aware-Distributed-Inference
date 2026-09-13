@@ -127,6 +127,8 @@ def test_parent_identities_and_pre_result_boundary_are_exact() -> None:
     assert C74_FROZEN_C6_ARTIFACT_SHA256 == C6_ARTIFACT_SHA256
     assert C74_COMPARATIVE_RESULT_INSPECTION == "NONE"
     assert C74_TIMING_EVIDENCE == "SIMULATED_SOURCE_MODEL_DERIVED_P_SRC2"
+    assert type(C74_CANONICAL_DETERMINISTIC_SEED) is int
+    assert C74_CANONICAL_DETERMINISTIC_SEED == 0
 
 
 def test_protocol_rejects_closed_correctness_dependency_drift() -> None:
@@ -262,10 +264,21 @@ def test_protocol_payload_carries_no_comparative_outcome() -> None:
     assert payload["comparative_result_inspection"] == "NONE"
     assert payload["tracks"]["P5_CROSSOVER"]["policy_free"] is True
     assert payload["tracks"]["P5_CROSSOVER"]["can_adjudicate_h6"] is False
-    assert payload["tracks"]["FAILOVER_EFFICIENCY"]["canonical_manifest_seed"] == 0
-    assert payload["tracks"]["FAILOVER_EFFICIENCY"]["artificial_repeated_seeds"] is False
-    assert payload["tracks"]["FAILOVER_EFFICIENCY"]["bootstrap_applied"] is False
-    assert len(payload["tracks"]["FAILOVER_EFFICIENCY"]["scenario_specs"]) == 6
+    failover = payload["tracks"]["FAILOVER_EFFICIENCY"]
+    assert failover["canonical_manifest_seed"] == 0
+    assert failover["artificial_repeated_seeds"] is False
+    assert failover["bootstrap_applied"] is False
+    assert len(failover["scenario_specs"]) == 6
+    assert failover["resource_assumptions"] == {
+        "source_availability_is_common_scenario_fact": True,
+        "selected_transfer_uses_one_predeclared_source": True,
+        "destination_capacity_available_for_selected_state": True,
+        "capacity_pressure_or_eviction_faults": False,
+    }
+    strategy = payload["strategy_contract"]
+    assert strategy["same_cost_comparison"] is True
+    assert strategy["transfer_cost_rule"] == "transfer_seconds <= recompute_seconds"
+    assert strategy["transfer_cost_tie_action"] == "TRANSFER"
     assert payload["manifest_contracts"]["FAILOVER_EFFICIENCY"]["cross_binding_validation_required"] is True
     assert payload["closed_correctness_dependency"]["correctness_component_reopened"] is False
     text = json.dumps(payload, sort_keys=True)
