@@ -68,11 +68,15 @@ C75_H6_DECISION = "EFFICIENCY_STRENGTHENED_WITHIN_DECLARED_PHASE_SPACE"
 
 C75_SOURCE_SELECTION_SCHEMA = "cadi.c7.5a.seed-source-selection.v1"
 C75_RESOURCE_REALIZATION_SCHEMA = "cadi.c7.5a.resource-realization.v1"
+C75_AUGMENTATION_SCHEMA = "cadi.c7.5a.trace-augmentation.v1"
 C75_SOURCE_SELECTION_SALT = "cadi.c7.5a.seed-record.v1"
 C75_RESOURCE_SALT = "cadi.c7.5a.resource-fact.v1"
 C75_QUARTER_STEP_DIVISOR = 4
 C75_WORKER_CAPACITY = 1
 C75_QUEUE_LEVELS = 4
+C75_SOURCE_SELECTION_FINGERPRINT = (
+    "bebaf2e535b78177cb3ef2c39fddd9e23180c4aecb3e06deac9390d29b190fe4"
+)
 
 C75_P1_SESSION_DEPTHS = tuple(int(x) for x in AXES["session_depth"].values)
 C75_P1_REUSE_FRACTIONS = tuple(float(x) for x in AXES["reusable_prefix_fraction"].values)
@@ -87,6 +91,23 @@ C75_H4_DIAGNOSTIC_COMPARATOR = PolicyID.B3
 C75_H7_REFERENCE = PolicyID.B0
 C75_H7_MIN_ORDERED_LEVELS = 3
 C75_MIN_CONNECTED_SUPPORT_CELLS = 2
+
+C75_AUGMENTATION_PARAMETERS = {
+    ExperimentSeries.P1_DEEP_REUSE: (
+        "reusable_prefix_fraction",
+        "session_depth",
+        "worker_count",
+    ),
+    ExperimentSeries.P4_FANOUT_SHARED_PREFIX: (
+        "fanout_width",
+        "shared_prefix_fraction",
+        "worker_count",
+    ),
+    ExperimentSeries.P7_STATELESS_OVERHEAD: (
+        "arrival_intensity",
+        "worker_count",
+    ),
+}
 
 
 class C75Representability(str, Enum):
@@ -192,6 +213,16 @@ def _fingerprint(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
+def _sha256_hex(value: str, name: str) -> str:
+    if not isinstance(value, str) or len(value) != 64:
+        raise ValueError(f"{name} must be a 64-character SHA-256 hex string")
+    try:
+        int(value, 16)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be hexadecimal") from exc
+    return value
+
+
 def source_record_order_key(record_id: str) -> str:
     if not isinstance(record_id, str) or not record_id:
         raise ValueError("record_id must be non-empty")
@@ -231,6 +262,22 @@ def select_seed_records(records: Sequence[NormalizedTraceRecord]) -> tuple[Norma
     return selected
 
 
+def seed_selection_fingerprint(
+    records: Sequence[NormalizedTraceRecord], *, admissible_dataset_fingerprint: str
+) -> str:
+    if admissible_dataset_fingerprint != C75_C72_ADMISSIBLE_DATASET_FINGERPRINT:
+        raise ValueError("admissible dataset fingerprint drift")
+    selected = select_seed_records(records)
+    payload = {
+        "admissible_fingerprint": admissible_dataset_fingerprint,
+        "selected_count": len(selected),
+        "record_ids": [record.record_id for record in selected],
+        "input_tokens": [record.input_tokens for record in selected],
+        "output_tokens": [record.output_tokens for record in selected],
+    }
+    return _fingerprint(payload)
+
+
 def reusable_tokens(input_tokens: int, fraction: float) -> int:
     if not isinstance(input_tokens, int) or isinstance(input_tokens, bool) or input_tokens <= 0:
         raise ValueError("input_tokens must be a positive integer")
@@ -242,6 +289,14 @@ def reusable_tokens(input_tokens: int, fraction: float) -> int:
     if tokens / input_tokens != fraction:
         raise AssertionError("quarter-step reuse must be represented exactly without rounding")
     return tokens
+
+
+def _validated_worker_count(worker_count: int) -> int:
+    if not isinstance(worker_count, int) or isinstance(worker_count, bool):
+        raise TypeError("worker_count must be int")
+    if worker_count not in C75_WORKER_COUNTS:
+        raise ValueError("worker_count must be a frozen C7.5 worker-count value")
+    return worker_count
 
 
 def _seed_fact(seed: int, label: str, modulo: int) -> int:
@@ -256,27 +311,79 @@ def _seed_fact(seed: int, label: str, modulo: int) -> int:
 
 
 def state_worker_index(seed: int, worker_count: int, *, operation_ordinal: int = 0) -> int:
-    return _seed_fact(seed, f"state-location:{operation_ordinal}", worker_count)
+    workers = _validated_worker_count(worker_count)
+    return _seed_fact(seed, f"state-location:{operation_ordinal}", workers)
 
 
 def session_preferred_worker_index(seed: int, worker_count: int) -> int:
-    return _seed_fact(seed, "session-preferred", worker_count)
+    workers = _validated_worker_count(worker_count)
+    return _seed_fact(seed, "session-preferred", workers)
 
 
-def worker_queue_depth(seed: int, worker_index: int, *, operation_ordinal: int = 0) -> int:
-    if not isinstance(worker_index, int) or isinstance(worker_index, bool) or worker_index < 0:
-        raise ValueError("worker_index must be non-negative integer")
+def worker_queue_depth(
+    seed: int, worker_index: int, worker_count: int, *, operation_ordinal: int = 0
+) -> int:
+    workers = _validated_worker_count(worker_count)
+    if not isinstance(worker_index, int) or isinstance(worker_index, bool) or not 0 <= worker_index < workers:
+        raise ValueError("worker_index must identify a worker in the frozen realization")
     return _seed_fact(seed, f"worker-load:{operation_ordinal}:{worker_index}", C75_QUEUE_LEVELS)
 
 
-def p4_state_worker_index(seed: int, worker_count: int = C75_P4_WORKER_COUNT) -> int:
-    return _seed_fact(seed, "p4-shared-state-location", worker_count)
+def p4_state_worker_index(seed: int) -> int:
+    return _seed_fact(seed, "p4-shared-state-location", C75_P4_WORKER_COUNT)
 
 
 def p4_worker_queue_depth(seed: int, worker_index: int, *, branch_ordinal: int = 0) -> int:
-    if not isinstance(worker_index, int) or isinstance(worker_index, bool) or worker_index < 0:
-        raise ValueError("worker_index must be non-negative integer")
+    if (
+        not isinstance(worker_index, int)
+        or isinstance(worker_index, bool)
+        or not 0 <= worker_index < C75_P4_WORKER_COUNT
+    ):
+        raise ValueError("worker_index must identify a P4 reference worker")
     return _seed_fact(seed, f"p4-worker-load:{branch_ordinal}:{worker_index}", C75_QUEUE_LEVELS)
+
+
+def augmentation_fingerprint(
+    *,
+    seed: int,
+    series: ExperimentSeries,
+    source_record_id: str,
+    program_case_fingerprint: str,
+    parameters: tuple[tuple[str, int | float], ...],
+) -> str:
+    if seed not in C7_STOCHASTIC_SEEDS:
+        raise ValueError("seed must come from frozen C7.1 sequence 0..63")
+    if series not in C75_AUGMENTATION_PARAMETERS:
+        raise ValueError("series is outside the C7.5a P1/P4/P7 execution set")
+    if not isinstance(source_record_id, str) or not source_record_id:
+        raise ValueError("source_record_id must be non-empty")
+    _sha256_hex(program_case_fingerprint, "program_case_fingerprint")
+    if not isinstance(parameters, tuple):
+        raise TypeError("parameters must be tuple")
+    names = tuple(name for name, _ in parameters)
+    if names != tuple(sorted(names)) or len(names) != len(set(names)):
+        raise ValueError("parameters must have unique canonical names")
+    if names != C75_AUGMENTATION_PARAMETERS[series]:
+        raise ValueError("parameters do not exactly match the frozen C7.5 series contract")
+    for name, value in parameters:
+        axis = AXES[name]
+        if value not in axis.values:
+            raise ValueError(f"parameter {name} escaped the frozen C7.1 axis")
+    values = dict(parameters)
+    if series is ExperimentSeries.P4_FANOUT_SHARED_PREFIX and values["worker_count"] != C75_P4_WORKER_COUNT:
+        raise ValueError("P4 worker_count must remain at the frozen reference value")
+    if series is ExperimentSeries.P7_STATELESS_OVERHEAD and values["arrival_intensity"] != C75_P7_ARRIVAL_INTENSITY:
+        raise ValueError("P7 arrival_intensity must remain at the frozen nominal control value")
+    return _fingerprint(
+        {
+            "schema": C75_AUGMENTATION_SCHEMA,
+            "seed": seed,
+            "series": series.value,
+            "source_record_id": source_record_id,
+            "program_case_fingerprint": program_case_fingerprint,
+            "parameters": {name: value for name, value in parameters},
+        }
+    )
 
 
 def p1_cells() -> tuple[tuple[int, float, int], ...]:
@@ -329,7 +436,9 @@ def relative_timing_benefit(*, baseline_seconds: float, b4_seconds: float) -> fl
     return (float(baseline_seconds) - float(b4_seconds)) / float(baseline_seconds)
 
 
-def adjudicate_g2(*, h4_supported: bool, h5_supported: bool, h6_supported: bool, h7_supported: bool) -> C75G2Decision:
+def adjudicate_g2(
+    *, h4_supported: bool, h5_supported: bool, h6_supported: bool, h7_supported: bool
+) -> C75G2Decision:
     values = (h4_supported, h5_supported, h6_supported, h7_supported)
     if not all(isinstance(value, bool) for value in values):
         raise TypeError("H4-H7 support flags must be bool")
@@ -348,10 +457,22 @@ class C75Protocol:
         if self.base_commit != C75_BASE_COMMIT:
             raise ValueError("C7.5a base commit is frozen")
         checks = (
-            (C7_PROTOCOL_FINGERPRINT, "706e0d5fff362a1eda8c906b957c914251c6e7949bac6be3c2c143ae21625474", "C7.1 protocol"),
+            (
+                C7_PROTOCOL_FINGERPRINT,
+                "706e0d5fff362a1eda8c906b957c914251c6e7949bac6be3c2c143ae21625474",
+                "C7.1 protocol",
+            ),
             (C72_BASE_COMMIT, "990ef4f081b0edebb1e2ca83bddaf252eb39e549", "C7.2 base"),
-            (C6_SCIENTIFIC_FINGERPRINT, "cc1b62c4e38a1612720f601375c425c0bd7d67b4eff11b101bfdf87b79a7a61a", "C6 scientific fingerprint"),
-            (C6_ARTIFACT_SHA256, "93990386135ecbf6fc38e579841eace3431a068b10ee59209fe6ad7084bd8889", "C6 artifact"),
+            (
+                C6_SCIENTIFIC_FINGERPRINT,
+                "cc1b62c4e38a1612720f601375c425c0bd7d67b4eff11b101bfdf87b79a7a61a",
+                "C6 scientific fingerprint",
+            ),
+            (
+                C6_ARTIFACT_SHA256,
+                "93990386135ecbf6fc38e579841eace3431a068b10ee59209fe6ad7084bd8889",
+                "C6 artifact",
+            ),
             (C6_EVIDENCE_CLASS, "SIMULATED_SOURCE_MODEL_DERIVED_P_SRC2", "C6 evidence class"),
         )
         for actual, expected, name in checks:
@@ -399,7 +520,11 @@ class C75Protocol:
                 "workload_class": WorkloadClass.TRACE_AUGMENTED.value,
                 "source_selection_schema": C75_SOURCE_SELECTION_SCHEMA,
                 "source_selection_salt": C75_SOURCE_SELECTION_SALT,
-                "selection_pool": "C7-admissible Mooncake rows with input_tokens divisible by 4; no source-field mutation",
+                "source_selection_fingerprint": C75_SOURCE_SELECTION_FINGERPRINT,
+                "selection_pool": (
+                    "C7-admissible Mooncake rows with input_tokens divisible by 4; "
+                    "no source-field mutation"
+                ),
                 "selection_order": "ascending SHA256(source_selection_salt|record_id), then record_id",
                 "seed_mapping": "seed 0..63 maps to same-index first 64 unique ordered records",
                 "quarter_step_divisor": C75_QUARTER_STEP_DIVISOR,
@@ -407,10 +532,27 @@ class C75Protocol:
                 "resource_salt": C75_RESOURCE_SALT,
                 "worker_capacity": C75_WORKER_CAPACITY,
                 "queue_levels": C75_QUEUE_LEVELS,
-                "independent_seed_domains": ["worker queue depth", "physical State location", "session preferred location"],
-                "p1": "one selected source token pair per Program; root zero reuse; later operations use exact frozen reusable-prefix fraction",
-                "p4": "one selected source token pair per Program replicated across synthetic fan-out branches; shared State has one seed-derived physical location; branch load facts are branch-specific",
-                "p7": "one source-shaped stateless request with no cross-request State/session/Continuity locality hints",
+                "independent_seed_domains": [
+                    "worker queue depth",
+                    "physical State location",
+                    "session preferred location",
+                ],
+                "augmentation_schema": C75_AUGMENTATION_SCHEMA,
+                "augmentation_fingerprint": (
+                    "SHA256 of canonical {schema,seed,series,source_record_id,"
+                    "program_case_fingerprint,parameters}; stored in C7ExperimentManifest.augmentation_fingerprint"
+                ),
+                "p1": (
+                    "one selected source token pair per Program; root zero reuse; later operations use exact "
+                    "frozen reusable-prefix fraction"
+                ),
+                "p4": (
+                    "one selected source token pair per Program replicated across synthetic fan-out branches; "
+                    "shared State has one seed-derived physical location; branch load facts are branch-specific"
+                ),
+                "p7": (
+                    "one source-shaped stateless request with no cross-request State/session/Continuity locality hints"
+                ),
             },
             "surfaces": [surface.to_dict() for surface in C75_SURFACES],
             "rankable_cell_counts": {
@@ -422,7 +564,9 @@ class C75Protocol:
                 "p1_cache_capacity_ratio": C75Representability.NOT_REALIZED_BY_C72.value,
                 "p1_arrival_intensity": C75Representability.NOT_REALIZED_BY_C72.value,
                 "p7_arrival_intensity": C75Representability.NOT_REALIZED_BY_C72.value,
-                "rule": "unrealized axes may be reported as limitations but may not enter ranking or support claims",
+                "rule": (
+                    "unrealized axes may be reported as limitations but may not enter ranking or support claims"
+                ),
             },
             "h4": {
                 "series": ExperimentSeries.P1_DEEP_REUSE.value,
@@ -431,13 +575,28 @@ class C75Protocol:
                 "primary_comparators": [item.value for item in C75_H4_PRIMARY_COMPARATORS],
                 "diagnostic_comparator": C75_H4_DIAGNOSTIC_COMPARATOR.value,
                 "cell_support_is_per_comparator": True,
-                "cell_support": "B4 and comparator semantically eligible; paired Program-cluster percentile-95 CI for RR(B4)-RR(baseline) entirely <0; RR identical across accepted hardware strata",
+                "cell_support": (
+                    "B4 and comparator semantically eligible; paired Program-cluster percentile-95 CI for "
+                    "RR(B4)-RR(baseline) entirely <0; RR identical across accepted hardware strata"
+                ),
                 "aggregate_estimator": "ratio-of-sums over Program token components",
                 "minimum_connected_cells": C75_MIN_CONNECTED_SUPPORT_CELLS,
-                "region": "orthogonal adjacency within one fixed-worker-count P1 surface for the same comparator",
-                "hypothesis_support": "at least one primary comparator has a qualifying connected region; all B0/B1/B2 maps and no-benefit regions must be reported",
-                "cache_aware_confluence_note": "C7.2 may make B1 and B4 coincide when the same compatible resident State locality is visible; a B1 tie is a valid no-benefit result, not grounds to weaken B1",
-                "correlated_explanatory_metrics": [MetricID.STATE_REUSE_RATIO.value, MetricID.STATE_REUSE_TOKEN_RATIO.value, MetricID.COLD_CONTINUATION_RATE.value],
+                "region": (
+                    "orthogonal adjacency within one fixed-worker-count P1 surface for the same comparator"
+                ),
+                "hypothesis_support": (
+                    "at least one primary comparator has a qualifying connected region; all B0/B1/B2 maps "
+                    "and no-benefit regions must be reported"
+                ),
+                "cache_aware_confluence_note": (
+                    "C7.2 may make B1 and B4 coincide when the same compatible resident State locality is "
+                    "visible; a B1 tie is a valid no-benefit result, not grounds to weaken B1"
+                ),
+                "correlated_explanatory_metrics": [
+                    MetricID.STATE_REUSE_RATIO.value,
+                    MetricID.STATE_REUSE_TOKEN_RATIO.value,
+                    MetricID.COLD_CONTINUATION_RATE.value,
+                ],
             },
             "h7": {
                 "reference_policy": C75_H7_REFERENCE.value,
@@ -450,11 +609,23 @@ class C75Protocol:
                     "P1": ["session_depth", "reusable_prefix_fraction"],
                     "P4": ["fanout_width", "shared_prefix_fraction"],
                 },
-                "gradient": "axis-aligned contiguous run at fixed other-axis value (and fixed worker-count stratum for P1); >=3 ordered levels; each cell percentile-95 benefit CI entirely >0; median benefit nondecreasing with >=1 strict increase; same direction on both hardware strata",
+                "gradient": (
+                    "axis-aligned contiguous run at fixed other-axis value (and fixed worker-count stratum "
+                    "for P1); >=3 ordered levels; each cell percentile-95 benefit CI entirely >0; median "
+                    "benefit nondecreasing with >=1 strict increase; same direction on both hardware strata"
+                ),
                 "minimum_ordered_levels": C75_H7_MIN_ORDERED_LEVELS,
-                "hypothesis_support": "at least one qualifying P1 or P4 statefulness gradient plus passing P7 negative control",
-                "multi_surface_confirmation": "qualifying gradients in both P1 and P4 are reported as stronger cross-dimension confirmation but are not required by H7",
-                "interaction_rule": "non-qualifying and non-monotone axes remain reportable interactions; H7 does not require monotonicity for every variable",
+                "hypothesis_support": (
+                    "at least one qualifying P1 or P4 statefulness gradient plus passing P7 negative control"
+                ),
+                "multi_surface_confirmation": (
+                    "qualifying gradients in both P1 and P4 are reported as stronger cross-dimension "
+                    "confirmation but are not required by H7"
+                ),
+                "interaction_rule": (
+                    "non-qualifying and non-monotone axes remain reportable interactions; H7 does not "
+                    "require monotonicity for every variable"
+                ),
             },
             "p7_negative_control": {
                 "ranked_as_efficiency_support": False,
@@ -477,19 +648,32 @@ class C75Protocol:
                 "semantic_invalid_excluded": True,
             },
             "ablation_boundary": {
-                "b0_b4_role": "information-contract decomposition; not pure single-mechanism causal ablation",
-                "b4_vs_b3": "diagnostic only unless separately supported by closed targeted evidence",
+                "b0_b4_role": (
+                    "information-contract decomposition; not pure single-mechanism causal ablation"
+                ),
+                "b4_vs_b3": (
+                    "diagnostic only unless separately supported by closed targeted evidence"
+                ),
                 "closed_h5_h6_recomputed": False,
             },
             "gate_g2": {
-                "A": "H7 supported and at least two of H4/H5/H6 supported or strengthened within their declared phase spaces",
+                "A": (
+                    "H7 supported and at least two of H4/H5/H6 supported or strengthened within their "
+                    "declared phase spaces"
+                ),
                 "C": "none of H4/H5/H6/H7 has a qualifying meaningful region",
                 "B": "every other outcome with at least one qualifying meaningful region",
-                "evaluation_order": [C75G2Decision.A.value, C75G2Decision.C.value, C75G2Decision.B.value],
+                "evaluation_order": [
+                    C75G2Decision.A.value,
+                    C75G2Decision.C.value,
+                    C75G2Decision.B.value,
+                ],
             },
             "invalid_result_conditions": [
                 "source record mutated, clipped, truncated, or rounded",
                 "seed source selection missing, duplicated, or outside declared arithmetic pool",
+                "source-selection fingerprint differs from the frozen 64-seed mapping",
+                "TRACE_AUGMENTED manifest uses an augmentation fingerprint outside the frozen schema",
                 "policy information-contract leak",
                 "semantic-invalid observation counted as support",
                 "accepted C6 hardware stratum missing",
@@ -511,7 +695,14 @@ C75_PROTOCOL_FINGERPRINT = FROZEN_C75_PROTOCOL.fingerprint
 
 
 def main() -> None:
-    print(_canonical_json({"protocol": FROZEN_C75_PROTOCOL.to_dict(), "protocol_fingerprint": C75_PROTOCOL_FINGERPRINT}))
+    print(
+        _canonical_json(
+            {
+                "protocol": FROZEN_C75_PROTOCOL.to_dict(),
+                "protocol_fingerprint": C75_PROTOCOL_FINGERPRINT,
+            }
+        )
+    )
 
 
 if __name__ == "__main__":
