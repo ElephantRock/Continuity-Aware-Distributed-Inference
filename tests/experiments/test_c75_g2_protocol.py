@@ -7,7 +7,7 @@ import pytest
 from experiments.c7_protocol import C7_PROTOCOL_FINGERPRINT
 from experiments.c75_g2_protocol import (
     C75_COMPARATIVE_RESULT_INSPECTION,
-    C75_G2_DECISION if False else C75G2Decision,
+    C75G2Decision,
     C75_H4_PRIMARY_COMPARATORS,
     C75_P1_REUSE_FRACTIONS,
     C75_PROTOCOL_FINGERPRINT,
@@ -124,7 +124,6 @@ def test_resource_fact_domains_are_deterministic_and_separated() -> None:
             assert all(0 <= q < 4 for q in queues)
             assert state == state_worker_index(seed, workers, operation_ordinal=1)
             assert session == session_preferred_worker_index(seed, workers)
-    # Domain separation is structural; it need not force unequal values for every seed.
     assert source_record_order_key("r0") != source_record_order_key("r1")
 
 
