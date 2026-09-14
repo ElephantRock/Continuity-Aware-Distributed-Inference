@@ -7,13 +7,19 @@ on:
     paths:
       - .github/workflows/c75b-g2-results.yml
       - experiments/c75_g2_execute.py
+      - experiments/c75_g2_adjudicate.py
+      - experiments/c75_g2_finalize.py
       - tests/experiments/test_c75_g2_execute.py
+      - tests/experiments/test_c75_g2_adjudicate.py
       - spec/59-c7.5b-g2-results.md
   pull_request:
     paths:
       - .github/workflows/c75b-g2-results.yml
       - experiments/c75_g2_execute.py
+      - experiments/c75_g2_adjudicate.py
+      - experiments/c75_g2_finalize.py
       - tests/experiments/test_c75_g2_execute.py
+      - tests/experiments/test_c75_g2_adjudicate.py
       - spec/59-c7.5b-g2-results.md
   workflow_dispatch:
 
@@ -58,18 +64,23 @@ jobs:
             spec/50-c7.1-efficiency-protocol.md \
             spec/51-c7.2-routing-reuse.md \
             spec/58-c7.5a-g2-integration-protocol.md
-      - name: Run C7.5b pre-result mechanics tests
-        run: python -m pytest -q tests/experiments/test_c75_g2_execute.py
+      - name: Run C7.5b pre-result mechanics and adjudication tests
+        run: |
+          python -m pytest -q \
+            tests/experiments/test_c75_g2_execute.py \
+            tests/experiments/test_c75_g2_adjudicate.py
       - name: Reproduce preflight identity twice
         run: |
           python -m experiments.c75_g2_execute > /tmp/c75b-a.json
           python -m experiments.c75_g2_execute > /tmp/c75b-b.json
           cmp /tmp/c75b-a.json /tmp/c75b-b.json
-      - name: Verify no comparative execution
+      - name: Verify no comparative execution and frozen adjudication wiring
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
+          from experiments.c75_g2_adjudicate import adjudicator_identity
+          from experiments.c75_g2_finalize import expected_program_row_count
           from experiments.c75_g2_protocol import C75_PROTOCOL_FINGERPRINT, C75_SOURCE_SELECTION_FINGERPRINT
 
           payload = json.loads(Path('/tmp/c75b-a.json').read_text())
@@ -85,7 +96,16 @@ jobs:
           assert payload['comparative_execution'] == 'NOT_RUN'
           assert 'policy_results' not in payload
           assert 'gate_g2' not in payload
+          adjudicator = adjudicator_identity()
+          assert adjudicator['schema'] == 'cadi.c7.5b.g2-adjudicator.v1'
+          assert adjudicator['h4_complete_cell_count'] == 75
+          assert adjudicator['h7_complete_cell_count'] == 91
+          assert adjudicator['p7_control_cell_count'] == 3
+          assert adjudicator['comparative_execution'] == 'NOT_RUN'
+          assert expected_program_row_count() == 60160
+          assert 'G2=A iff H7 is supported' in adjudicator['gate_reduction']
           print(json.dumps(payload, sort_keys=True, separators=(',', ':')))
+          print(json.dumps(adjudicator, sort_keys=True, separators=(',', ':')))
           print('comparative_execution=NOT_RUN')
           PY
       - name: Download exact pinned Mooncake source
