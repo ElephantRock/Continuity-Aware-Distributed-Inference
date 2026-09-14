@@ -136,6 +136,12 @@ def validate_cell_pairing(
             for policy_id in policies:
                 if (hardware_id, seed, policy_id) not in keyed:
                     raise ValueError("missing hardware/seed/policy row")
+            paired_fingerprints = {
+                keyed[(hardware_id, seed, policy_id)].paired_result_fingerprint
+                for policy_id in policies
+            }
+            if len(paired_fingerprints) != 1:
+                raise ValueError("policy rows for one hardware/seed must originate from one paired result")
     for seed in C7_STOCHASTIC_SEEDS:
         identities = {
             (
@@ -218,12 +224,12 @@ def evaluate_h4_cell(
         cell_id=cell_id,
         required_policies=tuple(PolicyID),
     )
-    verify_non_timing_hardware_invariance(rows, (comparator, PolicyID.B4))
     ranked_rows = tuple(
         row for row in rows if row.policy_id in {comparator, PolicyID.B4}
     )
     if not _ranking_eligible(ranked_rows):
         return C75H4CellEvidence(cell, comparator, C75B_SEMANTIC_INVALID, (), False)
+    verify_non_timing_hardware_invariance(rows, (comparator, PolicyID.B4))
     comparisons: list[tuple[str, C75PairedComparison]] = []
     for hardware_id in C75B_HARDWARE_STRATA:
         b4 = _policy_rows(rows, hardware_id, PolicyID.B4)
@@ -466,6 +472,8 @@ def adjudicator_identity() -> dict[str, Any]:
         "h7_complete_cell_count": len(_expected_p1_cells()) + len(_expected_p4_cells()),
         "p7_control_cell_count": len(C75_WORKER_COUNTS),
         "cross_hardware_pairing_identity": "source_record_id+program_case_fingerprint+total_input_tokens",
+        "within_hardware_pairing_identity": "one paired_result_fingerprint across all required policies for each seed",
+        "semantic_invalid_h4_rule": "preserve and exclude before non-timing hardware-invariance ranking checks",
         "global_seed_source_mapping": "one source record per seed across the full sweep; 64 unique records",
         "closed_h5": C75_H5_DECISION,
         "closed_h6": C75_H6_DECISION,
