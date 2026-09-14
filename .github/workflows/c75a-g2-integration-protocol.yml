@@ -81,14 +81,13 @@ jobs:
           PY
       - name: Download exact pinned Mooncake source
         run: curl --fail --location --silent --show-error "$MOONCAKE_URL" --output /tmp/mooncake.jsonl
-      - name: Verify deterministic 64-seed source selection
+      - name: Reproduce frozen 64-seed source selection twice
         run: |
           python - <<'PY' > /tmp/c75-source-a.json
-          import hashlib
           import json
           from pathlib import Path
           from experiments.c72_routing_reuse import derive_pinned_mooncake_c7_admissible
-          from experiments.c75_g2_protocol import select_seed_records
+          from experiments.c75_g2_protocol import seed_selection_fingerprint, select_seed_records
           from experiments.mooncake_trace import load_pinned_mooncake_trace
 
           source = load_pinned_mooncake_trace(Path('/tmp/mooncake.jsonl').read_bytes())
@@ -100,23 +99,52 @@ jobs:
               'record_ids': [r.record_id for r in selected],
               'input_tokens': [r.input_tokens for r in selected],
               'output_tokens': [r.output_tokens for r in selected],
+              'selection_fingerprint': seed_selection_fingerprint(
+                  admissible.source_order,
+                  admissible_dataset_fingerprint=admissible.fingerprint,
+              ),
           }
-          payload['selection_fingerprint'] = hashlib.sha256(
-              json.dumps(payload, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
-          ).hexdigest()
           print(json.dumps(payload, sort_keys=True, separators=(',', ':'), allow_nan=False))
           PY
-          cp /tmp/c75-source-a.json /tmp/c75-source-b.json
+          python - <<'PY' > /tmp/c75-source-b.json
+          import json
+          from pathlib import Path
+          from experiments.c72_routing_reuse import derive_pinned_mooncake_c7_admissible
+          from experiments.c75_g2_protocol import seed_selection_fingerprint, select_seed_records
+          from experiments.mooncake_trace import load_pinned_mooncake_trace
+
+          source = load_pinned_mooncake_trace(Path('/tmp/mooncake.jsonl').read_bytes())
+          admissible = derive_pinned_mooncake_c7_admissible(source)
+          selected = select_seed_records(admissible.source_order)
+          payload = {
+              'admissible_fingerprint': admissible.fingerprint,
+              'selected_count': len(selected),
+              'record_ids': [r.record_id for r in selected],
+              'input_tokens': [r.input_tokens for r in selected],
+              'output_tokens': [r.output_tokens for r in selected],
+              'selection_fingerprint': seed_selection_fingerprint(
+                  admissible.source_order,
+                  admissible_dataset_fingerprint=admissible.fingerprint,
+              ),
+          }
+          print(json.dumps(payload, sort_keys=True, separators=(',', ':'), allow_nan=False))
+          PY
           cmp /tmp/c75-source-a.json /tmp/c75-source-b.json
+      - name: Verify frozen source-selection identity
+        run: |
           python - <<'PY'
           import json
           from pathlib import Path
+          from experiments.c75_g2_protocol import C75_SOURCE_SELECTION_FINGERPRINT
+
           payload = json.loads(Path('/tmp/c75-source-a.json').read_text())
           assert payload['admissible_fingerprint'] == '05a37c9cb3d1649aacd82de1b773161feafa6304b33d90fa3cff33eb60ae7846'
           assert payload['selected_count'] == 64
           assert len(set(payload['record_ids'])) == 64
           assert all(value % 4 == 0 for value in payload['input_tokens'])
           assert all(i >= 1 and o >= 1 and i + o <= 4096 for i, o in zip(payload['input_tokens'], payload['output_tokens'], strict=True))
+          assert payload['selection_fingerprint'] == C75_SOURCE_SELECTION_FINGERPRINT
+          assert payload['selection_fingerprint'] == 'bebaf2e535b78177cb3ef2c39fddd9e23180c4aecb3e06deac9390d29b190fe4'
           print(f"selection_fingerprint={payload['selection_fingerprint']}")
           print('comparative_result_inspection=NONE')
           PY
