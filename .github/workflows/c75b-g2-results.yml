@@ -13,6 +13,7 @@ on:
       - tests/experiments/test_c75_g2_execute.py
       - tests/experiments/test_c75_g2_adjudicate.py
       - tests/experiments/test_c75_g2_stage2_contract.py
+      - tests/experiments/test_c75_g2_review_repairs.py
       - spec/59-c7.5b-g2-results.md
   pull_request:
     paths:
@@ -24,6 +25,7 @@ on:
       - tests/experiments/test_c75_g2_execute.py
       - tests/experiments/test_c75_g2_adjudicate.py
       - tests/experiments/test_c75_g2_stage2_contract.py
+      - tests/experiments/test_c75_g2_review_repairs.py
       - spec/59-c7.5b-g2-results.md
   workflow_dispatch:
 
@@ -73,7 +75,8 @@ jobs:
           python -m pytest -q \
             tests/experiments/test_c75_g2_execute.py \
             tests/experiments/test_c75_g2_adjudicate.py \
-            tests/experiments/test_c75_g2_stage2_contract.py
+            tests/experiments/test_c75_g2_stage2_contract.py \
+            tests/experiments/test_c75_g2_review_repairs.py
       - name: Reproduce preflight identity twice
         run: |
           python -m experiments.c75_g2_execute > /tmp/c75b-a.json
@@ -108,11 +111,14 @@ jobs:
           assert adjudicator['h7_complete_cell_count'] == 91
           assert adjudicator['p7_control_cell_count'] == 3
           assert adjudicator['comparative_execution'] == 'NOT_RUN'
+          assert 'paired_result_fingerprint' in adjudicator['within_hardware_pairing_identity']
+          assert 'preserve and exclude before' in adjudicator['semantic_invalid_h4_rule']
           contract = stage2_contract_identity()
           assert contract['schema'] == 'cadi.c7.5b.stage2-provenance-contract.v1'
           assert contract['comparative_execution'] == 'NOT_RUN'
           assert contract['seed_record_rule'] == 'seed N must use selected_source_records[N] exactly'
           assert 'manifest.hardware_id' in contract['hardware_binding_rule']
+          assert 'derived from the realized C72 Program case' in contract['surface_cell_binding_rule']
           assert expected_program_row_count() == 60160
           assert 'G2=A iff H7 is supported' in adjudicator['gate_reduction']
           print(json.dumps(payload, sort_keys=True, separators=(',', ':')))
