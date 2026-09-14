@@ -38,6 +38,11 @@ from experiments.trace_workload import NormalizedTraceRecord
 from simulator.policies import PolicyID
 
 
+C75_REVIEWED_PROTOCOL_FINGERPRINT = (
+    "318c415b9531001fc4637b7de6f21cd13ffb33a06d74444fb41c1ace3709ae41"
+)
+
+
 def _record(index: int, *, input_tokens: int = 1024, output_tokens: int = 32) -> NormalizedTraceRecord:
     return NormalizedTraceRecord(
         f"r{index:03d}",
@@ -57,6 +62,7 @@ def test_parent_and_result_inspection_are_frozen() -> None:
     payload = FROZEN_C75_PROTOCOL.to_dict()
     assert payload["comparative_result_inspection"] == "NONE"
     assert "policy_results" not in payload
+    assert C75_PROTOCOL_FINGERPRINT == C75_REVIEWED_PROTOCOL_FINGERPRINT
     assert len(C75_PROTOCOL_FINGERPRINT) == 64
     int(C75_PROTOCOL_FINGERPRINT, 16)
     assert payload["workload_realization"]["source_selection_fingerprint"] == C75_SOURCE_SELECTION_FINGERPRINT
