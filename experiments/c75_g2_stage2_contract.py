@@ -4,7 +4,13 @@ from typing import Mapping, Sequence
 
 from experiments.c7_protocol import C7ExperimentManifest, C7_STOCHASTIC_SEEDS, ExperimentSeries
 from experiments.c72_routing_reuse import C72PairedResult, C72ProgramCase
-from experiments.c75_g2_execute import C75B_HARDWARE_STRATA, C75ProgramRow, summarize_paired_result
+from experiments.c75_g2_adjudicate import p1_cell_id, p4_cell_id, p7_cell_id
+from experiments.c75_g2_execute import (
+    C75B_HARDWARE_STRATA,
+    C75ProgramRow,
+    parameters_for_case,
+    summarize_paired_result,
+)
 from experiments.c75_g2_protocol import (
     C75_C72_ADMISSIBLE_DATASET_FINGERPRINT,
     C75_SOURCE_SELECTION_FINGERPRINT,
@@ -98,6 +104,30 @@ def _validated_manifest_mapping(
     return typed
 
 
+def cell_id_for_case(case: C72ProgramCase) -> str:
+    if not isinstance(case, C72ProgramCase):
+        raise TypeError("case must be C72ProgramCase")
+    params = dict(parameters_for_case(case))
+    if case.series is ExperimentSeries.P1_DEEP_REUSE:
+        return p1_cell_id(
+            (
+                int(params["session_depth"]),
+                float(params["reusable_prefix_fraction"]),
+                int(params["worker_count"]),
+            )
+        )
+    if case.series is ExperimentSeries.P4_FANOUT_SHARED_PREFIX:
+        return p4_cell_id(
+            (
+                int(params["fanout_width"]),
+                float(params["shared_prefix_fraction"]),
+            )
+        )
+    if case.series is ExperimentSeries.P7_STATELESS_OVERHEAD:
+        return p7_cell_id(int(params["worker_count"]))
+    raise ValueError("C7.5b stage2 contract supports only P1/P4/P7")
+
+
 def summarize_verified_paired_result(
     *,
     case: C72ProgramCase,
@@ -107,7 +137,7 @@ def summarize_verified_paired_result(
     seed: int,
     selected_source_records: Sequence[NormalizedTraceRecord],
     source_record: NormalizedTraceRecord,
-    cell_id: str,
+    cell_id: str | None = None,
 ) -> tuple[C75ProgramRow, ...]:
     validate_seed_record_binding(selected_source_records, seed=seed, record=source_record)
     typed_manifests = _validated_manifest_mapping(manifests, hardware_id=hardware_id)
@@ -121,18 +151,23 @@ def summarize_verified_paired_result(
         manifest = typed_manifests[result.policy_id]
         if result.manifest_fingerprint != manifest.fingerprint:
             raise ValueError("paired result manifest fingerprint does not bind to the supplied hardware manifest")
+    realized_cell_id = cell_id_for_case(case)
+    if cell_id is not None and cell_id != realized_cell_id:
+        raise ValueError("supplied cell_id does not match the realized Program surface cell")
     rows = summarize_paired_result(
         case=case,
         paired=paired,
         hardware_id=hardware_id,
         seed=seed,
         source_record_id=source_record.record_id,
-        cell_id=cell_id,
+        cell_id=realized_cell_id,
     )
     if any(row.hardware_id != hardware_id for row in rows):
         raise AssertionError("summarized hardware label drift")
     if any(row.source_record_id != source_record.record_id for row in rows):
         raise AssertionError("summarized source-record binding drift")
+    if any(row.cell_id != realized_cell_id for row in rows):
+        raise AssertionError("summarized surface-cell binding drift")
     return rows
 
 
@@ -143,5 +178,6 @@ def stage2_contract_identity() -> dict[str, object]:
         "source_selection_fingerprint": C75_SOURCE_SELECTION_FINGERPRINT,
         "seed_record_rule": "seed N must use selected_source_records[N] exactly",
         "hardware_binding_rule": "row hardware must equal manifest.hardware_id whose fingerprint is present in C72 paired result",
+        "surface_cell_binding_rule": "row cell_id is derived from the realized C72 Program case; caller labels cannot redefine it",
         "comparative_execution": "NOT_RUN",
     }
