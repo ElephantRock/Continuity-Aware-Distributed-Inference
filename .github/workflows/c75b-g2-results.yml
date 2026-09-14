@@ -9,8 +9,10 @@ on:
       - experiments/c75_g2_execute.py
       - experiments/c75_g2_adjudicate.py
       - experiments/c75_g2_finalize.py
+      - experiments/c75_g2_stage2_contract.py
       - tests/experiments/test_c75_g2_execute.py
       - tests/experiments/test_c75_g2_adjudicate.py
+      - tests/experiments/test_c75_g2_stage2_contract.py
       - spec/59-c7.5b-g2-results.md
   pull_request:
     paths:
@@ -18,8 +20,10 @@ on:
       - experiments/c75_g2_execute.py
       - experiments/c75_g2_adjudicate.py
       - experiments/c75_g2_finalize.py
+      - experiments/c75_g2_stage2_contract.py
       - tests/experiments/test_c75_g2_execute.py
       - tests/experiments/test_c75_g2_adjudicate.py
+      - tests/experiments/test_c75_g2_stage2_contract.py
       - spec/59-c7.5b-g2-results.md
   workflow_dispatch:
 
@@ -64,11 +68,12 @@ jobs:
             spec/50-c7.1-efficiency-protocol.md \
             spec/51-c7.2-routing-reuse.md \
             spec/58-c7.5a-g2-integration-protocol.md
-      - name: Run C7.5b pre-result mechanics and adjudication tests
+      - name: Run C7.5b pre-result mechanics, adjudication, and provenance tests
         run: |
           python -m pytest -q \
             tests/experiments/test_c75_g2_execute.py \
-            tests/experiments/test_c75_g2_adjudicate.py
+            tests/experiments/test_c75_g2_adjudicate.py \
+            tests/experiments/test_c75_g2_stage2_contract.py
       - name: Reproduce preflight identity twice
         run: |
           python -m experiments.c75_g2_execute > /tmp/c75b-a.json
@@ -82,6 +87,7 @@ jobs:
           from experiments.c75_g2_adjudicate import adjudicator_identity
           from experiments.c75_g2_finalize import expected_program_row_count
           from experiments.c75_g2_protocol import C75_PROTOCOL_FINGERPRINT, C75_SOURCE_SELECTION_FINGERPRINT
+          from experiments.c75_g2_stage2_contract import stage2_contract_identity
 
           payload = json.loads(Path('/tmp/c75b-a.json').read_text())
           assert payload['schema'] == 'cadi.c7.5b.g2-executor.v1'
@@ -102,10 +108,16 @@ jobs:
           assert adjudicator['h7_complete_cell_count'] == 91
           assert adjudicator['p7_control_cell_count'] == 3
           assert adjudicator['comparative_execution'] == 'NOT_RUN'
+          contract = stage2_contract_identity()
+          assert contract['schema'] == 'cadi.c7.5b.stage2-provenance-contract.v1'
+          assert contract['comparative_execution'] == 'NOT_RUN'
+          assert contract['seed_record_rule'] == 'seed N must use selected_source_records[N] exactly'
+          assert 'manifest.hardware_id' in contract['hardware_binding_rule']
           assert expected_program_row_count() == 60160
           assert 'G2=A iff H7 is supported' in adjudicator['gate_reduction']
           print(json.dumps(payload, sort_keys=True, separators=(',', ':')))
           print(json.dumps(adjudicator, sort_keys=True, separators=(',', ':')))
+          print(json.dumps(contract, sort_keys=True, separators=(',', ':')))
           print('comparative_execution=NOT_RUN')
           PY
       - name: Download exact pinned Mooncake source
@@ -115,20 +127,19 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           from experiments.c72_routing_reuse import derive_pinned_mooncake_c7_admissible
-          from experiments.c75_g2_protocol import (
-              C75_SOURCE_SELECTION_FINGERPRINT,
-              seed_selection_fingerprint,
-          )
+          from experiments.c75_g2_protocol import C75_SOURCE_SELECTION_FINGERPRINT
+          from experiments.c75_g2_stage2_contract import frozen_source_records, source_record_for_seed
           from experiments.mooncake_trace import load_pinned_mooncake_trace
 
           source = load_pinned_mooncake_trace(Path('/tmp/mooncake.jsonl').read_bytes())
           admissible = derive_pinned_mooncake_c7_admissible(source)
-          fingerprint = seed_selection_fingerprint(
+          selected = frozen_source_records(
               admissible.source_order,
               admissible_dataset_fingerprint=admissible.fingerprint,
           )
-          assert fingerprint == C75_SOURCE_SELECTION_FINGERPRINT
-          assert fingerprint == 'bebaf2e535b78177cb3ef2c39fddd9e23180c4aecb3e06deac9390d29b190fe4'
-          print(f'source_selection_fingerprint={fingerprint}')
+          assert len(selected) == 64
+          assert len({record.record_id for record in selected}) == 64
+          assert tuple(source_record_for_seed(selected, seed).record_id for seed in range(64)) == tuple(record.record_id for record in selected)
+          print(f'source_selection_fingerprint={C75_SOURCE_SELECTION_FINGERPRINT}')
           print('comparative_execution=NOT_RUN')
           PY
