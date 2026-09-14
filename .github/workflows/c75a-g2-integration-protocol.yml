@@ -24,6 +24,7 @@ env:
   PYTHONHASHSEED: '0'
   C75_BASE: '8ecb61c67ca73de4855d34a01ae35e54b2677cb3'
   MOONCAKE_URL: 'https://raw.githubusercontent.com/kvcache-ai/Mooncake/3cca71daccf2a7afb8fe3f0295358f70e3a69fdb/FAST25-release/traces/conversation_trace.jsonl'
+  C75_REVIEWED_PROTOCOL_FINGERPRINT: '318c415b9531001fc4637b7de6f21cd13ffb33a06d74444fb41c1ace3709ae41'
 
 jobs:
   protocol-freeze:
@@ -61,17 +62,20 @@ jobs:
           python -m experiments.c75_g2_protocol > /tmp/c75-a.json
           python -m experiments.c75_g2_protocol > /tmp/c75-b.json
           cmp /tmp/c75-a.json /tmp/c75-b.json
-      - name: Verify pre-result boundary
+      - name: Verify literal protocol fence and pre-result boundary
         run: |
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
           from experiments.c75_g2_protocol import C75_PROTOCOL_FINGERPRINT
 
           payload = json.loads(Path('/tmp/c75-a.json').read_text())
+          expected = os.environ['C75_REVIEWED_PROTOCOL_FINGERPRINT']
           assert payload['protocol']['comparative_result_inspection'] == 'NONE'
           assert payload['protocol_fingerprint'] == C75_PROTOCOL_FINGERPRINT
-          assert len(payload['protocol_fingerprint']) == 64
+          assert payload['protocol_fingerprint'] == expected
+          assert expected == '318c415b9531001fc4637b7de6f21cd13ffb33a06d74444fb41c1ace3709ae41'
           assert 'policy_results' not in payload['protocol']
           assert payload['protocol']['h4']['cell_support_is_per_comparator'] is True
           assert 'at least one primary comparator' in payload['protocol']['h4']['hypothesis_support']
