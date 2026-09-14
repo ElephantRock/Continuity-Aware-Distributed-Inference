@@ -4,21 +4,26 @@ import math
 
 import pytest
 
-from experiments.c7_protocol import C7_PROTOCOL_FINGERPRINT
+from experiments.c7_protocol import C7_PROTOCOL_FINGERPRINT, ExperimentSeries
 from experiments.c75_g2_protocol import (
+    C75_AUGMENTATION_SCHEMA,
     C75_COMPARATIVE_RESULT_INSPECTION,
     C75G2Decision,
     C75_H4_PRIMARY_COMPARATORS,
     C75_P1_REUSE_FRACTIONS,
     C75_PROTOCOL_FINGERPRINT,
+    C75_SOURCE_SELECTION_FINGERPRINT,
     C75_SURFACES,
     C75_WORKER_COUNTS,
     FROZEN_C75_PROTOCOL,
     adjudicate_g2,
+    augmentation_fingerprint,
     p1_cells,
     p1_cells_adjacent,
     p4_cells,
     p4_cells_adjacent,
+    p4_state_worker_index,
+    p4_worker_queue_depth,
     p7_control_cells,
     relative_timing_benefit,
     reusable_tokens,
@@ -54,6 +59,8 @@ def test_parent_and_result_inspection_are_frozen() -> None:
     assert "policy_results" not in payload
     assert len(C75_PROTOCOL_FINGERPRINT) == 64
     int(C75_PROTOCOL_FINGERPRINT, 16)
+    assert payload["workload_realization"]["source_selection_fingerprint"] == C75_SOURCE_SELECTION_FINGERPRINT
+    assert payload["workload_realization"]["augmentation_schema"] == C75_AUGMENTATION_SCHEMA
 
 
 def test_rankable_surface_counts_are_exact() -> None:
@@ -113,18 +120,72 @@ def test_quarter_step_reuse_never_rounds() -> None:
         reusable_tokens(1024, 0.1)
 
 
-def test_resource_fact_domains_are_deterministic_and_separated() -> None:
+def test_resource_fact_domains_are_deterministic_and_fenced() -> None:
     for seed in range(64):
         for workers in C75_WORKER_COUNTS:
             state = state_worker_index(seed, workers, operation_ordinal=1)
             session = session_preferred_worker_index(seed, workers)
-            queues = tuple(worker_queue_depth(seed, i, operation_ordinal=1) for i in range(workers))
+            queues = tuple(
+                worker_queue_depth(seed, i, workers, operation_ordinal=1)
+                for i in range(workers)
+            )
             assert 0 <= state < workers
             assert 0 <= session < workers
             assert all(0 <= q < 4 for q in queues)
             assert state == state_worker_index(seed, workers, operation_ordinal=1)
             assert session == session_preferred_worker_index(seed, workers)
+    assert 0 <= p4_state_worker_index(0) < 4
+    assert all(0 <= p4_worker_queue_depth(0, i, branch_ordinal=2) < 4 for i in range(4))
+    with pytest.raises(ValueError, match="worker-count"):
+        state_worker_index(0, 3)
+    with pytest.raises(ValueError, match="worker"):
+        worker_queue_depth(0, 4, 4)
+    with pytest.raises(ValueError, match="P4"):
+        p4_worker_queue_depth(0, 4)
     assert source_record_order_key("r0") != source_record_order_key("r1")
+
+
+def test_augmentation_fingerprint_binds_series_seed_source_case_and_parameters() -> None:
+    kwargs = {
+        "seed": 0,
+        "series": ExperimentSeries.P1_DEEP_REUSE,
+        "source_record_id": "r000",
+        "program_case_fingerprint": "a" * 64,
+        "parameters": (
+            ("reusable_prefix_fraction", 0.5),
+            ("session_depth", 8),
+            ("worker_count", 4),
+        ),
+    }
+    fp = augmentation_fingerprint(**kwargs)
+    assert len(fp) == 64
+    assert fp == augmentation_fingerprint(**kwargs)
+    changed = dict(kwargs)
+    changed["seed"] = 1
+    assert augmentation_fingerprint(**changed) != fp
+    changed = dict(kwargs)
+    changed["source_record_id"] = "r001"
+    assert augmentation_fingerprint(**changed) != fp
+    with pytest.raises(ValueError, match="exactly match"):
+        augmentation_fingerprint(
+            seed=0,
+            series=ExperimentSeries.P1_DEEP_REUSE,
+            source_record_id="r000",
+            program_case_fingerprint="a" * 64,
+            parameters=(("session_depth", 8), ("worker_count", 4)),
+        )
+    with pytest.raises(ValueError, match="reference"):
+        augmentation_fingerprint(
+            seed=0,
+            series=ExperimentSeries.P4_FANOUT_SHARED_PREFIX,
+            source_record_id="r000",
+            program_case_fingerprint="a" * 64,
+            parameters=(
+                ("fanout_width", 4),
+                ("shared_prefix_fraction", 0.5),
+                ("worker_count", 2),
+            ),
+        )
 
 
 def test_relative_timing_benefit_is_fenced() -> None:
