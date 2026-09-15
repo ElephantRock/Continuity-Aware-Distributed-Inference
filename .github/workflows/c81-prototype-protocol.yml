@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - c8/prototype-protocol
+      - main
     paths:
       - .github/workflows/c81-prototype-protocol.yml
       - experiments/c8_protocol.py
