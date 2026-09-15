@@ -1,0 +1,151 @@
+name: c75b-g2-results
+
+on:
+  push:
+    branches:
+      - c7/g2-results
+    paths:
+      - .github/workflows/c75b-g2-results.yml
+      - experiments/c75_g2_execute.py
+      - experiments/c75_g2_adjudicate.py
+      - experiments/c75_g2_finalize.py
+      - experiments/c75_g2_stage2_contract.py
+      - tests/experiments/test_c75_g2_execute.py
+      - tests/experiments/test_c75_g2_adjudicate.py
+      - tests/experiments/test_c75_g2_stage2_contract.py
+      - tests/experiments/test_c75_g2_review_repairs.py
+      - spec/59-c7.5b-g2-results.md
+  pull_request:
+    paths:
+      - .github/workflows/c75b-g2-results.yml
+      - experiments/c75_g2_execute.py
+      - experiments/c75_g2_adjudicate.py
+      - experiments/c75_g2_finalize.py
+      - experiments/c75_g2_stage2_contract.py
+      - tests/experiments/test_c75_g2_execute.py
+      - tests/experiments/test_c75_g2_adjudicate.py
+      - tests/experiments/test_c75_g2_stage2_contract.py
+      - tests/experiments/test_c75_g2_review_repairs.py
+      - spec/59-c7.5b-g2-results.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONHASHSEED: '0'
+  C75B_BASE: 'fcee10c5c647c9dfe11c7930987e331222fe124d'
+  MOONCAKE_URL: 'https://raw.githubusercontent.com/kvcache-ai/Mooncake/3cca71daccf2a7afb8fe3f0295358f70e3a69fdb/FAST25-release/traces/conversation_trace.jsonl'
+
+jobs:
+  pre-result-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Verify immutable checkout
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+          check-latest: false
+      - name: Install test runner only
+        run: python -m pip install 'pytest==8.4.2'
+      - name: Prove frozen scientific parents unchanged
+        run: |
+          git diff --exit-code "$C75B_BASE"..HEAD -- \
+            experiments/c7_protocol.py \
+            experiments/c72_routing_reuse.py \
+            experiments/c73c_protocol.py \
+            experiments/c75_g2_protocol.py \
+            tests/experiments/test_c72_routing_reuse.py \
+            tests/experiments/test_c75_g2_protocol.py \
+            simulator/policies.py \
+            simulator/continuity_policy.py \
+            spec/50-c7.1-efficiency-protocol.md \
+            spec/51-c7.2-routing-reuse.md \
+            spec/58-c7.5a-g2-integration-protocol.md
+      - name: Run C7.5b pre-result mechanics, adjudication, and provenance tests
+        run: |
+          python -m pytest -q \
+            tests/experiments/test_c75_g2_execute.py \
+            tests/experiments/test_c75_g2_adjudicate.py \
+            tests/experiments/test_c75_g2_stage2_contract.py \
+            tests/experiments/test_c75_g2_review_repairs.py
+      - name: Reproduce preflight identity twice
+        run: |
+          python -m experiments.c75_g2_execute > /tmp/c75b-a.json
+          python -m experiments.c75_g2_execute > /tmp/c75b-b.json
+          cmp /tmp/c75b-a.json /tmp/c75b-b.json
+      - name: Verify no comparative execution and frozen adjudication wiring
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from experiments.c75_g2_adjudicate import adjudicator_identity
+          from experiments.c75_g2_finalize import expected_program_row_count
+          from experiments.c75_g2_protocol import C75_PROTOCOL_FINGERPRINT, C75_SOURCE_SELECTION_FINGERPRINT
+          from experiments.c75_g2_stage2_contract import stage2_contract_identity
+
+          payload = json.loads(Path('/tmp/c75b-a.json').read_text())
+          assert payload['schema'] == 'cadi.c7.5b.g2-executor.v1'
+          assert payload['base_commit'] == 'fcee10c5c647c9dfe11c7930987e331222fe124d'
+          assert payload['c75_protocol_fingerprint'] == C75_PROTOCOL_FINGERPRINT
+          assert payload['c75_protocol_fingerprint'] == '318c415b9531001fc4637b7de6f21cd13ffb33a06d74444fb41c1ace3709ae41'
+          assert payload['source_selection_fingerprint'] == C75_SOURCE_SELECTION_FINGERPRINT
+          assert payload['source_selection_fingerprint'] == 'bebaf2e535b78177cb3ef2c39fddd9e23180c4aecb3e06deac9390d29b190fe4'
+          assert payload['p1_cell_count'] == 75
+          assert payload['p4_cell_count'] == 16
+          assert payload['p7_control_cell_count'] == 3
+          assert payload['comparative_execution'] == 'NOT_RUN'
+          assert 'policy_results' not in payload
+          assert 'gate_g2' not in payload
+          adjudicator = adjudicator_identity()
+          assert adjudicator['schema'] == 'cadi.c7.5b.g2-adjudicator.v1'
+          assert adjudicator['h4_complete_cell_count'] == 75
+          assert adjudicator['h7_complete_cell_count'] == 91
+          assert adjudicator['p7_control_cell_count'] == 3
+          assert adjudicator['comparative_execution'] == 'NOT_RUN'
+          assert 'paired_result_fingerprint' in adjudicator['within_hardware_pairing_identity']
+          assert 'preserve and exclude before' in adjudicator['semantic_invalid_h4_rule']
+          contract = stage2_contract_identity()
+          assert contract['schema'] == 'cadi.c7.5b.stage2-provenance-contract.v1'
+          assert contract['comparative_execution'] == 'NOT_RUN'
+          assert contract['seed_record_rule'] == 'seed N must use selected_source_records[N] exactly'
+          assert 'manifest.hardware_id' in contract['hardware_binding_rule']
+          assert 'derived from the realized C72 Program case' in contract['surface_cell_binding_rule']
+          assert expected_program_row_count() == 60160
+          assert 'G2=A iff H7 is supported' in adjudicator['gate_reduction']
+          print(json.dumps(payload, sort_keys=True, separators=(',', ':')))
+          print(json.dumps(adjudicator, sort_keys=True, separators=(',', ':')))
+          print(json.dumps(contract, sort_keys=True, separators=(',', ':')))
+          print('comparative_execution=NOT_RUN')
+          PY
+      - name: Download exact pinned Mooncake source
+        run: curl --fail --location --silent --show-error "$MOONCAKE_URL" --output /tmp/mooncake.jsonl
+      - name: Reproduce frozen source cohort without comparative evaluation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from experiments.c72_routing_reuse import derive_pinned_mooncake_c7_admissible
+          from experiments.c75_g2_protocol import C75_SOURCE_SELECTION_FINGERPRINT
+          from experiments.c75_g2_stage2_contract import frozen_source_records, source_record_for_seed
+          from experiments.mooncake_trace import load_pinned_mooncake_trace
+
+          source = load_pinned_mooncake_trace(Path('/tmp/mooncake.jsonl').read_bytes())
+          admissible = derive_pinned_mooncake_c7_admissible(source)
+          selected = frozen_source_records(
+              admissible.source_order,
+              admissible_dataset_fingerprint=admissible.fingerprint,
+          )
+          assert len(selected) == 64
+          assert len({record.record_id for record in selected}) == 64
+          assert tuple(source_record_for_seed(selected, seed).record_id for seed in range(64)) == tuple(record.record_id for record in selected)
+          print(f'source_selection_fingerprint={C75_SOURCE_SELECTION_FINGERPRINT}')
+          print('comparative_execution=NOT_RUN')
+          PY
