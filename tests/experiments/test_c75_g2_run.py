@@ -9,6 +9,7 @@ from experiments.c75_g2_run import (
     _assert_execution_checkout,
     _checked_out_git_sha,
     _execution_sha,
+    _repo_root,
     execution_plan,
 )
 
@@ -45,3 +46,16 @@ def test_execution_sha_must_match_running_checkout() -> None:
     wrong = "0" * 40 if observed != "0" * 40 else "1" * 40
     with pytest.raises(ValueError, match="running checkout"):
         _assert_execution_checkout(wrong)
+
+
+def test_execution_checkout_rejects_untracked_repository_inputs() -> None:
+    observed = _checked_out_git_sha()
+    probe = _repo_root() / ".c75b-untracked-execution-probe.py"
+    assert not probe.exists()
+    try:
+        probe.write_text("raise RuntimeError('unreviewed execution input')\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="not clean"):
+            _assert_execution_checkout(observed)
+    finally:
+        probe.unlink(missing_ok=True)
+    _assert_execution_checkout(observed)
