@@ -16,6 +16,7 @@ from .c8_wire_contract import (
 MESSAGE_SCHEMA = "cadi.c8.2.message-envelope.v1"
 HEADER_BYTES = 4
 HEADER = struct.Struct(">I")
+FRAME_IO_TIMEOUT_S = 2.0
 
 MESSAGE_KINDS = frozenset(
     {
@@ -39,6 +40,10 @@ class FrameSizeError(TransportError):
 
 
 class TruncatedFrameError(TransportError):
+    pass
+
+
+class FrameTimeoutError(TransportError):
     pass
 
 
@@ -160,30 +165,66 @@ def decode_frame_bytes(frame: bytes) -> dict[str, Any]:
     return validate_envelope(value)
 
 
-def recv_exact(sock: socket.socket, size: int) -> bytes:
+def _validated_timeout(timeout_s: float) -> float:
+    if not isinstance(timeout_s, (int, float)) or isinstance(timeout_s, bool):
+        raise TypeError("frame timeout must be numeric")
+    timeout = float(timeout_s)
+    if timeout <= 0.0:
+        raise ValueError("frame timeout must be positive")
+    return timeout
+
+
+def recv_exact(sock: socket.socket, size: int, *, timeout_s: float = FRAME_IO_TIMEOUT_S) -> bytes:
+    if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+        raise ValueError("recv size must be a non-negative integer")
+    timeout = _validated_timeout(timeout_s)
+    old_timeout = sock.gettimeout()
     chunks: list[bytes] = []
     remaining = size
-    while remaining:
-        chunk = sock.recv(remaining)
-        if not chunk:
-            raise TruncatedFrameError(f"socket closed with {remaining} bytes still required")
-        chunks.append(chunk)
-        remaining -= len(chunk)
+    try:
+        sock.settimeout(timeout)
+        while remaining:
+            try:
+                chunk = sock.recv(remaining)
+            except socket.timeout as exc:
+                raise FrameTimeoutError(
+                    f"frame receive deadline exceeded with {remaining} bytes still required"
+                ) from exc
+            if not chunk:
+                raise TruncatedFrameError(f"socket closed with {remaining} bytes still required")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    finally:
+        sock.settimeout(old_timeout)
     return b"".join(chunks)
 
 
-def recv_envelope(sock: socket.socket) -> dict[str, Any]:
-    header = recv_exact(sock, HEADER_BYTES)
+def recv_envelope(sock: socket.socket, *, timeout_s: float = FRAME_IO_TIMEOUT_S) -> dict[str, Any]:
+    header = recv_exact(sock, HEADER_BYTES, timeout_s=timeout_s)
     (length,) = HEADER.unpack(header)
     if length <= 0 or length > C8_MAX_FRAME_BYTES:
         raise FrameSizeError(f"frame payload length {length} is outside the frozen bound")
-    payload = recv_exact(sock, length)
+    payload = recv_exact(sock, length, timeout_s=timeout_s)
     value = decode_canonical_json(payload)
     return validate_envelope(value)
 
 
-def send_envelope(sock: socket.socket, envelope: Mapping[str, Any]) -> None:
-    sock.sendall(encode_frame(envelope))
+def send_envelope(
+    sock: socket.socket,
+    envelope: Mapping[str, Any],
+    *,
+    timeout_s: float = FRAME_IO_TIMEOUT_S,
+) -> None:
+    timeout = _validated_timeout(timeout_s)
+    old_timeout = sock.gettimeout()
+    try:
+        sock.settimeout(timeout)
+        try:
+            sock.sendall(encode_frame(envelope))
+        except socket.timeout as exc:
+            raise FrameTimeoutError("frame send deadline exceeded") from exc
+    finally:
+        sock.settimeout(old_timeout)
 
 
 def connect_loopback(
