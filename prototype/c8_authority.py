@@ -7,7 +7,6 @@ import socket
 from typing import Any
 
 from continuity.core import ContinuityCore
-from experiments.c8_protocol import C8ProcessRole
 
 from .c8_events import EventLogger
 from .c8_transport import (
@@ -16,6 +15,7 @@ from .c8_transport import (
     recv_envelope,
     send_envelope,
 )
+from .c8_wire_contract import C8WireRole
 
 
 REGISTER_SCHEMA = "cadi.c8.2.authority-register.v1"
@@ -33,7 +33,7 @@ def _send(
     pid: int,
     counter: int,
     kind: str,
-    receiver: C8ProcessRole,
+    receiver: C8WireRole,
     subject_type: str,
     subject_id: str,
     payload_schema: str,
@@ -42,7 +42,7 @@ def _send(
     message = make_envelope(
         message_id=_message_id(pid, counter),
         message_kind=kind,
-        sender_role=C8ProcessRole.CONTROL_PLANE_AUTHORITY,
+        sender_role=C8WireRole.CONTROL_PLANE_AUTHORITY,
         receiver_role=receiver,
         subject_type=subject_type,
         subject_id=subject_id,
@@ -60,17 +60,14 @@ def authority_process_main(
     *,
     shutdown_worker_after_completion: bool = True,
 ) -> None:
-    """Run the sole authoritative process for the C8.2 substrate.
-
-    The authority owns the only ContinuityCore instance in the reference topology.
-    C8.2 does not yet map synthetic completions to semantic C1 operations; that is
-    intentionally deferred to C8.3 cross-layer replay.
-    """
+    """Run the sole authoritative process for the C8.2 substrate."""
 
     if host not in {"127.0.0.1", "localhost"}:
         raise ValueError("C8.2 authority must bind to loopback")
+    if not isinstance(port, int) or isinstance(port, bool) or port < 0 or port > 65535:
+        raise ValueError("authority port must be an integer in [0, 65535]")
     pid = os.getpid()
-    logger = EventLogger(event_log_path, C8ProcessRole.CONTROL_PLANE_AUTHORITY)
+    logger = EventLogger(event_log_path, C8WireRole.CONTROL_PLANE_AUTHORITY)
     core = ContinuityCore()
     logger.emit(
         action="PROCESS_STARTED",
@@ -92,7 +89,12 @@ def authority_process_main(
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind((host, port))
     listener.listen(1)
-    logger.emit(action="LISTENING", result="OK", details={"host": host, "port": port})
+    bound_host, bound_port = listener.getsockname()
+    logger.emit(
+        action="LISTENING",
+        result="OK",
+        details={"host": bound_host, "port": int(bound_port), "port_source": "kernel_bind"},
+    )
 
     conn: socket.socket | None = None
     try:
@@ -105,7 +107,7 @@ def authority_process_main(
                 logger.emit(action="TRANSPORT_CLOSED", result="HARNESS_DISCONNECTED")
                 return
             logger.emit(action="MESSAGE_RECEIVED", result=message["message_kind"], message=message)
-            if message["receiver_role"] != C8ProcessRole.CONTROL_PLANE_AUTHORITY.value:
+            if message["receiver_role"] != C8WireRole.CONTROL_PLANE_AUTHORITY.value:
                 logger.emit(action="MESSAGE_REJECTED", result="WRONG_RECEIVER", message=message)
                 continue
 
@@ -113,7 +115,7 @@ def authority_process_main(
             sender = message["sender_role"]
             payload = message["payload"]
 
-            if kind == "REGISTER" and sender == C8ProcessRole.FAULT_TRANSPORT_HARNESS.value:
+            if kind == "REGISTER" and sender == C8WireRole.FAULT_TRANSPORT_HARNESS.value:
                 reported_pid = payload.get("pid")
                 if not isinstance(reported_pid, int) or reported_pid <= 0:
                     logger.emit(action="MESSAGE_REJECTED", result="INVALID_HARNESS_PID", message=message)
@@ -125,7 +127,7 @@ def authority_process_main(
                     pid=pid,
                     counter=counter,
                     kind="REGISTERED",
-                    receiver=C8ProcessRole.FAULT_TRANSPORT_HARNESS,
+                    receiver=C8WireRole.FAULT_TRANSPORT_HARNESS,
                     subject_type="PROCESS",
                     subject_id=message["subject_id"],
                     payload_schema=REGISTER_SCHEMA,
@@ -135,7 +137,7 @@ def authority_process_main(
                 logger.emit(action="MESSAGE_SENT", result="REGISTERED", message=response)
                 continue
 
-            if kind == "REGISTER" and sender == C8ProcessRole.WORKER.value:
+            if kind == "REGISTER" and sender == C8WireRole.WORKER.value:
                 if harness_pid is None:
                     logger.emit(action="MESSAGE_REJECTED", result="HARNESS_NOT_REGISTERED", message=message)
                     continue
@@ -160,7 +162,7 @@ def authority_process_main(
                     pid=pid,
                     counter=counter,
                     kind="REGISTERED",
-                    receiver=C8ProcessRole.WORKER,
+                    receiver=C8WireRole.WORKER,
                     subject_type="PROCESS",
                     subject_id=worker_id,
                     payload_schema=REGISTER_SCHEMA,
@@ -191,7 +193,7 @@ def authority_process_main(
                     pid=pid,
                     counter=counter,
                     kind="WORK",
-                    receiver=C8ProcessRole.WORKER,
+                    receiver=C8WireRole.WORKER,
                     subject_type="SYNTHETIC_WORK",
                     subject_id=work_id,
                     payload_schema=WORK_SCHEMA,
@@ -205,7 +207,7 @@ def authority_process_main(
                 logger.emit(action="MESSAGE_SENT", result="WORK", message=work)
                 continue
 
-            if kind == "COMPLETE" and sender == C8ProcessRole.WORKER.value:
+            if kind == "COMPLETE" and sender == C8WireRole.WORKER.value:
                 reported_pid = payload.get("pid")
                 expected_current = reported_pid == current_worker_pid
                 logger.emit(
@@ -225,7 +227,7 @@ def authority_process_main(
                         pid=pid,
                         counter=counter,
                         kind="SHUTDOWN",
-                        receiver=C8ProcessRole.WORKER,
+                        receiver=C8WireRole.WORKER,
                         subject_type="PROCESS",
                         subject_id=current_worker_id,
                         payload_schema=CONTROL_SCHEMA,
@@ -234,7 +236,7 @@ def authority_process_main(
                     logger.emit(action="MESSAGE_SENT", result="SHUTDOWN", message=shutdown)
                 continue
 
-            if kind == "PROCESS_FAILURE" and sender == C8ProcessRole.FAULT_TRANSPORT_HARNESS.value:
+            if kind == "PROCESS_FAILURE" and sender == C8WireRole.FAULT_TRANSPORT_HARNESS.value:
                 failed_pid = payload.get("pid")
                 logger.emit(
                     action="PROCESS_FAILURE_OBSERVED",
@@ -247,7 +249,7 @@ def authority_process_main(
                     current_worker_id = None
                 continue
 
-            if kind == "SHUTDOWN_ACK" and sender == C8ProcessRole.WORKER.value:
+            if kind == "SHUTDOWN_ACK" and sender == C8WireRole.WORKER.value:
                 logger.emit(action="WORKER_SHUTDOWN_ACK", result="OK", message=message)
                 if payload.get("pid") == current_worker_pid:
                     current_worker_pid = None
