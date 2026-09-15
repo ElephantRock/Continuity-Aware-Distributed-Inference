@@ -43,6 +43,10 @@ class TruncatedFrameError(TransportError):
     pass
 
 
+class ConnectionClosedError(TruncatedFrameError):
+    """Peer reset/abort is normalized to the same fail-closed class as EOF truncation."""
+
+
 class FrameTimeoutError(TruncatedFrameError):
     """A partial/stalled frame is treated as a bounded truncation failure."""
 
@@ -190,6 +194,10 @@ def recv_exact(sock: socket.socket, size: int, *, timeout_s: float = FRAME_IO_TI
                 raise FrameTimeoutError(
                     f"frame receive deadline exceeded with {remaining} bytes still required"
                 ) from exc
+            except ConnectionError as exc:
+                raise ConnectionClosedError(
+                    f"peer connection closed/reset with {remaining} bytes still required"
+                ) from exc
             if not chunk:
                 raise TruncatedFrameError(f"socket closed with {remaining} bytes still required")
             chunks.append(chunk)
@@ -223,6 +231,8 @@ def send_envelope(
             sock.sendall(encode_frame(envelope))
         except socket.timeout as exc:
             raise FrameTimeoutError("frame send deadline exceeded") from exc
+        except ConnectionError as exc:
+            raise ConnectionClosedError("peer connection closed/reset during frame send") from exc
     finally:
         sock.settimeout(old_timeout)
 
