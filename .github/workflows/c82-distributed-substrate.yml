@@ -1,0 +1,80 @@
+name: c82-distributed-substrate
+
+on:
+  push:
+    branches:
+      - c8/distributed-substrate
+      - main
+    paths:
+      - .github/workflows/c82-distributed-substrate.yml
+      - prototype/**
+      - tests/prototype/**
+      - spec/62-c8.2-distributed-substrate.md
+      - experiments/c8_protocol.py
+      - continuity/**
+  pull_request:
+    paths:
+      - .github/workflows/c82-distributed-substrate.yml
+      - prototype/**
+      - tests/prototype/**
+      - spec/62-c8.2-distributed-substrate.md
+      - experiments/c8_protocol.py
+      - continuity/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  C81_MERGE: '87a7d06cbacce96490fbfb41d6642e5dc8850a41'
+  EXPECTED_PROTOCOL_FINGERPRINT: '616cc4daa4c167152875522767a8cc968da25c63d6acc099c265bc3554641cb6'
+
+jobs:
+  substrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Verify immutable exact-head checkout
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git cat-file -e "${C81_MERGE}^{commit}"
+          git merge-base --is-ancestor "$C81_MERGE" HEAD
+      - name: Fence frozen C8.1 protocol and Continuity semantics
+        run: |
+          git diff --exit-code "$C81_MERGE" HEAD -- \
+            experiments/c8_protocol.py \
+            continuity
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+          check-latest: false
+      - name: Install test runner only
+        run: python -m pip install 'pytest==8.4.2'
+      - name: Verify frozen protocol identity before process launch
+        run: |
+          python - <<'PY'
+          from experiments.c8_protocol import (
+              C8_HEADLINE_MEASUREMENT_INSPECTION,
+              C8_PROTOCOL_FINGERPRINT,
+              protocol_fingerprint,
+          )
+          from prototype.c8_wire_contract import C81_PROTOCOL_FINGERPRINT
+          assert C8_PROTOCOL_FINGERPRINT == '${{ env.EXPECTED_PROTOCOL_FINGERPRINT }}'
+          assert C81_PROTOCOL_FINGERPRINT == C8_PROTOCOL_FINGERPRINT
+          assert protocol_fingerprint() == C8_PROTOCOL_FINGERPRINT
+          assert C8_HEADLINE_MEASUREMENT_INSPECTION == 'NONE'
+          PY
+      - name: Run real multiprocess and loopback TCP conformance tests
+        run: python -m pytest -q tests/prototype
+      - name: Record conformance boundary
+        run: |
+          echo "c8_protocol_fingerprint=$EXPECTED_PROTOCOL_FINGERPRINT"
+          echo "headline_c8_measurement_inspection=NONE"
+          echo "c8_substrate_evidence=MECHANICS_CONFORMANCE_ONLY"
