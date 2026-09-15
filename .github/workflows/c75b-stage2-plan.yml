@@ -21,6 +21,7 @@ on:
       - simulator/**
       - continuity/**
       - artifacts/c6.4f/exhaustive-source-equivalence.json
+      - pyproject.toml
   pull_request:
     paths:
       - .github/workflows/c75b-stage2-plan.yml
@@ -39,6 +40,7 @@ on:
       - simulator/**
       - continuity/**
       - artifacts/c6.4f/exhaustive-source-equivalence.json
+      - pyproject.toml
   workflow_dispatch:
 
 permissions:
