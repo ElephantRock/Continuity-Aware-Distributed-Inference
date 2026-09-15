@@ -1,0 +1,104 @@
+name: c81-prototype-protocol
+
+on:
+  push:
+    branches:
+      - c8/prototype-protocol
+      - main
+    paths:
+      - .github/workflows/c81-prototype-protocol.yml
+      - experiments/c8_protocol.py
+      - tests/experiments/test_c8_protocol.py
+      - spec/61-c8.1-real-cpu-prototype-protocol.md
+      - continuity/**
+      - simulator/**
+      - experiments/attempt_fencing_e1.py
+      - experiments/state_lineage_e1.py
+      - experiments/binding_safety_e1.py
+      - experiments/evidence_safety_e1.py
+      - experiments/idempotence_ordering_e1.py
+      - artifacts/c7.5b/g2-result-manifest.json
+  pull_request:
+    paths:
+      - .github/workflows/c81-prototype-protocol.yml
+      - experiments/c8_protocol.py
+      - tests/experiments/test_c8_protocol.py
+      - spec/61-c8.1-real-cpu-prototype-protocol.md
+      - continuity/**
+      - simulator/**
+      - experiments/attempt_fencing_e1.py
+      - experiments/state_lineage_e1.py
+      - experiments/binding_safety_e1.py
+      - experiments/evidence_safety_e1.py
+      - experiments/idempotence_ordering_e1.py
+      - artifacts/c7.5b/g2-result-manifest.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  C8_BASE: '0680d09efcf43a9b01552f9804906d66c3fc56f2'
+  EXPECTED_PROTOCOL_FINGERPRINT: '616cc4daa4c167152875522767a8cc968da25c63d6acc099c265bc3554641cb6'
+  EXPECTED_C75_MANIFEST_SHA256: '774eb4e59ba61f254b6fd5d4b5db908649ca5ce42cb93d1b9e2296da3208b3d5'
+
+jobs:
+  protocol:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Verify immutable exact-head checkout
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git cat-file -e "${C8_BASE}^{commit}"
+          git merge-base --is-ancestor "$C8_BASE" HEAD
+      - name: Verify frozen semantic parents unchanged from C8 base
+        run: |
+          git diff --exit-code "$C8_BASE" HEAD -- \
+            continuity \
+            simulator \
+            experiments/attempt_fencing_e1.py \
+            experiments/state_lineage_e1.py \
+            experiments/binding_safety_e1.py \
+            experiments/evidence_safety_e1.py \
+            experiments/idempotence_ordering_e1.py
+      - name: Verify imported C7 result identity unchanged
+        run: |
+          test "$(sha256sum artifacts/c7.5b/g2-result-manifest.json | awk '{print $1}')" = "$EXPECTED_C75_MANIFEST_SHA256"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('artifacts/c7.5b/g2-result-manifest.json').read_text())
+          assert manifest['gate_g2']['classification'] == 'G2_A_STRONG_EFFICIENCY_SUPPORT'
+          assert manifest['canonical_artifact']['scientific_fingerprint'] == '1ff70aa4985743483ca897120e819889846576a66d320ec23674406919ba2b17'
+          assert manifest['canonical_artifact']['result_json_sha256'] == 'f3eb3b8c5ee9e031aa9d3a1465e7e50c995cc6dab1020c3ee03662bfaa6765d7'
+          PY
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+          check-latest: false
+      - name: Install test runner only
+        run: python -m pip install 'pytest==8.4.2'
+      - name: Run frozen C8.1 protocol tests
+        run: python -m pytest -q tests/experiments/test_c8_protocol.py
+      - name: Verify literal protocol fingerprint and no result inspection
+        run: |
+          python - <<'PY'
+          from experiments.c8_protocol import (
+              C8_HEADLINE_MEASUREMENT_INSPECTION,
+              C8_PROTOCOL_FINGERPRINT,
+              protocol_fingerprint,
+          )
+          assert C8_PROTOCOL_FINGERPRINT == '${{ env.EXPECTED_PROTOCOL_FINGERPRINT }}'
+          assert protocol_fingerprint() == C8_PROTOCOL_FINGERPRINT
+          assert C8_HEADLINE_MEASUREMENT_INSPECTION == 'NONE'
+          print('c8_protocol_fingerprint=' + C8_PROTOCOL_FINGERPRINT)
+          print('headline_c8_measurement_inspection=' + C8_HEADLINE_MEASUREMENT_INSPECTION)
+          PY
