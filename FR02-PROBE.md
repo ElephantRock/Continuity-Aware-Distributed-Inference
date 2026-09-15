@@ -1,2 +1,2 @@
-# FR-02 acceptance round 2 — head A
-Second controlled round: verifies the corrected notice rendering end-to-end.
+# FR-02 acceptance round 2 — head B
+Head advanced; FR-02 must supersede the head-A review with a cleanly rendered notice.
