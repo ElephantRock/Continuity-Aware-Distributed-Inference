@@ -43,8 +43,8 @@ class TruncatedFrameError(TransportError):
     pass
 
 
-class FrameTimeoutError(TransportError):
-    pass
+class FrameTimeoutError(TruncatedFrameError):
+    """A partial/stalled frame is treated as a bounded truncation failure."""
 
 
 class CanonicalEncodingError(TransportError):
