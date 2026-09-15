@@ -3,6 +3,11 @@ from __future__ import annotations
 import ast
 import inspect
 from pathlib import Path
+import socket
+import struct
+import time
+
+import pytest
 
 from experiments.c8_protocol import (
     C8_MAX_FRAME_BYTES as FROZEN_MAX_FRAME_BYTES,
@@ -13,6 +18,7 @@ from experiments.c8_protocol import (
 from prototype import c8_events, c8_harness, c8_transport, c8_worker
 from prototype.c8_events import read_events
 from prototype.c8_runtime import C8SubstrateRuntime
+from prototype.c8_transport import FrameTimeoutError, recv_envelope
 from prototype.c8_wire_contract import (
     C81_PROTOCOL_FINGERPRINT,
     C8_MAX_FRAME_BYTES,
@@ -66,3 +72,16 @@ def test_processes_self_report_kernel_assigned_loopback_ports(tmp_path: Path) ->
         assert harness_listen["details"]["port"] == runtime.worker_port
     finally:
         runtime.stop()
+
+
+def test_stalled_partial_frame_fails_closed_on_bounded_deadline() -> None:
+    sender, receiver = socket.socketpair()
+    try:
+        sender.sendall(struct.pack(">I", 10) + b"{}")
+        started = time.monotonic()
+        with pytest.raises(FrameTimeoutError, match="deadline exceeded"):
+            recv_envelope(receiver, timeout_s=0.05)
+        assert time.monotonic() - started < 0.5
+    finally:
+        sender.close()
+        receiver.close()
