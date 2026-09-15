@@ -73,6 +73,7 @@ env:
   STAGE1_REVIEW_SHA: 'bf9af8fa54a2948c9fa4a77f3a1325ecbf5e2e68'
   RUNNER_REVIEW_SHA: '4bd4a8d268356daf1c856512a34b1b5a02cd8a31'
   FROZEN_GENERATION_SHA: '823bcb1f6ad9178d21052eec81934fb0199e1efa'
+  FROZEN_GENERATION_PR_REF: 'refs/pull/167/head'
   EXPECTED_SCIENTIFIC_FINGERPRINT: '1ff70aa4985743483ca897120e819889846576a66d320ec23674406919ba2b17'
   EXPECTED_RESULT_SHA256: 'f3eb3b8c5ee9e031aa9d3a1465e7e50c995cc6dab1020c3ee03662bfaa6765d7'
   EXPECTED_SUMMARY_SHA256: 'e20e2cfb517007ae197f4ecc13d25995f49e43721850a4a0b4402cc0e28a63bd'
@@ -95,7 +96,14 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           test -z "$(git status --porcelain --untracked-files=all)"
+      - name: Materialize frozen generation ancestry
+        run: |
+          git fetch --no-tags origin \
+            "+${FROZEN_GENERATION_PR_REF}:refs/remotes/origin/c75b-frozen-generation"
           git cat-file -e "${FROZEN_GENERATION_SHA}^{commit}"
+          git merge-base --is-ancestor \
+            "$FROZEN_GENERATION_SHA" \
+            refs/remotes/origin/c75b-frozen-generation
       - name: Verify authoritative generation used reviewed stage-1 mechanics
         run: |
           git diff --exit-code "$STAGE1_REVIEW_SHA" "$FROZEN_GENERATION_SHA" -- \
