@@ -6,7 +6,7 @@ from pathlib import Path
 import time
 from typing import Any, Mapping
 
-from experiments.c8_protocol import C8ProcessRole
+from .c8_wire_contract import C8WireRole
 
 
 EVENT_SCHEMA = "cadi.c8.2.process-event.v1"
@@ -15,7 +15,7 @@ EVENT_SCHEMA = "cadi.c8.2.process-event.v1"
 class EventLogger:
     """Per-process canonical JSONL log used for C8.3 cross-layer reconciliation."""
 
-    def __init__(self, path: str | Path, role: C8ProcessRole) -> None:
+    def __init__(self, path: str | Path, role: C8WireRole) -> None:
         self.path = Path(path)
         self.role = role
         self.pid = os.getpid()
