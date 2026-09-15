@@ -9,6 +9,7 @@ on:
       - .github/workflows/c82-distributed-substrate.yml
       - prototype/**
       - tests/prototype/**
+      - spec/62-c8.2-distributed-substrate.md
       - experiments/c8_protocol.py
       - continuity/**
   pull_request:
@@ -16,6 +17,7 @@ on:
       - .github/workflows/c82-distributed-substrate.yml
       - prototype/**
       - tests/prototype/**
+      - spec/62-c8.2-distributed-substrate.md
       - experiments/c8_protocol.py
       - continuity/**
   workflow_dispatch:
