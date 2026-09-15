@@ -17,6 +17,7 @@ from experiments.c8_protocol import (
 )
 from prototype import c8_events, c8_harness, c8_transport, c8_worker
 from prototype.c8_events import read_events
+from prototype.c8_faults import DeliveryScheduler
 from prototype.c8_runtime import C8SubstrateRuntime
 from prototype.c8_transport import (
     ConnectionClosedError,
@@ -110,3 +111,11 @@ def test_connection_reset_is_normalized_to_fail_closed_frame_closure() -> None:
     with pytest.raises(ConnectionClosedError, match="closed/reset"):
         recv_exact(fake, 4, timeout_s=0.05)  # type: ignore[arg-type]
     assert fake.gettimeout() is None
+
+
+def test_reorder_directives_must_be_consecutive_pairs() -> None:
+    DeliveryScheduler(("REORDER", "REORDER"))
+    with pytest.raises(ValueError, match="consecutive pairs"):
+        DeliveryScheduler(("REORDER",))
+    with pytest.raises(ValueError, match="consecutive pairs"):
+        DeliveryScheduler(("REORDER", "DELIVER"))
