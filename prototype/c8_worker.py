@@ -6,10 +6,9 @@ import sys
 import time
 from pathlib import Path
 
-from experiments.c8_protocol import C8ProcessRole
-
 from .c8_events import EventLogger
 from .c8_transport import connect_loopback, make_envelope, recv_envelope, send_envelope
+from .c8_wire_contract import C8WireRole
 
 
 REGISTER_SCHEMA = "cadi.c8.2.worker-register.v1"
@@ -29,11 +28,7 @@ def worker_process_main(
     event_log_path: str | Path,
     work_delay_s: float = 0.0,
 ) -> None:
-    """Run one physical worker.
-
-    This module intentionally imports no Continuity semantic core. The worker can
-    execute only synthetic physical work and return observations/completions.
-    """
+    """Run one physical worker without importing Continuity semantic authority."""
 
     if not isinstance(worker_id, str) or not worker_id:
         raise ValueError("worker_id must be non-empty")
@@ -41,7 +36,7 @@ def worker_process_main(
         raise ValueError("work_delay_s must be non-negative")
 
     pid = os.getpid()
-    logger = EventLogger(event_log_path, C8ProcessRole.WORKER)
+    logger = EventLogger(event_log_path, C8WireRole.WORKER)
     logger.emit(
         action="PROCESS_STARTED",
         result="OK",
@@ -55,8 +50,8 @@ def worker_process_main(
     register = make_envelope(
         message_id=_message_id(worker_id, pid, counter),
         message_kind="REGISTER",
-        sender_role=C8ProcessRole.WORKER,
-        receiver_role=C8ProcessRole.CONTROL_PLANE_AUTHORITY,
+        sender_role=C8WireRole.WORKER,
+        receiver_role=C8WireRole.CONTROL_PLANE_AUTHORITY,
         subject_type="PROCESS",
         subject_id=worker_id,
         payload_schema=REGISTER_SCHEMA,
@@ -93,8 +88,8 @@ def worker_process_main(
                 complete = make_envelope(
                     message_id=_message_id(worker_id, pid, counter),
                     message_kind="COMPLETE",
-                    sender_role=C8ProcessRole.WORKER,
-                    receiver_role=C8ProcessRole.CONTROL_PLANE_AUTHORITY,
+                    sender_role=C8WireRole.WORKER,
+                    receiver_role=C8WireRole.CONTROL_PLANE_AUTHORITY,
                     subject_type=message["subject_type"],
                     subject_id=message["subject_id"],
                     payload_schema=COMPLETE_SCHEMA,
@@ -105,7 +100,6 @@ def worker_process_main(
                         "output": output,
                         "work_message_id": message["message_id"],
                     },
-                    # The incoming timestamp never affects this outcome.
                 )
                 send_envelope(sock, complete)
                 logger.emit(action="MESSAGE_SENT", result="COMPLETE", message=complete)
@@ -115,8 +109,8 @@ def worker_process_main(
                 ack = make_envelope(
                     message_id=_message_id(worker_id, pid, counter),
                     message_kind="SHUTDOWN_ACK",
-                    sender_role=C8ProcessRole.WORKER,
-                    receiver_role=C8ProcessRole.CONTROL_PLANE_AUTHORITY,
+                    sender_role=C8WireRole.WORKER,
+                    receiver_role=C8WireRole.CONTROL_PLANE_AUTHORITY,
                     subject_type="PROCESS",
                     subject_id=worker_id,
                     payload_schema=CONTROL_SCHEMA,
