@@ -14,8 +14,8 @@ permissions:
 env:
   PYTHONHASHSEED: '0'
   C75B_BASE: 'fcee10c5c647c9dfe11c7930987e331222fe124d'
-  STAGE1_REVIEW_SHA: '6aeb5a3147951645a270088aac0647c03084a73c'
-  RUNNER_REVIEW_SHA: '33e65b5ec784a644216b69d1331fc843b5784a09'
+  STAGE1_REVIEW_SHA: 'bf9af8fa54a2948c9fa4a77f3a1325ecbf5e2e68'
+  RUNNER_REVIEW_SHA: '05d4597ace4c04bdfe63cadf46bc086de5b01fbe'
   MOONCAKE_URL: 'https://raw.githubusercontent.com/kvcache-ai/Mooncake/3cca71daccf2a7afb8fe3f0295358f70e3a69fdb/FAST25-release/traces/conversation_trace.jsonl'
 
 jobs:
@@ -88,6 +88,7 @@ jobs:
             --c64f-artifact artifacts/c6.4f/exhaustive-source-equivalence.json \
             --execution-sha "$EXECUTION_SHA" \
             --output /tmp/c75b-result-a.json \
+            --rows-output /tmp/c75b-rows-a.jsonl \
             > /tmp/c75b-summary-a.json
           python -m experiments.c75_g2_run \
             --execute \
@@ -95,8 +96,10 @@ jobs:
             --c64f-artifact artifacts/c6.4f/exhaustive-source-equivalence.json \
             --execution-sha "$EXECUTION_SHA" \
             --output /tmp/c75b-result-b.json \
+            --rows-output /tmp/c75b-rows-b.jsonl \
             > /tmp/c75b-summary-b.json
           cmp /tmp/c75b-result-a.json /tmp/c75b-result-b.json
+          cmp /tmp/c75b-rows-a.jsonl /tmp/c75b-rows-b.jsonl
           cmp /tmp/c75b-summary-a.json /tmp/c75b-summary-b.json
       - name: Verify result contract and print compact outcome
         run: |
@@ -107,9 +110,12 @@ jobs:
           from pathlib import Path
 
           result_bytes = Path('/tmp/c75b-result-a.json').read_bytes()
+          rows_bytes = Path('/tmp/c75b-rows-a.jsonl').read_bytes()
           result = json.loads(result_bytes)
           summary = json.loads(Path('/tmp/c75b-summary-a.json').read_text())
           observed_sha = hashlib.sha256(result_bytes).hexdigest()
+          observed_rows_sha = hashlib.sha256(rows_bytes).hexdigest()
+          row_count = sum(1 for line in rows_bytes.splitlines() if line)
 
           assert result['schema'] == 'cadi.c7.5b.g2-result-artifact.v1'
           assert result['runner_schema'] == 'cadi.c7.5b.frozen-sweep-runner.v1'
@@ -117,12 +123,17 @@ jobs:
           assert result['execution_git_sha'] == os.environ['EXECUTION_SHA']
           assert result['comparative_execution'] == 'COMPLETE'
           assert result['program_row_count'] == 60160
+          assert result['program_rows_schema'] == 'cadi.c7.5b.program-rows.canonical-jsonl.v1'
+          assert row_count == 60160
+          assert observed_rows_sha == result['program_rows_sha256']
           assert len(result['program_rows_sha256']) == 64
           assert len(result['scientific_fingerprint']) == 64
           assert summary['artifact_sha256'] == observed_sha
           assert summary['execution_git_sha'] == os.environ['EXECUTION_SHA']
           assert summary['program_row_count'] == 60160
+          assert summary['program_rows_schema'] == result['program_rows_schema']
           assert summary['program_rows_sha256'] == result['program_rows_sha256']
+          assert summary['program_rows_artifact_sha256'] == observed_rows_sha
           assert summary['scientific_fingerprint'] == result['scientific_fingerprint']
           assert summary['h4_decision'] in {
               'SUPPORTED_WITHIN_DECLARED_PHASE_SPACE',
@@ -140,18 +151,19 @@ jobs:
           }
           print(json.dumps(summary, sort_keys=True, separators=(',', ':')))
           print('artifact_sha256=' + observed_sha)
+          print('rows_sha256=' + observed_rows_sha)
           print('scientific_fingerprint=' + result['scientific_fingerprint'])
-          print('program_rows_sha256=' + result['program_rows_sha256'])
           print('h4=' + summary['h4_decision'])
           print('h7=' + summary['h7_decision'])
           print('p7_pass=' + str(summary['h7_p7_pass']))
           print('gate_g2=' + summary['gate_g2'])
           PY
-      - name: Stage canonical result artifact
+      - name: Stage canonical result artifacts
         run: |
           mkdir -p /tmp/c75b-artifact
           cp /tmp/c75b-result-a.json /tmp/c75b-artifact/g2-result.json
           cp /tmp/c75b-summary-a.json /tmp/c75b-artifact/g2-result-summary.json
+          cp /tmp/c75b-rows-a.jsonl /tmp/c75b-artifact/program-rows.jsonl
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: c75b-g2-result
