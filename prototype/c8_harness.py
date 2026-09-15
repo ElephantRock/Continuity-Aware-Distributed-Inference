@@ -6,8 +6,6 @@ import selectors
 import socket
 from typing import Iterable, Mapping
 
-from experiments.c8_protocol import C8ProcessRole
-
 from .c8_events import EventLogger
 from .c8_faults import DeliveryAction, DeliveryScheduler, QueueCapacityError
 from .c8_transport import (
@@ -18,6 +16,7 @@ from .c8_transport import (
     recv_envelope,
     send_envelope,
 )
+from .c8_wire_contract import C8WireRole
 
 
 HARNESS_REGISTER_SCHEMA = "cadi.c8.2.harness-register.v1"
@@ -47,8 +46,15 @@ def harness_process_main(
 ) -> None:
     """Run the external transport/fault process between workers and authority."""
 
+    if authority_host not in {"127.0.0.1", "localhost"}:
+        raise ValueError("authority endpoint must be loopback")
+    if worker_host not in {"127.0.0.1", "localhost"}:
+        raise ValueError("worker endpoint must be loopback")
+    if not isinstance(worker_port, int) or isinstance(worker_port, bool) or worker_port < 0 or worker_port > 65535:
+        raise ValueError("worker port must be an integer in [0, 65535]")
+
     pid = os.getpid()
-    logger = EventLogger(event_log_path, C8ProcessRole.FAULT_TRANSPORT_HARNESS)
+    logger = EventLogger(event_log_path, C8WireRole.FAULT_TRANSPORT_HARNESS)
     logger.emit(action="PROCESS_STARTED", result="OK", details={"pid_source": "os.getpid"})
 
     upstream_schedulers = _scheduler_map(upstream_faults, capacity=queue_capacity)
@@ -59,10 +65,16 @@ def harness_process_main(
     listener.bind((worker_host, worker_port))
     listener.listen(8)
     listener.setblocking(False)
+    bound_host, bound_port = listener.getsockname()
     logger.emit(
         action="WORKER_LISTENING",
         result="OK",
-        details={"host": worker_host, "port": worker_port, "queue_capacity": queue_capacity},
+        details={
+            "host": bound_host,
+            "port": int(bound_port),
+            "port_source": "kernel_bind",
+            "queue_capacity": queue_capacity,
+        },
     )
 
     upstream = connect_loopback(authority_host, authority_port)
@@ -70,15 +82,15 @@ def harness_process_main(
     register = make_envelope(
         message_id=f"harness:{pid}:1",
         message_kind="REGISTER",
-        sender_role=C8ProcessRole.FAULT_TRANSPORT_HARNESS,
-        receiver_role=C8ProcessRole.CONTROL_PLANE_AUTHORITY,
+        sender_role=C8WireRole.FAULT_TRANSPORT_HARNESS,
+        receiver_role=C8WireRole.CONTROL_PLANE_AUTHORITY,
         subject_type="PROCESS",
         subject_id="fault-transport-harness",
         payload_schema=HARNESS_REGISTER_SCHEMA,
         payload={
             "pid": pid,
-            "listen_host": worker_host,
-            "listen_port": worker_port,
+            "listen_host": bound_host,
+            "listen_port": int(bound_port),
         },
     )
     upstream.setblocking(True)
@@ -138,7 +150,11 @@ def harness_process_main(
                 },
             )
 
-    def _flush_delayed(schedulers: dict[str, DeliveryScheduler], destination: socket.socket, direction: str) -> None:
+    def _flush_delayed(
+        schedulers: dict[str, DeliveryScheduler],
+        destination: socket.socket,
+        direction: str,
+    ) -> None:
         for kind, scheduler in schedulers.items():
             for frame in scheduler.flush_delayed():
                 _raw_send(destination, frame, direction=direction, kind=kind)
@@ -186,11 +202,10 @@ def harness_process_main(
                         upstream.setblocking(False)
                     logger.emit(action="MESSAGE_RECEIVED", result="FROM_AUTHORITY", message=message)
                     receiver = message["receiver_role"]
-                    if receiver == C8ProcessRole.FAULT_TRANSPORT_HARNESS.value:
-                        # Harness-directed registration acknowledgement is consumed here.
+                    if receiver == C8WireRole.FAULT_TRANSPORT_HARNESS.value:
                         logger.emit(action="HARNESS_CONTROL_CONSUMED", result=message["message_kind"], message=message)
                         continue
-                    if receiver != C8ProcessRole.WORKER.value:
+                    if receiver != C8WireRole.WORKER.value:
                         logger.emit(action="MESSAGE_REJECTED", result="INVALID_DOWNSTREAM_RECEIVER", message=message)
                         continue
                     if worker is None:
@@ -233,8 +248,8 @@ def harness_process_main(
                             failure = make_envelope(
                                 message_id=f"harness:{pid}:failure:{failure_counter}",
                                 message_kind="PROCESS_FAILURE",
-                                sender_role=C8ProcessRole.FAULT_TRANSPORT_HARNESS,
-                                receiver_role=C8ProcessRole.CONTROL_PLANE_AUTHORITY,
+                                sender_role=C8WireRole.FAULT_TRANSPORT_HARNESS,
+                                receiver_role=C8WireRole.CONTROL_PLANE_AUTHORITY,
                                 subject_type="PROCESS",
                                 subject_id=worker_id or f"worker-pid-{worker_pid}",
                                 payload_schema=FAILURE_SCHEMA,
@@ -259,7 +274,7 @@ def harness_process_main(
                             worker.setblocking(False)
 
                     logger.emit(action="MESSAGE_RECEIVED", result="FROM_WORKER", message=message)
-                    if message["sender_role"] != C8ProcessRole.WORKER.value:
+                    if message["sender_role"] != C8WireRole.WORKER.value:
                         logger.emit(action="MESSAGE_REJECTED", result="INVALID_UPSTREAM_SENDER", message=message)
                         continue
                     if message["message_kind"] == "REGISTER":
@@ -269,7 +284,6 @@ def harness_process_main(
                         if isinstance(candidate_pid, int) and isinstance(candidate_id, str):
                             worker_pid = candidate_pid
                             worker_id = candidate_id
-                            # A new physical worker makes previously held LATE_DELIVER frames truly late.
                             upstream.setblocking(True)
                             try:
                                 _flush_late_upstream()
