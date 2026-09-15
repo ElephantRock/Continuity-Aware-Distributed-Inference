@@ -9,6 +9,14 @@ on:
       - experiments/c8_protocol.py
       - tests/experiments/test_c8_protocol.py
       - spec/61-c8.1-real-cpu-prototype-protocol.md
+      - continuity/**
+      - simulator/**
+      - experiments/attempt_fencing_e1.py
+      - experiments/state_lineage_e1.py
+      - experiments/binding_safety_e1.py
+      - experiments/evidence_safety_e1.py
+      - experiments/idempotence_ordering_e1.py
+      - artifacts/c7.5b/g2-result-manifest.json
   pull_request:
     paths:
       - .github/workflows/c81-prototype-protocol.yml
@@ -30,7 +38,7 @@ permissions:
 
 env:
   C8_BASE: '0680d09efcf43a9b01552f9804906d66c3fc56f2'
-  EXPECTED_PROTOCOL_FINGERPRINT: 'e29f069a9ff42ca993c01db22a3f96441ea5f9a6c6d6693041c68af43597ff34'
+  EXPECTED_PROTOCOL_FINGERPRINT: '616cc4daa4c167152875522767a8cc968da25c63d6acc099c265bc3554641cb6'
   EXPECTED_C75_MANIFEST_SHA256: '774eb4e59ba61f254b6fd5d4b5db908649ca5ce42cb93d1b9e2296da3208b3d5'
 
 jobs:
@@ -54,10 +62,7 @@ jobs:
         run: |
           git diff --exit-code "$C8_BASE" HEAD -- \
             continuity \
-            simulator/semantic_adapter.py \
-            simulator/faults.py \
-            simulator/fault_campaign.py \
-            simulator/fault_oracle.py \
+            simulator \
             experiments/attempt_fencing_e1.py \
             experiments/state_lineage_e1.py \
             experiments/binding_safety_e1.py \
