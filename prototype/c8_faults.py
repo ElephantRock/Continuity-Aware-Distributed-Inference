@@ -23,6 +23,8 @@ class DeliveryScheduler:
 
     The scheduler never inspects or changes semantic payload fields. It operates on
     already-encoded canonical frames and is therefore unable to confer authority.
+    REORDER is a two-frame action encoded by two consecutive REORDER directives:
+    the first holds a frame and the second emits the new frame before the held one.
     """
 
     def __init__(self, script: Iterable[DeliveryAction | str] = (), *, capacity: int = 64) -> None:
@@ -33,6 +35,15 @@ class DeliveryScheduler:
             action if isinstance(action, DeliveryAction) else DeliveryAction(action)
             for action in script
         )
+        expecting_reorder_pair = False
+        for action in self._script:
+            if action is DeliveryAction.REORDER:
+                expecting_reorder_pair = not expecting_reorder_pair
+                continue
+            if expecting_reorder_pair:
+                raise ValueError("REORDER directives must appear in consecutive pairs")
+        if expecting_reorder_pair:
+            raise ValueError("REORDER directives must appear in consecutive pairs")
         self._cursor = 0
         self._delayed: Deque[bytes] = deque()
         self._late: Deque[bytes] = deque()
