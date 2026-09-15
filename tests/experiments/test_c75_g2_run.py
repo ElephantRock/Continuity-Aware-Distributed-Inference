@@ -16,7 +16,7 @@ from experiments.c75_g2_run import (
 def test_stage2_plan_is_exact_and_still_nonexecuting() -> None:
     plan = execution_plan()
     assert plan["stage1_review_sha"] == C75B_STAGE1_REVIEW_SHA
-    assert plan["stage1_review_sha"] == "6aeb5a3147951645a270088aac0647c03084a73c"
+    assert plan["stage1_review_sha"] == "bf9af8fa54a2948c9fa4a77f3a1325ecbf5e2e68"
     assert plan["p1_cells"] == 75
     assert plan["p4_cells"] == 16
     assert plan["p7_cells"] == 3
