@@ -45,7 +45,7 @@ permissions:
 env:
   PYTHONHASHSEED: '0'
   C75B_BASE: 'fcee10c5c647c9dfe11c7930987e331222fe124d'
-  STAGE1_REVIEW_SHA: '6aeb5a3147951645a270088aac0647c03084a73c'
+  STAGE1_REVIEW_SHA: 'bf9af8fa54a2948c9fa4a77f3a1325ecbf5e2e68'
 
 jobs:
   plan:
@@ -104,7 +104,7 @@ jobs:
           from pathlib import Path
           payload = json.loads(Path('/tmp/plan-a.json').read_text())
           assert payload['schema'] == 'cadi.c7.5b.frozen-sweep-runner.v1'
-          assert payload['stage1_review_sha'] == '6aeb5a3147951645a270088aac0647c03084a73c'
+          assert payload['stage1_review_sha'] == 'bf9af8fa54a2948c9fa4a77f3a1325ecbf5e2e68'
           assert payload['p1_cells'] == 75
           assert payload['p4_cells'] == 16
           assert payload['p7_cells'] == 3
