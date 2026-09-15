@@ -8,6 +8,10 @@ from experiments.c75_g2_adjudicate import p1_cell_id, p4_cell_id, p7_cell_id
 from experiments.c75_g2_execute import (
     C75B_HARDWARE_STRATA,
     C75ProgramRow,
+    build_manifests_for_case,
+    build_p1_program_case,
+    build_p4_program_case,
+    build_p7_program_case,
     parameters_for_case,
     summarize_paired_result,
 )
@@ -84,8 +88,43 @@ def validate_result_rows_against_frozen_mapping(
             raise ValueError("result row violates the frozen seed-to-source-record mapping")
 
 
+def _expected_case_for_binding(
+    case: C72ProgramCase, *, record: NormalizedTraceRecord, seed: int
+) -> C72ProgramCase:
+    if not isinstance(case, C72ProgramCase):
+        raise TypeError("case must be C72ProgramCase")
+    params = dict(parameters_for_case(case))
+    if case.series is ExperimentSeries.P1_DEEP_REUSE:
+        return build_p1_program_case(
+            record,
+            seed=seed,
+            session_depth=int(params["session_depth"]),
+            reusable_prefix_fraction=float(params["reusable_prefix_fraction"]),
+            worker_count=int(params["worker_count"]),
+        )
+    if case.series is ExperimentSeries.P4_FANOUT_SHARED_PREFIX:
+        return build_p4_program_case(
+            record,
+            seed=seed,
+            fanout_width=int(params["fanout_width"]),
+            shared_prefix_fraction=float(params["shared_prefix_fraction"]),
+        )
+    if case.series is ExperimentSeries.P7_STATELESS_OVERHEAD:
+        return build_p7_program_case(
+            record,
+            seed=seed,
+            worker_count=int(params["worker_count"]),
+        )
+    raise ValueError("C7.5b stage2 contract supports only P1/P4/P7")
+
+
 def _validated_manifest_mapping(
-    manifests: Mapping[PolicyID, object], *, hardware_id: str
+    manifests: Mapping[PolicyID, object],
+    *,
+    hardware_id: str,
+    case: C72ProgramCase,
+    record: NormalizedTraceRecord,
+    seed: int,
 ) -> Mapping[PolicyID, C7ExperimentManifest]:
     if hardware_id not in C75B_HARDWARE_STRATA:
         raise ValueError("hardware_id escaped frozen strata")
@@ -101,6 +140,23 @@ def _validated_manifest_mapping(
         if manifest.hardware_id != hardware_id:
             raise ValueError("manifest hardware does not match requested result stratum")
         typed[policy_id] = manifest
+
+    git_commits = {manifest.git_commit for manifest in typed.values()}
+    if len(git_commits) != 1:
+        raise ValueError("paired manifests must share one execution Git commit")
+    execution_git_sha = next(iter(git_commits))
+    expected = build_manifests_for_case(
+        case,
+        record,
+        seed=seed,
+        hardware_id=hardware_id,
+        execution_git_sha=execution_git_sha,
+    )
+    for policy_id in PolicyID:
+        if typed[policy_id] != expected[policy_id]:
+            raise ValueError("manifest provenance does not match the frozen C7.5b realization")
+        if typed[policy_id].fingerprint != expected[policy_id].fingerprint:
+            raise ValueError("manifest fingerprint does not match the frozen C7.5b realization")
     return typed
 
 
@@ -140,7 +196,16 @@ def summarize_verified_paired_result(
     cell_id: str | None = None,
 ) -> tuple[C75ProgramRow, ...]:
     validate_seed_record_binding(selected_source_records, seed=seed, record=source_record)
-    typed_manifests = _validated_manifest_mapping(manifests, hardware_id=hardware_id)
+    expected_case = _expected_case_for_binding(case, record=source_record, seed=seed)
+    if case != expected_case or case.fingerprint != expected_case.fingerprint:
+        raise ValueError("Program case does not match the frozen seed/source realization")
+    typed_manifests = _validated_manifest_mapping(
+        manifests,
+        hardware_id=hardware_id,
+        case=expected_case,
+        record=source_record,
+        seed=seed,
+    )
     if paired.program_case_fingerprint != case.fingerprint:
         raise ValueError("paired result does not bind to the Program case")
     if paired.series is not case.series:
@@ -177,7 +242,9 @@ def stage2_contract_identity() -> dict[str, object]:
         "seed_schedule": list(C7_STOCHASTIC_SEEDS),
         "source_selection_fingerprint": C75_SOURCE_SELECTION_FINGERPRINT,
         "seed_record_rule": "seed N must use selected_source_records[N] exactly",
+        "program_binding_rule": "the realized C72 Program is reconstructed from the validated seed/source and frozen surface axes before summarization",
         "hardware_binding_rule": "row hardware must equal manifest.hardware_id whose fingerprint is present in C72 paired result",
+        "manifest_provenance_rule": "all B0-B4 manifests must exactly equal the frozen TRACE_AUGMENTED manifests reconstructed from Program/source/seed/hardware/execution commit",
         "surface_cell_binding_rule": "row cell_id is derived from the realized C72 Program case; caller labels cannot redefine it",
         "comparative_execution": "NOT_RUN",
     }
