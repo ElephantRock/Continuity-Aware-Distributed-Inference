@@ -45,7 +45,7 @@ from simulator.continuity_policy import build_baseline_policies
 from simulator.inference_cost_runtime import load_c64f_runtime_profiles
 
 
-C75B_STAGE1_REVIEW_SHA = "6aeb5a3147951645a270088aac0647c03084a73c"
+C75B_STAGE1_REVIEW_SHA = "bf9af8fa54a2948c9fa4a77f3a1325ecbf5e2e68"
 C75B_RUNNER_SCHEMA = "cadi.c7.5b.frozen-sweep-runner.v1"
 C75B_RESULT_ARTIFACT_SCHEMA = "cadi.c7.5b.g2-result-artifact.v1"
 C75B_PROGRAM_ROWS_SCHEMA = "cadi.c7.5b.program-rows.canonical-jsonl.v1"
