@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import subprocess
 from typing import Any, Iterable
 
 from experiments.c7_protocol import (
@@ -47,6 +48,7 @@ from simulator.inference_cost_runtime import load_c64f_runtime_profiles
 C75B_STAGE1_REVIEW_SHA = "6aeb5a3147951645a270088aac0647c03084a73c"
 C75B_RUNNER_SCHEMA = "cadi.c7.5b.frozen-sweep-runner.v1"
 C75B_RESULT_ARTIFACT_SCHEMA = "cadi.c7.5b.g2-result-artifact.v1"
+C75B_PROGRAM_ROWS_SCHEMA = "cadi.c7.5b.program-rows.canonical-jsonl.v1"
 C75B_COMPARATIVE_EXECUTION_READY = "READY_NOT_RUN"
 C75B_COMPARATIVE_EXECUTION_COMPLETE = "COMPLETE"
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
@@ -64,6 +66,40 @@ def _execution_sha(value: str) -> str:
     if not isinstance(value, str) or _SHA40.fullmatch(value) is None:
         raise ValueError("execution Git SHA must be lowercase 40-hex")
     return value
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _checked_out_git_sha() -> str:
+    completed = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=_repo_root(),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return _execution_sha(completed.stdout.strip())
+
+
+def _assert_execution_checkout(execution_git_sha: str) -> None:
+    expected = _execution_sha(execution_git_sha)
+    observed = _checked_out_git_sha()
+    if observed != expected:
+        raise ValueError(
+            "execution Git SHA does not match the running checkout: "
+            f"expected={expected}, observed={observed}"
+        )
+    status = subprocess.run(
+        ("git", "status", "--porcelain", "--untracked-files=no"),
+        cwd=_repo_root(),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    if status:
+        raise ValueError("execution checkout has tracked modifications")
 
 
 def execution_plan() -> dict[str, Any]:
@@ -87,22 +123,43 @@ def execution_plan() -> dict[str, Any]:
         "p7_cells": len(p7),
         "paired_program_evaluations": programs,
         "program_row_count": expected_program_row_count(),
+        "program_rows_schema": C75B_PROGRAM_ROWS_SCHEMA,
         "comparative_execution": C75B_COMPARATIVE_EXECUTION_READY,
     }
+
+
+def _row_line(row: C75ProgramRow) -> bytes:
+    if not isinstance(row, C75ProgramRow):
+        raise TypeError("rows must contain C75ProgramRow values")
+    return (_json(row.to_dict()) + "\n").encode("utf-8")
 
 
 def _rows_sha256(rows: Iterable[C75ProgramRow]) -> str:
     digest = hashlib.sha256()
     count = 0
     for row in rows:
-        if not isinstance(row, C75ProgramRow):
-            raise TypeError("rows must contain C75ProgramRow values")
-        digest.update(_json(row.to_dict()).encode("utf-8"))
-        digest.update(b"\n")
+        digest.update(_row_line(row))
         count += 1
     if count != expected_program_row_count():
         raise ValueError("program-row hash requires the complete frozen result set")
     return digest.hexdigest()
+
+
+def write_rows_artifact(path: Path, rows: Iterable[C75ProgramRow]) -> tuple[str, int, int]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    byte_count = 0
+    row_count = 0
+    with path.open("wb") as handle:
+        for row in rows:
+            line = _row_line(row)
+            handle.write(line)
+            digest.update(line)
+            byte_count += len(line)
+            row_count += 1
+    if row_count != expected_program_row_count():
+        raise ValueError("Program-row artifact requires the complete frozen result set")
+    return digest.hexdigest(), byte_count, row_count
 
 
 def _evaluate_case(
@@ -143,8 +200,9 @@ def _evaluate_case(
 
 def execute_frozen_sweep(
     *, source_bytes: bytes, execution_git_sha: str, c64f_artifact: Path
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], tuple[C75ProgramRow, ...]]:
     execution_git_sha = _execution_sha(execution_git_sha)
+    _assert_execution_checkout(execution_git_sha)
     source = load_pinned_mooncake_trace(source_bytes)
     admissible = derive_pinned_mooncake_c7_admissible(source)
     if admissible.fingerprint != C75_C72_ADMISSIBLE_DATASET_FINGERPRINT:
@@ -252,11 +310,12 @@ def execute_frozen_sweep(
         "c6_artifact_sha256": C6_ARTIFACT_SHA256,
         "c6_evidence_class": C6_EVIDENCE_CLASS,
         "program_row_count": len(result_rows),
+        "program_rows_schema": C75B_PROGRAM_ROWS_SCHEMA,
         "program_rows_sha256": program_rows_sha256,
         "scientific_fingerprint": scientific_fingerprint,
         "final_adjudication": final_payload,
     }
-    return artifact
+    return artifact, result_rows
 
 
 def write_artifact(path: Path, artifact: dict[str, Any]) -> tuple[str, int]:
@@ -266,7 +325,14 @@ def write_artifact(path: Path, artifact: dict[str, Any]) -> tuple[str, int]:
     return hashlib.sha256(data).hexdigest(), len(data)
 
 
-def compact_summary(artifact: dict[str, Any], *, artifact_sha256: str, artifact_bytes: int) -> dict[str, Any]:
+def compact_summary(
+    artifact: dict[str, Any],
+    *,
+    artifact_sha256: str,
+    artifact_bytes: int,
+    rows_artifact_sha256: str,
+    rows_artifact_bytes: int,
+) -> dict[str, Any]:
     final = artifact["final_adjudication"]
     h4 = final["h4"]
     h7 = final["h7"]
@@ -275,7 +341,10 @@ def compact_summary(artifact: dict[str, Any], *, artifact_sha256: str, artifact_
         "comparative_execution": artifact["comparative_execution"],
         "execution_git_sha": artifact["execution_git_sha"],
         "program_row_count": artifact["program_row_count"],
+        "program_rows_schema": artifact["program_rows_schema"],
         "program_rows_sha256": artifact["program_rows_sha256"],
+        "program_rows_artifact_sha256": rows_artifact_sha256,
+        "program_rows_artifact_bytes": rows_artifact_bytes,
         "scientific_fingerprint": artifact["scientific_fingerprint"],
         "artifact_sha256": artifact_sha256,
         "artifact_bytes": artifact_bytes,
@@ -295,6 +364,7 @@ def main() -> None:
     parser.add_argument("--c64f-artifact")
     parser.add_argument("--execution-sha")
     parser.add_argument("--output")
+    parser.add_argument("--rows-output")
     args = parser.parse_args()
     if not args.execute:
         print(_json(execution_plan()))
@@ -304,17 +374,33 @@ def main() -> None:
         "--c64f-artifact": args.c64f_artifact,
         "--execution-sha": args.execution_sha,
         "--output": args.output,
+        "--rows-output": args.rows_output,
     }
     missing = [name for name, value in required.items() if not value]
     if missing:
         parser.error("--execute requires " + ", ".join(missing))
-    artifact = execute_frozen_sweep(
+    artifact, rows = execute_frozen_sweep(
         source_bytes=Path(args.source).read_bytes(),
         execution_git_sha=args.execution_sha,
         c64f_artifact=Path(args.c64f_artifact),
     )
+    rows_sha256, rows_bytes, rows_count = write_rows_artifact(Path(args.rows_output), rows)
+    if rows_count != artifact["program_row_count"]:
+        raise AssertionError("Program-row artifact count drift")
+    if rows_sha256 != artifact["program_rows_sha256"]:
+        raise AssertionError("Program-row artifact SHA-256 drift")
     artifact_sha256, artifact_bytes = write_artifact(Path(args.output), artifact)
-    print(_json(compact_summary(artifact, artifact_sha256=artifact_sha256, artifact_bytes=artifact_bytes)))
+    print(
+        _json(
+            compact_summary(
+                artifact,
+                artifact_sha256=artifact_sha256,
+                artifact_bytes=artifact_bytes,
+                rows_artifact_sha256=rows_sha256,
+                rows_artifact_bytes=rows_bytes,
+            )
+        )
+    )
 
 
 if __name__ == "__main__":
