@@ -8,11 +8,35 @@ on:
       - .github/workflows/c75b-stage2-plan.yml
       - experiments/c75_g2_run.py
       - tests/experiments/test_c75_g2_run.py
+      - experiments/c75_g2_execute.py
+      - experiments/c75_g2_adjudicate.py
+      - experiments/c75_g2_finalize.py
+      - experiments/c75_g2_stage2_contract.py
+      - experiments/c75_g2_protocol.py
+      - experiments/c72_routing_reuse.py
+      - experiments/c73c_protocol.py
+      - experiments/c7_protocol.py
+      - experiments/mooncake_trace.py
+      - simulator/**
+      - continuity/**
+      - artifacts/c6.4f/exhaustive-source-equivalence.json
   pull_request:
     paths:
       - .github/workflows/c75b-stage2-plan.yml
       - experiments/c75_g2_run.py
       - tests/experiments/test_c75_g2_run.py
+      - experiments/c75_g2_execute.py
+      - experiments/c75_g2_adjudicate.py
+      - experiments/c75_g2_finalize.py
+      - experiments/c75_g2_stage2_contract.py
+      - experiments/c75_g2_protocol.py
+      - experiments/c72_routing_reuse.py
+      - experiments/c73c_protocol.py
+      - experiments/c7_protocol.py
+      - experiments/mooncake_trace.py
+      - simulator/**
+      - continuity/**
+      - artifacts/c6.4f/exhaustive-source-equivalence.json
   workflow_dispatch:
 
 permissions:
@@ -20,6 +44,7 @@ permissions:
 
 env:
   PYTHONHASHSEED: '0'
+  C75B_BASE: 'fcee10c5c647c9dfe11c7930987e331222fe124d'
   STAGE1_REVIEW_SHA: '6aeb5a3147951645a270088aac0647c03084a73c'
 
 jobs:
@@ -41,6 +66,17 @@ jobs:
           check-latest: false
       - name: Install test runner only
         run: python -m pip install 'pytest==8.4.2'
+      - name: Prove frozen scientific parents unchanged from C7.5a closure
+        run: |
+          git diff --exit-code "$C75B_BASE"..HEAD -- \
+            experiments/c7_protocol.py \
+            experiments/c72_routing_reuse.py \
+            experiments/c73c_protocol.py \
+            experiments/c75_g2_protocol.py \
+            experiments/mooncake_trace.py \
+            simulator \
+            continuity \
+            artifacts/c6.4f/exhaustive-source-equivalence.json
       - name: Prove reviewed stage1 mechanics are byte-unchanged
         run: |
           git diff --exit-code "$STAGE1_REVIEW_SHA"..HEAD -- \
@@ -75,6 +111,7 @@ jobs:
           assert payload['seed_count'] == 64
           assert payload['paired_program_evaluations'] == 12032
           assert payload['program_row_count'] == 60160
+          assert payload['program_rows_schema'] == 'cadi.c7.5b.program-rows.canonical-jsonl.v1'
           assert payload['comparative_execution'] == 'READY_NOT_RUN'
           assert 'final_adjudication' not in payload
           assert 'gate_g2' not in payload
