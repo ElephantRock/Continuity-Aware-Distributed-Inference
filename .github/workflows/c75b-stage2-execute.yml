@@ -1,0 +1,161 @@
+name: c75b-stage2-execute
+
+on:
+  push:
+    branches:
+      - c7/g2-results
+    paths:
+      - .github/workflows/c75b-stage2-execute.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONHASHSEED: '0'
+  C75B_BASE: 'fcee10c5c647c9dfe11c7930987e331222fe124d'
+  STAGE1_REVIEW_SHA: '6aeb5a3147951645a270088aac0647c03084a73c'
+  RUNNER_REVIEW_SHA: '33e65b5ec784a644216b69d1331fc843b5784a09'
+  MOONCAKE_URL: 'https://raw.githubusercontent.com/kvcache-ai/Mooncake/3cca71daccf2a7afb8fe3f0295358f70e3a69fdb/FAST25-release/traces/conversation_trace.jsonl'
+
+jobs:
+  frozen-sweep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Verify immutable checkout and execution SHA
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "${#EXPECTED_SHA}" -eq 40
+          echo "EXECUTION_SHA=$EXPECTED_SHA" >> "$GITHUB_ENV"
+      - name: Prove reviewed stage1 mechanics are byte-unchanged
+        run: |
+          git diff --exit-code "$STAGE1_REVIEW_SHA"..HEAD -- \
+            experiments/c75_g2_execute.py \
+            experiments/c75_g2_adjudicate.py \
+            experiments/c75_g2_finalize.py \
+            experiments/c75_g2_stage2_contract.py \
+            tests/experiments/test_c75_g2_execute.py \
+            tests/experiments/test_c75_g2_adjudicate.py \
+            tests/experiments/test_c75_g2_stage2_contract.py \
+            tests/experiments/test_c75_g2_review_repairs.py \
+            .github/workflows/c75b-g2-results.yml \
+            spec/59-c7.5b-g2-results.md
+      - name: Prove reviewed stage2 runner is byte-unchanged
+        run: |
+          git diff --exit-code "$RUNNER_REVIEW_SHA"..HEAD -- \
+            experiments/c75_g2_run.py \
+            tests/experiments/test_c75_g2_run.py \
+            .github/workflows/c75b-stage2-plan.yml
+      - name: Prove frozen scientific parents are unchanged from C7.5a closure
+        run: |
+          git diff --exit-code "$C75B_BASE"..HEAD -- \
+            experiments/c7_protocol.py \
+            experiments/c72_routing_reuse.py \
+            experiments/c73c_protocol.py \
+            experiments/c75_g2_protocol.py \
+            experiments/mooncake_trace.py \
+            simulator \
+            continuity \
+            artifacts/c6.4f/exhaustive-source-equivalence.json
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+          check-latest: false
+      - name: Install test runner only
+        run: python -m pip install 'pytest==8.4.2'
+      - name: Run frozen mechanics and runner tests
+        run: |
+          python -m pytest -q \
+            tests/experiments/test_c75_g2_execute.py \
+            tests/experiments/test_c75_g2_adjudicate.py \
+            tests/experiments/test_c75_g2_stage2_contract.py \
+            tests/experiments/test_c75_g2_review_repairs.py \
+            tests/experiments/test_c75_g2_run.py
+      - name: Download exact pinned Mooncake source
+        run: curl --fail --location --silent --show-error "$MOONCAKE_URL" --output /tmp/mooncake.jsonl
+      - name: Execute frozen comparative sweep twice
+        run: |
+          python -m experiments.c75_g2_run \
+            --execute \
+            --source /tmp/mooncake.jsonl \
+            --c64f-artifact artifacts/c6.4f/exhaustive-source-equivalence.json \
+            --execution-sha "$EXECUTION_SHA" \
+            --output /tmp/c75b-result-a.json \
+            > /tmp/c75b-summary-a.json
+          python -m experiments.c75_g2_run \
+            --execute \
+            --source /tmp/mooncake.jsonl \
+            --c64f-artifact artifacts/c6.4f/exhaustive-source-equivalence.json \
+            --execution-sha "$EXECUTION_SHA" \
+            --output /tmp/c75b-result-b.json \
+            > /tmp/c75b-summary-b.json
+          cmp /tmp/c75b-result-a.json /tmp/c75b-result-b.json
+          cmp /tmp/c75b-summary-a.json /tmp/c75b-summary-b.json
+      - name: Verify result contract and print compact outcome
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          result_bytes = Path('/tmp/c75b-result-a.json').read_bytes()
+          result = json.loads(result_bytes)
+          summary = json.loads(Path('/tmp/c75b-summary-a.json').read_text())
+          observed_sha = hashlib.sha256(result_bytes).hexdigest()
+
+          assert result['schema'] == 'cadi.c7.5b.g2-result-artifact.v1'
+          assert result['runner_schema'] == 'cadi.c7.5b.frozen-sweep-runner.v1'
+          assert result['stage1_review_sha'] == os.environ['STAGE1_REVIEW_SHA']
+          assert result['execution_git_sha'] == os.environ['EXECUTION_SHA']
+          assert result['comparative_execution'] == 'COMPLETE'
+          assert result['program_row_count'] == 60160
+          assert len(result['program_rows_sha256']) == 64
+          assert len(result['scientific_fingerprint']) == 64
+          assert summary['artifact_sha256'] == observed_sha
+          assert summary['execution_git_sha'] == os.environ['EXECUTION_SHA']
+          assert summary['program_row_count'] == 60160
+          assert summary['program_rows_sha256'] == result['program_rows_sha256']
+          assert summary['scientific_fingerprint'] == result['scientific_fingerprint']
+          assert summary['h4_decision'] in {
+              'SUPPORTED_WITHIN_DECLARED_PHASE_SPACE',
+              'NOT_SUPPORTED_WITHIN_DECLARED_PHASE_SPACE',
+          }
+          assert summary['h7_decision'] in {
+              'SUPPORTED_WITHIN_DECLARED_PHASE_SPACE',
+              'NOT_SUPPORTED_WITHIN_DECLARED_PHASE_SPACE',
+          }
+          assert isinstance(summary['h7_p7_pass'], bool)
+          assert summary['gate_g2'] in {
+              'G2_A_STRONG_EFFICIENCY_SUPPORT',
+              'G2_B_MEANINGFUL_FRONTIER_OR_STATEFULNESS_THRESHOLD',
+              'G2_C_NO_USEFUL_SYSTEMS_LEVERAGE',
+          }
+          print(json.dumps(summary, sort_keys=True, separators=(',', ':')))
+          print('artifact_sha256=' + observed_sha)
+          print('scientific_fingerprint=' + result['scientific_fingerprint'])
+          print('program_rows_sha256=' + result['program_rows_sha256'])
+          print('h4=' + summary['h4_decision'])
+          print('h7=' + summary['h7_decision'])
+          print('p7_pass=' + str(summary['h7_p7_pass']))
+          print('gate_g2=' + summary['gate_g2'])
+          PY
+      - name: Stage canonical result artifact
+        run: |
+          mkdir -p /tmp/c75b-artifact
+          cp /tmp/c75b-result-a.json /tmp/c75b-artifact/g2-result.json
+          cp /tmp/c75b-summary-a.json /tmp/c75b-artifact/g2-result-summary.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: c75b-g2-result
+          path: /tmp/c75b-artifact
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
