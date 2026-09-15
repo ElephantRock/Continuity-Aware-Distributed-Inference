@@ -1,6 +1,11 @@
 name: c75b-stage2-execute
 
 on:
+  push:
+    branches:
+      - c7/g2-results
+    paths:
+      - .github/workflows/c75b-stage2-execute.yml
   workflow_dispatch:
 
 permissions:
@@ -10,7 +15,7 @@ env:
   PYTHONHASHSEED: '0'
   C75B_BASE: 'fcee10c5c647c9dfe11c7930987e331222fe124d'
   STAGE1_REVIEW_SHA: 'bf9af8fa54a2948c9fa4a77f3a1325ecbf5e2e68'
-  RUNNER_REVIEW_SHA: 'e80d2f2283b293c3ab58ef4434f07c95d0fc182f'
+  RUNNER_REVIEW_SHA: '4bd4a8d268356daf1c856512a34b1b5a02cd8a31'
   MOONCAKE_URL: 'https://raw.githubusercontent.com/kvcache-ai/Mooncake/3cca71daccf2a7afb8fe3f0295358f70e3a69fdb/FAST25-release/traces/conversation_trace.jsonl'
 
 jobs:
@@ -20,11 +25,11 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       - name: Verify immutable checkout and execution SHA
         env:
-          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           test "${#EXPECTED_SHA}" -eq 40
