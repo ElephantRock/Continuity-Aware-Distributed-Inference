@@ -1,11 +1,6 @@
 name: c75b-stage2-execute
 
 on:
-  push:
-    branches:
-      - c7/g2-results
-    paths:
-      - .github/workflows/c75b-stage2-execute.yml
   workflow_dispatch:
 
 permissions:
