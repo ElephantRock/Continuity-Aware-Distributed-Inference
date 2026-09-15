@@ -92,14 +92,14 @@ def _assert_execution_checkout(execution_git_sha: str) -> None:
             f"expected={expected}, observed={observed}"
         )
     status = subprocess.run(
-        ("git", "status", "--porcelain", "--untracked-files=no"),
+        ("git", "status", "--porcelain", "--untracked-files=all"),
         cwd=_repo_root(),
         check=True,
         capture_output=True,
         text=True,
     ).stdout
     if status:
-        raise ValueError("execution checkout has tracked modifications")
+        raise ValueError("execution checkout is not clean")
 
 
 def execution_plan() -> dict[str, Any]:
