@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import multiprocessing as mp
 from pathlib import Path
-import socket
 import subprocess
 import time
 from typing import Mapping
@@ -46,12 +45,6 @@ def resolve_clean_checkout(repo_root: str | Path) -> str:
     return head
 
 
-def reserve_loopback_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-
-
 def wait_for_event(
     path: str | Path,
     action: str,
@@ -69,6 +62,18 @@ def wait_for_event(
             return event
         time.sleep(0.01)
     raise TimeoutError(f"event {action!r} was not observed in {path}")
+
+
+def _event_port(event: dict[str, object], action: str) -> int:
+    details = event.get("details")
+    if not isinstance(details, dict):
+        raise RuntimeError(f"{action} event has no details object")
+    port = details.get("port")
+    if not isinstance(port, int) or isinstance(port, bool) or not (1 <= port <= 65535):
+        raise RuntimeError(f"{action} event did not report a valid kernel-assigned port")
+    if details.get("port_source") != "kernel_bind":
+        raise RuntimeError(f"{action} port was not self-reported from the binding process")
+    return port
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,10 +110,8 @@ class C8SubstrateRuntime:
         self.queue_capacity = queue_capacity
         self.shutdown_worker_after_completion = shutdown_worker_after_completion
         self.host = "127.0.0.1"
-        self.authority_port = reserve_loopback_port()
-        self.worker_port = reserve_loopback_port()
-        while self.worker_port == self.authority_port:
-            self.worker_port = reserve_loopback_port()
+        self.authority_port = 0
+        self.worker_port = 0
 
         self.authority_log = self.work_dir / "authority.jsonl"
         self.harness_log = self.work_dir / "harness.jsonl"
@@ -124,12 +127,13 @@ class C8SubstrateRuntime:
             raise RuntimeError("runtime is already started")
         self.authority = self._ctx.Process(
             target=authority_process_main,
-            args=(self.host, self.authority_port, self.authority_log),
+            args=(self.host, 0, self.authority_log),
             kwargs={"shutdown_worker_after_completion": self.shutdown_worker_after_completion},
             name="c8-authority",
         )
         self.authority.start()
-        wait_for_event(self.authority_log, "LISTENING")
+        authority_listening = wait_for_event(self.authority_log, "LISTENING")
+        self.authority_port = _event_port(authority_listening, "LISTENING")
 
         self.harness = self._ctx.Process(
             target=harness_process_main,
@@ -137,7 +141,7 @@ class C8SubstrateRuntime:
                 self.host,
                 self.authority_port,
                 self.host,
-                self.worker_port,
+                0,
                 self.harness_log,
                 self.upstream_faults,
                 self.downstream_faults,
@@ -146,13 +150,16 @@ class C8SubstrateRuntime:
             name="c8-fault-harness",
         )
         self.harness.start()
-        wait_for_event(self.harness_log, "WORKER_LISTENING")
+        worker_listening = wait_for_event(self.harness_log, "WORKER_LISTENING")
+        self.worker_port = _event_port(worker_listening, "WORKER_LISTENING")
         wait_for_event(self.authority_log, "HARNESS_REGISTERED")
         self.start_worker(worker_id=worker_id, work_delay_s=work_delay_s)
 
     def start_worker(self, *, worker_id: str, work_delay_s: float = 0.0) -> mp.Process:
         if self.harness is None or not self.harness.is_alive():
             raise RuntimeError("fault harness must be running before worker start")
+        if self.worker_port <= 0:
+            raise RuntimeError("fault harness has not self-reported a worker endpoint")
         if self.worker is not None and self.worker.is_alive():
             raise RuntimeError("an active worker already exists")
         self._worker_generation += 1
