@@ -63,12 +63,14 @@ jobs:
               C8_PROTOCOL_FINGERPRINT,
               protocol_fingerprint,
           )
+          from prototype.c8_wire_contract import C81_PROTOCOL_FINGERPRINT
           assert C8_PROTOCOL_FINGERPRINT == '${{ env.EXPECTED_PROTOCOL_FINGERPRINT }}'
+          assert C81_PROTOCOL_FINGERPRINT == C8_PROTOCOL_FINGERPRINT
           assert protocol_fingerprint() == C8_PROTOCOL_FINGERPRINT
           assert C8_HEADLINE_MEASUREMENT_INSPECTION == 'NONE'
           PY
       - name: Run real multiprocess and loopback TCP conformance tests
-        run: python -m pytest -q tests/prototype/test_c8_substrate.py
+        run: python -m pytest -q tests/prototype
       - name: Record conformance boundary
         run: |
           echo "c8_protocol_fingerprint=$EXPECTED_PROTOCOL_FINGERPRINT"
