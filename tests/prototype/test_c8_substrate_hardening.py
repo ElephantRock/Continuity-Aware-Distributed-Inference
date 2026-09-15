@@ -18,7 +18,12 @@ from experiments.c8_protocol import (
 from prototype import c8_events, c8_harness, c8_transport, c8_worker
 from prototype.c8_events import read_events
 from prototype.c8_runtime import C8SubstrateRuntime
-from prototype.c8_transport import FrameTimeoutError, recv_envelope
+from prototype.c8_transport import (
+    ConnectionClosedError,
+    FrameTimeoutError,
+    recv_envelope,
+    recv_exact,
+)
 from prototype.c8_wire_contract import (
     C81_PROTOCOL_FINGERPRINT,
     C8_MAX_FRAME_BYTES,
@@ -85,3 +90,23 @@ def test_stalled_partial_frame_fails_closed_on_bounded_deadline() -> None:
     finally:
         sender.close()
         receiver.close()
+
+
+def test_connection_reset_is_normalized_to_fail_closed_frame_closure() -> None:
+    class ResetSocket:
+        def __init__(self) -> None:
+            self.timeout: float | None = None
+
+        def gettimeout(self) -> float | None:
+            return self.timeout
+
+        def settimeout(self, value: float | None) -> None:
+            self.timeout = value
+
+        def recv(self, _size: int) -> bytes:
+            raise ConnectionResetError(104, "connection reset by peer")
+
+    fake = ResetSocket()
+    with pytest.raises(ConnectionClosedError, match="closed/reset"):
+        recv_exact(fake, 4, timeout_s=0.05)  # type: ignore[arg-type]
+    assert fake.gettimeout() is None
