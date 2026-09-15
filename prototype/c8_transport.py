@@ -6,10 +6,10 @@ import struct
 import time
 from typing import Any, Mapping
 
-from experiments.c8_protocol import (
+from .c8_wire_contract import (
     C8_MAX_FRAME_BYTES,
     C8_MESSAGE_ENVELOPE_FIELDS,
-    C8ProcessRole,
+    C8WireRole,
 )
 
 
@@ -84,8 +84,8 @@ def make_envelope(
     *,
     message_id: str,
     message_kind: str,
-    sender_role: C8ProcessRole | str,
-    receiver_role: C8ProcessRole | str,
+    sender_role: C8WireRole | str,
+    receiver_role: C8WireRole | str,
     subject_type: str,
     subject_id: str,
     payload_schema: str,
@@ -96,9 +96,9 @@ def make_envelope(
         "schema": MESSAGE_SCHEMA,
         "message_id": message_id,
         "message_kind": message_kind,
-        "sender_role": sender_role.value if isinstance(sender_role, C8ProcessRole) else sender_role,
+        "sender_role": sender_role.value if isinstance(sender_role, C8WireRole) else sender_role,
         "receiver_role": (
-            receiver_role.value if isinstance(receiver_role, C8ProcessRole) else receiver_role
+            receiver_role.value if isinstance(receiver_role, C8WireRole) else receiver_role
         ),
         "subject_type": subject_type,
         "subject_id": subject_id,
@@ -127,7 +127,7 @@ def validate_envelope(value: object) -> dict[str, Any]:
     kind = value["message_kind"]
     if kind not in MESSAGE_KINDS:
         raise EnvelopeValidationError("unsupported message kind")
-    roles = {role.value for role in C8ProcessRole}
+    roles = {role.value for role in C8WireRole}
     if value["sender_role"] not in roles or value["receiver_role"] not in roles:
         raise EnvelopeValidationError("unsupported sender/receiver role")
     if not isinstance(value["payload"], dict):
@@ -135,7 +135,6 @@ def validate_envelope(value: object) -> dict[str, Any]:
     timestamp = value["send_monotonic_ns"]
     if not isinstance(timestamp, int) or isinstance(timestamp, bool) or timestamp < 0:
         raise EnvelopeValidationError("send_monotonic_ns must be a non-negative integer")
-    # Re-encoding is an inexpensive recursive check that rejects NaN/Infinity values.
     canonical_json_bytes(value)
     return value
 
