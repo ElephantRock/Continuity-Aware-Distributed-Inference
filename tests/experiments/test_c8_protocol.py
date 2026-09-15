@@ -12,16 +12,21 @@ from experiments.c8_protocol import (
     C8_MAX_FRAME_BYTES,
     C8_MEASURED_EVIDENCE_CLASS,
     C8_MEASUREMENT_CLOCK,
+    C8_MEASUREMENT_RECORD_SCHEMA,
     C8_MESSAGE_ENVELOPE_FIELDS,
     C8_METRICS,
     C8_OVERHEAD_COMPONENTS,
     C8_PROTOCOL_FINGERPRINT,
     C8_PROTOCOL_SCHEMA,
+    C8_RESULT_SCHEMA,
+    C8_RUN_MANIFEST_FIELDS,
+    C8_RUN_MANIFEST_SCHEMA,
     C8_SCALE_AXES,
     C8_TRACE_SPECS,
     C8_TRANSPORT_ADDRESS_FAMILY,
     C8_TRANSPORT_FRAMING,
     C8_TRANSPORT_ID,
+    C8_WARMUP_OPERATIONS,
     C8Measurement,
     C8ProcessRole,
     C8RunManifest,
@@ -34,18 +39,34 @@ from experiments.c8_protocol import (
 
 
 VALID_GIT_SHA = "1" * 40
-VALID_ROLES = (
-    C8ProcessRole.CONTROL_PLANE_AUTHORITY,
-    C8ProcessRole.WORKER,
-    C8ProcessRole.FAULT_TRANSPORT_HARNESS,
-)
+OTHER_GIT_SHA = "2" * 40
 
 
 def _manifest(**overrides: object) -> C8RunManifest:
     values: dict[str, object] = {
         "git_commit": VALID_GIT_SHA,
-        "process_count": 3,
-        "process_roles": VALID_ROLES,
+        "running_git_commit": VALID_GIT_SHA,
+        "experiment_id": "C8.4-DECISION-LATENCY",
+        "scenario_id": "baseline",
+        "authority_pid": 1001,
+        "worker_pids": (1002,),
+        "fault_harness_pid": 1003,
+        "os_name": "Linux",
+        "os_version": "test",
+        "python_version": "3.12.14",
+        "cpu_model": "test-cpu",
+        "worker_count": 1,
+        "active_sessions": 1,
+        "continuation_count": 1,
+        "state_count": 0,
+        "replica_count": 1,
+        "concurrency": 1,
+        "evidence_count": 1,
+        "fault_configuration": {},
+        "seed": 0,
+        "host_load": {"load1": 0.0},
+        "software_versions": {"python": "3.12.14"},
+        "start_time_utc": "2026-09-16T00:00:00Z",
     }
     values.update(overrides)
     return C8RunManifest(**values)  # type: ignore[arg-type]
@@ -56,10 +77,25 @@ def test_frozen_protocol_identity_is_literal_and_stable() -> None:
     assert C8_BASE_COMMIT == "0680d09efcf43a9b01552f9804906d66c3fc56f2"
     assert C8_HEADLINE_MEASUREMENT_INSPECTION == "NONE"
     assert C8_PROTOCOL_FINGERPRINT == (
-        "e29f069a9ff42ca993c01db22a3f96441ea5f9a6c6d6693041c68af43597ff34"
+        "616cc4daa4c167152875522767a8cc968da25c63d6acc099c265bc3554641cb6"
     )
     assert protocol_fingerprint() == C8_PROTOCOL_FINGERPRINT
     validate_protocol_identity()
+
+
+def test_machine_schema_identity_is_fingerprinted() -> None:
+    payload = protocol_payload()
+    assert C8_RUN_MANIFEST_SCHEMA == "cadi.c8.1.run-manifest.v1"
+    assert C8_MEASUREMENT_RECORD_SCHEMA == "cadi.c8.1.measurement-record.v1"
+    assert C8_RESULT_SCHEMA == "cadi.c8.1.result.v1"
+    assert payload["run_manifest_schema"] == C8_RUN_MANIFEST_SCHEMA
+    assert payload["measurement_record_schema"] == C8_MEASUREMENT_RECORD_SCHEMA
+    assert payload["result_schema"] == C8_RESULT_SCHEMA
+    assert payload["run_manifest_fields"] == list(C8_RUN_MANIFEST_FIELDS)
+    assert "running_git_commit" in C8_RUN_MANIFEST_FIELDS
+    assert {"authority_pid", "worker_pids", "fault_harness_pid"}.issubset(
+        C8_RUN_MANIFEST_FIELDS
+    )
 
 
 def test_reference_transport_is_real_loopback_and_strict_serialization() -> None:
@@ -70,6 +106,12 @@ def test_reference_transport_is_real_loopback_and_strict_serialization() -> None
     assert C8_MAX_FRAME_BYTES == 1_048_576
     assert payload["transport"]["serialization_required"] is True
     assert payload["transport"]["fault_harness_external_to_authority"] is True
+    assert payload["process_topology"] == {
+        "authority_process_count": 1,
+        "minimum_worker_process_count": 1,
+        "fault_harness_process_count": 1,
+        "all_declared_role_pids_must_be_distinct": True,
+    }
 
 
 def test_clock_is_measurement_only_and_never_authority() -> None:
@@ -129,8 +171,7 @@ def test_gate_g3_has_no_post_hoc_universal_percentage_threshold() -> None:
 
 
 def test_metrics_overhead_and_scale_axes_are_complete_and_bounded() -> None:
-    metric_ids = tuple(metric.metric_id for metric in C8_METRICS)
-    assert metric_ids == (
+    assert tuple(metric.metric_id for metric in C8_METRICS) == (
         "decision_latency_ns",
         "reconciliation_latency_ns",
         "control_action_latency_ns",
@@ -172,8 +213,9 @@ def test_message_envelope_carries_transport_identity_not_new_semantic_authority(
     )
 
 
-def test_valid_manifest_is_rankable() -> None:
+def test_valid_manifest_binds_running_checkout_and_distinct_processes() -> None:
     manifest = _manifest()
+    assert manifest.process_count == 3
     assert manifest.invalid_conditions() == ()
     assert manifest.rankable_for_gate_g3 is True
 
@@ -181,7 +223,19 @@ def test_valid_manifest_is_rankable() -> None:
 @pytest.mark.parametrize(
     ("overrides", "expected_condition"),
     [
+        ({"running_git_commit": OTHER_GIT_SHA}, "RUNNING_CHECKOUT_MISMATCH"),
+        ({"worker_pids": (1001,)}, "NO_REAL_PROCESS_BOUNDARY"),
+        ({"fault_harness_pid": 1002}, "NO_REAL_PROCESS_BOUNDARY"),
         ({"serialization_on_measured_path": False}, "SERIALIZATION_BYPASSED"),
+        (
+            {
+                "authoritative_mutation_roles": (
+                    C8ProcessRole.CONTROL_PLANE_AUTHORITY,
+                    C8ProcessRole.WORKER,
+                )
+            },
+            "WORKER_AUTHORITATIVE_MUTATION",
+        ),
         ({"correctness_guards_enabled": False}, "REQUIRED_CORRECTNESS_GUARD_DISABLED"),
         ({"clock_used_for_semantic_authority": True}, "CLOCK_USED_FOR_SEMANTIC_AUTHORITY"),
         ({"cross_layer_preconditions_match": False}, "CROSS_LAYER_PRECONDITION_MISMATCH"),
@@ -190,7 +244,8 @@ def test_valid_manifest_is_rankable() -> None:
             "UNLABELED_DEBUG_TIMING_PERTURBATION",
         ),
         ({"measured_modeled_timing_conflated": True}, "MEASURED_AND_MODELED_TIMING_CONFLATED"),
-        ({"host_load_recorded": False}, "NONFINITE_OR_INCOMPLETE_MEASUREMENT"),
+        ({"worker_count": 2}, "INCOMPLETE_RUN_PROVENANCE"),
+        ({"warmup_operations": C8_WARMUP_OPERATIONS - 1}, "INCOMPLETE_RUN_PROVENANCE"),
     ],
 )
 def test_manifest_invalid_conditions_fail_rankability(
@@ -202,29 +257,21 @@ def test_manifest_invalid_conditions_fail_rankability(
     assert manifest.rankable_for_gate_g3 is False
 
 
-def test_manifest_rejects_collapsed_process_or_worker_authority() -> None:
-    with pytest.raises(ValueError, match="real multi-process boundary"):
-        _manifest(process_count=1)
-    with pytest.raises(ValueError, match="control-plane authority and worker"):
-        _manifest(process_roles=(C8ProcessRole.CONTROL_PLANE_AUTHORITY,))
-    with pytest.raises(ValueError, match="only the control-plane authority"):
-        _manifest(
-            authoritative_mutation_roles=(
-                C8ProcessRole.CONTROL_PLANE_AUTHORITY,
-                C8ProcessRole.WORKER,
-            )
-        )
-
-
-def test_manifest_rejects_wrong_provenance_or_transport() -> None:
+def test_manifest_rejects_malformed_or_wrong_provenance() -> None:
     with pytest.raises(ValueError, match="40-character git SHA"):
         _manifest(git_commit="deadbeef")
+    with pytest.raises(ValueError, match="worker_pids"):
+        _manifest(worker_pids=())
+    with pytest.raises(ValueError, match="positive integer"):
+        _manifest(authority_pid=0)
     with pytest.raises(ValueError, match="transport escaped"):
         _manifest(transport_id="IN_MEMORY_QUEUE")
     with pytest.raises(ValueError, match="EV1 measured CPU"):
         _manifest(evidence_class="SIMULATED")
     with pytest.raises(ValueError, match="P-SRC2"):
         _manifest(imported_inference_evidence_class="MEASURED_GPU")
+    with pytest.raises(ValueError, match="host_load"):
+        _manifest(host_load={})
 
 
 def test_measurements_fail_closed_on_nonfinite_negative_unknown_or_duplicate() -> None:
