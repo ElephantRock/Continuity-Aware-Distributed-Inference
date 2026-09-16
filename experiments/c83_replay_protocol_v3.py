@@ -16,9 +16,9 @@ C83A_ROW_SCHEMA = _v2.C83A_ROW_SCHEMA
 C83A_COMPARISON_SCHEMA = _v2.C83A_COMPARISON_SCHEMA
 C83A_REPLAY_EXECUTION_FAILURE_RAW = _v2.C83A_REPLAY_EXECUTION_FAILURE_RAW
 C83A_PREDECESSOR_PROTOCOL_FINGERPRINT = _v2.C83A_PROTOCOL_FINGERPRINT
-
-# Candidate until the exact reviewed payload is literal-fenced.
-C83A_PROTOCOL_FINGERPRINT: str | None = None
+C83A_PROTOCOL_FINGERPRINT = (
+    "8441753a3773070a2a53c5896df3a8ca20803d82ad228bc6ad8e992c779a097c"
+)
 
 C83Layer = _v2.C83Layer
 C83NormalizedOutcome = _v2.C83NormalizedOutcome
@@ -122,8 +122,6 @@ def validate_protocol_identity(*, require_frozen: bool = True) -> None:
     if C83A_COMPARATIVE_RESULT_INSPECTION != "NONE":
         raise RuntimeError("C8.3a v3 must remain pre-result")
     if require_frozen:
-        if C83A_PROTOCOL_FINGERPRINT is None:
-            raise RuntimeError("C8.3a v3 protocol fingerprint is not literal-frozen")
         actual = protocol_fingerprint()
         if actual != C83A_PROTOCOL_FINGERPRINT:
             raise RuntimeError(
@@ -137,4 +135,4 @@ validate_layer_row = _v2.validate_layer_row
 validate_comparison = _v2.validate_comparison
 
 
-validate_protocol_identity(require_frozen=False)
+validate_protocol_identity()
