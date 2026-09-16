@@ -12,6 +12,9 @@ from simulator.resources import ResourceModel
 from simulator.semantic_adapter import ContinuityAdapter
 
 
+FROZEN_V3_FINGERPRINT = "8441753a3773070a2a53c5896df3a8ca20803d82ad228bc6ad8e992c779a097c"
+
+
 def test_v3_is_mapping_only_amendment() -> None:
     v3.validate_mapping_only_amendment()
     assert tuple(item.trace_id for item in v3.C83A_TRACE_SPECS) == tuple(
@@ -73,7 +76,7 @@ def test_v3_named_c2_mechanics_exist() -> None:
     assert callable(DiscreteEventSimulator.run)
 
 
-def test_v3_pre_result_boundary_and_candidate_identity() -> None:
+def test_v3_pre_result_boundary_and_frozen_identity() -> None:
     assert v3.C83A_COMPARATIVE_RESULT_INSPECTION == "NONE"
     assert v3.C83A_PREDECESSOR_PROTOCOL_FINGERPRINT == (
         "40780a318a5a692c713d7d27ded86d1f0fc6cd920d1c1ef82114889f9d9e099a"
@@ -81,5 +84,6 @@ def test_v3_pre_result_boundary_and_candidate_identity() -> None:
     assert v3.C83A_PROTOCOL_SCHEMA.endswith(".v3")
     assert v3.C83A_ROW_SCHEMA == v2.C83A_ROW_SCHEMA
     assert v3.C83A_COMPARISON_SCHEMA == v2.C83A_COMPARISON_SCHEMA
-    assert v3.C83A_PROTOCOL_FINGERPRINT is None
-    assert len(v3.protocol_fingerprint()) == 64
+    assert v3.C83A_PROTOCOL_FINGERPRINT == FROZEN_V3_FINGERPRINT
+    assert v3.protocol_fingerprint() == FROZEN_V3_FINGERPRINT
+    v3.validate_protocol_identity()
