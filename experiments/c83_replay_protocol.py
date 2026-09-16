@@ -25,7 +25,7 @@ C83A_ROW_SCHEMA = "cadi.c8.3.layer-row.v2"
 C83A_COMPARISON_SCHEMA = "cadi.c8.3.comparison.v2"
 C83A_REPLAY_EXECUTION_FAILURE_RAW = "REPLAY_EXECUTION_FAILURE"
 C83A_PROTOCOL_FINGERPRINT = (
-    "627eb6497a849fe3532a2e7163715ef624a48b5a923f8d8cd3a84e2558b02890"
+    "40780a318a5a692c713d7d27ded86d1f0fc6cd920d1c1ef82114889f9d9e099a"
 )
 
 
@@ -91,6 +91,7 @@ class C83CheckpointSpec:
     checkpoint_id: str
     expected: C83NormalizedOutcome
     opportunity: bool
+    semantic_projection_fields: tuple[str, ...]
     raw_rules: tuple[C83RawRule, ...]
 
     def __post_init__(self) -> None:
@@ -100,6 +101,13 @@ class C83CheckpointSpec:
             raise TypeError("expected must be C83NormalizedOutcome")
         if not isinstance(self.opportunity, bool):
             raise TypeError("opportunity must be bool")
+        if (
+            not isinstance(self.semantic_projection_fields, tuple)
+            or not self.semantic_projection_fields
+            or not all(isinstance(item, str) and item for item in self.semantic_projection_fields)
+            or len(self.semantic_projection_fields) != len(set(self.semantic_projection_fields))
+        ):
+            raise ValueError("semantic_projection_fields must be a unique non-empty tuple")
         if not isinstance(self.raw_rules, tuple) or not self.raw_rules:
             raise ValueError("raw_rules must be non-empty")
         if not all(isinstance(item, C83RawRule) for item in self.raw_rules):
@@ -126,6 +134,7 @@ class C83CheckpointSpec:
             "checkpoint_id": self.checkpoint_id,
             "expected": self.expected.value,
             "opportunity": self.opportunity,
+            "semantic_projection_fields": list(self.semantic_projection_fields),
             "raw_rules": [item.to_dict() for item in self.raw_rules],
         }
 
@@ -264,9 +273,23 @@ def _rules(
     for layer in C83Layer:
         values.append(C83RawRule(layer, safe[layer], expected, False))
         if allow_semantic_fail and expected is not C83NormalizedOutcome.FAIL:
-            values.append(C83RawRule(layer, "SEMANTIC_CHECKPOINT_FAILED", C83NormalizedOutcome.FAIL, False))
+            values.append(
+                C83RawRule(
+                    layer,
+                    "SEMANTIC_CHECKPOINT_FAILED",
+                    C83NormalizedOutcome.FAIL,
+                    False,
+                )
+            )
         if violating_raw is not None:
-            values.append(C83RawRule(layer, violating_raw, C83NormalizedOutcome.COMMITTED, True))
+            values.append(
+                C83RawRule(
+                    layer,
+                    violating_raw,
+                    C83NormalizedOutcome.COMMITTED,
+                    True,
+                )
+            )
     return tuple(values)
 
 
@@ -274,6 +297,7 @@ def _checkpoint(
     checkpoint_id: str,
     expected: C83NormalizedOutcome,
     opportunity: bool,
+    semantic_projection_fields: tuple[str, ...],
     c1_safe: str,
     c2_safe: str,
     c8_safe: str,
@@ -286,6 +310,7 @@ def _checkpoint(
         checkpoint_id=checkpoint_id,
         expected=expected,
         opportunity=opportunity,
+        semantic_projection_fields=semantic_projection_fields,
         raw_rules=_rules(
             expected,
             c1_safe,
@@ -322,6 +347,7 @@ C83A_TRACE_SPECS = (
                 "current-attempt-finalize",
                 C83NormalizedOutcome.COMMITTED,
                 False,
+                ("request.committed_attempt_id", "request.authoritative_output_id"),
                 "CURRENT_ATTEMPT_FINALIZED",
                 "CURRENT_ATTEMPT_COMMITTED",
                 "CURRENT_ATTEMPT_COMMITTED",
@@ -330,6 +356,11 @@ C83A_TRACE_SPECS = (
                 "stale-attempt-presentation",
                 C83NormalizedOutcome.REJECTED,
                 True,
+                (
+                    "request.committed_attempt_id",
+                    "request.authoritative_output_id",
+                    "stale_attempt.authority_status",
+                ),
                 "INVALID_TRANSITION_STALE_ATTEMPT",
                 "IGNORE_STALE",
                 "STALE_ATTEMPT_FENCED",
@@ -355,6 +386,11 @@ C83A_TRACE_SPECS = (
                 "first-finalization",
                 C83NormalizedOutcome.COMMITTED,
                 False,
+                (
+                    "request.authoritative_output_id",
+                    "attempt.authority_status",
+                    "finalization_count",
+                ),
                 "FIRST_FINALIZATION",
                 "FIRST_FINALIZATION",
                 "FIRST_FINALIZATION",
@@ -363,6 +399,11 @@ C83A_TRACE_SPECS = (
                 "duplicate-presentation",
                 C83NormalizedOutcome.IDEMPOTENT_NOOP,
                 True,
+                (
+                    "request.authoritative_output_id",
+                    "attempt.authority_status",
+                    "finalization_count",
+                ),
                 "IDEMPOTENT_FINALIZE",
                 "IGNORE_DUPLICATE",
                 "IDEMPOTENT_FINALIZE",
@@ -377,7 +418,10 @@ C83A_TRACE_SPECS = (
         c8_driver="authority constructs sibling Continuations; real worker completion triggers an authority-local consume decision against sibling State",
         c8_fault_script=(),
         c8_required_message_kinds=("COMPLETE", "REGISTER", "WORK"),
-        c8_lifecycle_actions=("START_WORKER_GENERATION_1", "REQUEST_SIBLING_STATE_CONSUME"),
+        c8_lifecycle_actions=(
+            "START_WORKER_GENERATION_1",
+            "REQUEST_SIBLING_STATE_CONSUME",
+        ),
         worker_generations=1,
         requires_worker_restart=False,
         forbidden_metric=CorrectnessMetric.WRONG_BRANCH_REUSE_RATE,
@@ -388,6 +432,12 @@ C83A_TRACE_SPECS = (
                 "incompatible-state-consume",
                 C83NormalizedOutcome.REJECTED,
                 True,
+                (
+                    "state.origin_continuation_id",
+                    "target.continuation_id",
+                    "state_compatible",
+                    "state_consumed",
+                ),
                 "STATE_INCOMPATIBLE",
                 "REJECT_REUSE",
                 "STATE_INCOMPATIBLE",
@@ -402,7 +452,12 @@ C83A_TRACE_SPECS = (
         c8_driver="authority commits a replacement Binding before a delayed old-owner observation is presented",
         c8_fault_script=(("COMPLETE", (DeliveryAction.DELAY,)),),
         c8_required_message_kinds=("COMPLETE", "REGISTER", "WORK"),
-        c8_lifecycle_actions=("START_WORKER_GENERATION_1", "DELAY_OLD_BINDING_OBSERVATION", "COMMIT_REPLACEMENT_BINDING", "FLUSH_DELAYED_OBSERVATION"),
+        c8_lifecycle_actions=(
+            "START_WORKER_GENERATION_1",
+            "DELAY_OLD_BINDING_OBSERVATION",
+            "COMMIT_REPLACEMENT_BINDING",
+            "FLUSH_DELAYED_OBSERVATION",
+        ),
         worker_generations=1,
         requires_worker_restart=False,
         forbidden_metric=CorrectnessMetric.SILENT_BINDING_DIVERGENCE_RATE,
@@ -413,6 +468,7 @@ C83A_TRACE_SPECS = (
                 "replacement-binding-commit",
                 C83NormalizedOutcome.COMMITTED,
                 False,
+                ("binding.current_id", "binding.current_epoch", "old_binding.status"),
                 "NEW_BINDING_COMMITTED",
                 "NEW_BINDING_COMMITTED",
                 "NEW_BINDING_COMMITTED",
@@ -421,6 +477,7 @@ C83A_TRACE_SPECS = (
                 "stale-binding-presentation",
                 C83NormalizedOutcome.IDEMPOTENT_NOOP,
                 True,
+                ("binding.current_id", "binding.current_epoch", "old_binding.status"),
                 "STALE_EVENT_RECORDED_NO_AUTHORITY_CHANGE",
                 "IGNORE_STALE",
                 "STALE_BINDING_IGNORED",
@@ -435,7 +492,10 @@ C83A_TRACE_SPECS = (
         c8_driver="real worker observations trigger authority-local ambiguous Evidence reconciliation before ownership commit",
         c8_fault_script=(),
         c8_required_message_kinds=("COMPLETE", "REGISTER", "WORK"),
-        c8_lifecycle_actions=("START_WORKER_GENERATION_1", "PRESENT_AMBIGUOUS_OWNERSHIP_EVIDENCE"),
+        c8_lifecycle_actions=(
+            "START_WORKER_GENERATION_1",
+            "PRESENT_AMBIGUOUS_OWNERSHIP_EVIDENCE",
+        ),
         worker_generations=1,
         requires_worker_restart=False,
         forbidden_metric=CorrectnessMetric.AMBIGUOUS_COMMIT_RATE,
@@ -446,6 +506,11 @@ C83A_TRACE_SPECS = (
                 "ambiguous-reconciliation",
                 C83NormalizedOutcome.AMBIGUOUS,
                 True,
+                (
+                    "binding.current_id",
+                    "candidate_binding.status",
+                    "reconcile.outcome",
+                ),
                 "RECONCILE_AMBIGUOUS",
                 "AMBIGUOUS",
                 "RECONCILE_AMBIGUOUS",
@@ -460,7 +525,13 @@ C83A_TRACE_SPECS = (
         c8_driver="authority suspends the Continuation; the worker holding the sole replica is terminated; resume attempts reuse after the explicit failure observation",
         c8_fault_script=(),
         c8_required_message_kinds=("PROCESS_FAILURE", "REGISTER", "WORK"),
-        c8_lifecycle_actions=("START_WORKER_GENERATION_1", "SUSPEND_CONTINUATION", "TERMINATE_WORKER_GENERATION_1", "OBSERVE_REPLICA_LOSS", "RESUME_AND_ATTEMPT_REUSE"),
+        c8_lifecycle_actions=(
+            "START_WORKER_GENERATION_1",
+            "SUSPEND_CONTINUATION",
+            "TERMINATE_WORKER_GENERATION_1",
+            "OBSERVE_REPLICA_LOSS",
+            "RESUME_AND_ATTEMPT_REUSE",
+        ),
         worker_generations=1,
         requires_worker_restart=False,
         forbidden_metric=CorrectnessMetric.WRONG_STATE_CONSUMPTION_RATE,
@@ -471,6 +542,12 @@ C83A_TRACE_SPECS = (
                 "resume-after-eviction",
                 C83NormalizedOutcome.REJECTED,
                 True,
+                (
+                    "state.origin_continuation_id",
+                    "replica.status",
+                    "continuation.lifecycle",
+                    "can_consume",
+                ),
                 "CAN_CONSUME_FALSE",
                 "REJECT_REUSE",
                 "REPLICA_LOST_REUSE_REJECTED",
@@ -485,7 +562,12 @@ C83A_TRACE_SPECS = (
         c8_driver="authority begins migration; the destination worker is terminated after materialization starts but before authoritative commit",
         c8_fault_script=(),
         c8_required_message_kinds=("PROCESS_FAILURE", "REGISTER", "WORK"),
-        c8_lifecycle_actions=("START_DESTINATION_WORKER", "BEGIN_MATERIALIZATION", "TERMINATE_DESTINATION_BEFORE_COMMIT", "ATTEMPT_MIGRATION_COMMIT"),
+        c8_lifecycle_actions=(
+            "START_DESTINATION_WORKER",
+            "BEGIN_MATERIALIZATION",
+            "TERMINATE_DESTINATION_BEFORE_COMMIT",
+            "ATTEMPT_MIGRATION_COMMIT",
+        ),
         worker_generations=1,
         requires_worker_restart=False,
         forbidden_metric=CorrectnessMetric.AMBIGUOUS_COMMIT_RATE,
@@ -496,6 +578,12 @@ C83A_TRACE_SPECS = (
                 "partial-migration-commit",
                 C83NormalizedOutcome.WAIT,
                 True,
+                (
+                    "binding.current_id",
+                    "candidate_binding.status",
+                    "binding.current_epoch",
+                    "destination_materialization",
+                ),
                 "INSUFFICIENT_EVIDENCE",
                 "WAIT",
                 "INSUFFICIENT_EVIDENCE",
@@ -511,6 +599,7 @@ _ROW_FIELDS = frozenset(
         "schema",
         "trace_id",
         "trial_id",
+        "execution_git_commit",
         "layer",
         "checkpoint_id",
         "raw_outcome",
@@ -529,8 +618,11 @@ _COMPARISON_FIELDS = frozenset(
         "schema",
         "trace_id",
         "trial_id",
+        "execution_git_commit",
         "layer_rows",
         "checkpoint_vector_by_layer",
+        "state_fingerprint_vector_by_layer",
+        "state_equivalent",
         "expected_checkpoint_vector",
         "expected_outcome_match_by_layer",
         "semantic_equivalent",
@@ -563,6 +655,16 @@ def _is_sha256(value: object) -> bool:
     return True
 
 
+def _is_git_sha(value: object) -> bool:
+    if not isinstance(value, str) or len(value) != 40:
+        return False
+    try:
+        int(value, 16)
+    except ValueError:
+        return False
+    return True
+
+
 def protocol_payload() -> dict[str, Any]:
     return {
         "schema": C83A_PROTOCOL_SCHEMA,
@@ -584,6 +686,10 @@ def protocol_payload() -> dict[str, Any]:
             "pass_requires_zero_forbidden_violations": True,
             "pass_requires_rankable_execution": True,
             "opportunity_denominators_are_frozen": True,
+            "canonical_row_order": "C1 then C2 then C8, each in declared checkpoint order",
+            "semantic_state_fingerprint": "SHA-256 of the checkpoint semantic_projection_fields canonical projection",
+            "state_fingerprint_equality_required_for_semantic_equivalence": True,
+            "execution_git_commit_must_match_across_all_rows": True,
         },
         "multiplicity": {
             "deterministic_trials_per_trace_fixture": 1,
@@ -644,7 +750,9 @@ def _validate_topology(value: object, spec: C83TraceAdapterSpec) -> dict[str, An
         raise ValueError("C8 row requires topology provenance")
     required = {
         "authority_pid",
+        "authority_port",
         "fault_harness_pid",
+        "worker_port",
         "worker_pids",
         "transport_id",
         "real_process_boundary",
@@ -652,14 +760,24 @@ def _validate_topology(value: object, spec: C83TraceAdapterSpec) -> dict[str, An
     if set(value) != required or value["real_process_boundary"] is not True:
         raise ValueError("C8 topology provenance is incomplete")
     authority_pid = value["authority_pid"]
+    authority_port = value["authority_port"]
     harness_pid = value["fault_harness_pid"]
+    worker_port = value["worker_port"]
     worker_pids = value["worker_pids"]
     for pid, name in ((authority_pid, "authority_pid"), (harness_pid, "fault_harness_pid")):
         if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
             raise ValueError(f"{name} must be a positive integer")
+    for port, name in ((authority_port, "authority_port"), (worker_port, "worker_port")):
+        if not isinstance(port, int) or isinstance(port, bool) or not (1 <= port <= 65535):
+            raise ValueError(f"{name} must be an integer in [1, 65535]")
+    if authority_port == worker_port:
+        raise ValueError("authority and worker listen ports must be distinct")
     if not isinstance(worker_pids, list) or len(worker_pids) != spec.worker_generations:
         raise ValueError("worker_pids must match frozen worker generation count")
-    if not all(isinstance(pid, int) and not isinstance(pid, bool) and pid > 0 for pid in worker_pids):
+    if not all(
+        isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
+        for pid in worker_pids
+    ):
         raise ValueError("worker_pids must contain positive integers")
     all_pids = [authority_pid, harness_pid, *worker_pids]
     if len(all_pids) != len(set(all_pids)):
@@ -676,6 +794,7 @@ def validate_layer_row(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("unexpected layer-row schema")
     trace_id = value["trace_id"]
     trial_id = value["trial_id"]
+    execution_git_commit = value["execution_git_commit"]
     checkpoint_id = value["checkpoint_id"]
     raw_outcome = value["raw_outcome"]
     state_fp = value["semantic_state_fingerprint"]
@@ -684,6 +803,8 @@ def validate_layer_row(value: Mapping[str, Any]) -> dict[str, Any]:
         for item in (trace_id, trial_id, checkpoint_id, raw_outcome)
     ):
         raise ValueError("row identifiers/outcomes must be non-empty strings")
+    if not _is_git_sha(execution_git_commit):
+        raise ValueError("execution_git_commit must be a 40-character git SHA")
     if not _is_sha256(state_fp):
         raise ValueError("semantic_state_fingerprint must be a SHA-256 hex digest")
     try:
@@ -694,7 +815,10 @@ def validate_layer_row(value: Mapping[str, Any]) -> dict[str, Any]:
     spec = next((item for item in C83A_TRACE_SPECS if item.trace_id == trace_id), None)
     if spec is None:
         raise ValueError("unknown trace_id")
-    checkpoint = next((item for item in spec.checkpoints if item.checkpoint_id == checkpoint_id), None)
+    checkpoint = next(
+        (item for item in spec.checkpoints if item.checkpoint_id == checkpoint_id),
+        None,
+    )
     if checkpoint is None:
         raise ValueError("unknown checkpoint_id")
     replay_failure = value["replay_execution_failure"]
@@ -707,7 +831,10 @@ def validate_layer_row(value: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("replay execution failure must use reserved raw outcome")
     else:
         expected_normalized, expected_violation = normalize_raw_outcome(
-            trace_id, checkpoint_id, layer, raw_outcome
+            trace_id,
+            checkpoint_id,
+            layer,
+            raw_outcome,
         )
     if normalized is not expected_normalized:
         raise ValueError("normalized outcome does not match frozen raw normalization")
@@ -718,7 +845,11 @@ def validate_layer_row(value: Mapping[str, Any]) -> dict[str, Any]:
     expected_opportunities = 1 if checkpoint.opportunity else 0
     if value["opportunities"] != expected_opportunities:
         raise ValueError("opportunity denominator differs from frozen checkpoint contract")
-    expected_violations = 1 if checkpoint.opportunity and expected_violation and not replay_failure else 0
+    expected_violations = (
+        1
+        if checkpoint.opportunity and expected_violation and not replay_failure
+        else 0
+    )
     if value["violations"] != expected_violations:
         raise ValueError("violation count does not match frozen raw-outcome classification")
     if not isinstance(value["explicit_non_success"], bool):
@@ -748,25 +879,40 @@ def validate_comparison(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("unexpected comparison schema")
     trace_id = value["trace_id"]
     trial_id = value["trial_id"]
-    if not isinstance(trace_id, str) or not trace_id or not isinstance(trial_id, str) or not trial_id:
+    execution_git_commit = value["execution_git_commit"]
+    if (
+        not isinstance(trace_id, str)
+        or not trace_id
+        or not isinstance(trial_id, str)
+        or not trial_id
+    ):
         raise ValueError("comparison trace_id/trial_id must be non-empty")
+    if not _is_git_sha(execution_git_commit):
+        raise ValueError("comparison execution_git_commit must be a git SHA")
     rows = value["layer_rows"]
     if not isinstance(rows, list) or not rows:
         raise ValueError("comparison requires layer_rows")
     validated = [validate_layer_row(row) for row in rows]
-    if any(row["trace_id"] != trace_id or row["trial_id"] != trial_id for row in validated):
-        raise ValueError("comparison rows escaped trace/trial identity")
+    if any(
+        row["trace_id"] != trace_id
+        or row["trial_id"] != trial_id
+        or row["execution_git_commit"] != execution_git_commit
+        for row in validated
+    ):
+        raise ValueError("comparison rows escaped trace/trial/execution identity")
     spec = next((item for item in C83A_TRACE_SPECS if item.trace_id == trace_id), None)
     if spec is None:
         raise ValueError("unknown comparison trace_id")
-    expected_keys = {
+    expected_keys = [
         (layer.value, checkpoint.checkpoint_id)
         for layer in C83Layer
         for checkpoint in spec.checkpoints
-    }
-    actual_keys = {(row["layer"], row["checkpoint_id"]) for row in validated}
-    if actual_keys != expected_keys or len(actual_keys) != len(validated):
-        raise ValueError("comparison must contain exactly one row per layer/checkpoint")
+    ]
+    actual_keys = [(row["layer"], row["checkpoint_id"]) for row in validated]
+    if actual_keys != expected_keys:
+        raise ValueError(
+            "comparison rows must be exactly one per layer/checkpoint in canonical order"
+        )
 
     derived_vectors = {
         layer.value: [
@@ -780,26 +926,53 @@ def validate_comparison(value: Mapping[str, Any]) -> dict[str, Any]:
         ]
         for layer in C83Layer
     }
+    derived_state_vectors = {
+        layer.value: [
+            next(
+                row["semantic_state_fingerprint"]
+                for row in validated
+                if row["layer"] == layer.value
+                and row["checkpoint_id"] == checkpoint.checkpoint_id
+            )
+            for checkpoint in spec.checkpoints
+        ]
+        for layer in C83Layer
+    }
+    state_equivalent = len(
+        {tuple(items) for items in derived_state_vectors.values()}
+    ) == 1
     expected_vector = [checkpoint.expected.value for checkpoint in spec.checkpoints]
     expected_match = {
-        layer.value: derived_vectors[layer.value] == expected_vector for layer in C83Layer
+        layer.value: derived_vectors[layer.value] == expected_vector
+        for layer in C83Layer
     }
     derived_opportunities = {
         layer.value: sum(
-            row["opportunities"] for row in validated if row["layer"] == layer.value
+            row["opportunities"]
+            for row in validated
+            if row["layer"] == layer.value
         )
         for layer in C83Layer
     }
     derived_violations = {
         layer.value: sum(
-            row["violations"] for row in validated if row["layer"] == layer.value
+            row["violations"]
+            for row in validated
+            if row["layer"] == layer.value
         )
         for layer in C83Layer
     }
-    execution_failures = sum(1 for row in validated if row["replay_execution_failure"])
-    semantic_equivalent = len({tuple(items) for items in derived_vectors.values()}) == 1
+    execution_failures = sum(
+        1 for row in validated if row["replay_execution_failure"]
+    )
+    semantic_equivalent = (
+        len({tuple(items) for items in derived_vectors.values()}) == 1
+        and state_equivalent
+    )
     opportunity_counts_match = len(set(derived_opportunities.values())) == 1
-    forbidden_violation_free = all(count == 0 for count in derived_violations.values())
+    forbidden_violation_free = all(
+        count == 0 for count in derived_violations.values()
+    )
     rankable = execution_failures == 0 and opportunity_counts_match
     correctness_pass = (
         rankable
@@ -810,6 +983,8 @@ def validate_comparison(value: Mapping[str, Any]) -> dict[str, Any]:
 
     derived_fields = {
         "checkpoint_vector_by_layer": derived_vectors,
+        "state_fingerprint_vector_by_layer": derived_state_vectors,
+        "state_equivalent": state_equivalent,
         "expected_checkpoint_vector": expected_vector,
         "expected_outcome_match_by_layer": expected_match,
         "semantic_equivalent": semantic_equivalent,
@@ -823,7 +998,9 @@ def validate_comparison(value: Mapping[str, Any]) -> dict[str, Any]:
     }
     for field, derived in derived_fields.items():
         if value[field] != derived:
-            raise ValueError(f"comparison {field} is not derived from frozen layer rows")
+            raise ValueError(
+                f"comparison {field} is not derived from frozen layer rows"
+            )
     return dict(value)
 
 
