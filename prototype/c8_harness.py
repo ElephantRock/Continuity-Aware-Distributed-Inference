@@ -23,6 +23,19 @@ HARNESS_REGISTER_SCHEMA = "cadi.c8.2.harness-register.v1"
 FAILURE_SCHEMA = "cadi.c8.2.process-failure.v1"
 
 
+class WorkerSocketSendClosed(ConnectionError):
+    """Downstream worker socket closed while a frame was being forwarded."""
+
+
+def _sendall_or_worker_closed(sock: socket.socket, frame: bytes) -> None:
+    """Normalize platform-specific peer-close errors at the send boundary."""
+
+    try:
+        sock.sendall(frame)
+    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as exc:
+        raise WorkerSocketSendClosed(type(exc).__name__) from exc
+
+
 def _scheduler_map(
     rules: Mapping[str, Iterable[str]] | None,
     *,
@@ -108,8 +121,64 @@ def harness_process_main(
     worker_shutdown_expected = False
     failure_counter = 1
 
+    def _disconnect_worker(reason: str) -> None:
+        nonlocal worker, worker_pid, worker_id, worker_shutdown_expected, failure_counter
+        if worker is not None:
+            try:
+                selector.unregister(worker)
+            except Exception:
+                pass
+            worker.close()
+            worker = None
+        if worker_shutdown_expected:
+            logger.emit(
+                action="WORKER_DISCONNECTED",
+                result="EXPECTED_AFTER_SHUTDOWN",
+                details={"worker_pid": worker_pid, "worker_id": worker_id, "reason": reason},
+            )
+        elif worker_pid is not None:
+            failure_counter += 1
+            failure = make_envelope(
+                message_id=f"harness:{pid}:failure:{failure_counter}",
+                message_kind="PROCESS_FAILURE",
+                sender_role=C8WireRole.FAULT_TRANSPORT_HARNESS,
+                receiver_role=C8WireRole.CONTROL_PLANE_AUTHORITY,
+                subject_type="PROCESS",
+                subject_id=worker_id or f"worker-pid-{worker_pid}",
+                payload_schema=FAILURE_SCHEMA,
+                payload={
+                    "pid": worker_pid,
+                    "worker_id": worker_id,
+                    "reason": reason,
+                },
+            )
+            upstream.setblocking(True)
+            try:
+                send_envelope(upstream, failure)
+            finally:
+                upstream.setblocking(False)
+            logger.emit(action="MESSAGE_SENT", result="PROCESS_FAILURE", message=failure)
+        worker_pid = None
+        worker_id = None
+        worker_shutdown_expected = False
+
     def _raw_send(sock: socket.socket, frame: bytes, *, direction: str, kind: str) -> None:
-        sock.sendall(frame)
+        try:
+            if direction.startswith("AUTHORITY_TO_WORKER"):
+                _sendall_or_worker_closed(sock, frame)
+            else:
+                sock.sendall(frame)
+        except WorkerSocketSendClosed as exc:
+            logger.emit(
+                action="FRAME_FORWARD_FAILED",
+                result=direction,
+                details={
+                    "message_kind": kind,
+                    "frame_bytes": len(frame),
+                    "error_class": str(exc),
+                },
+            )
+            raise
         logger.emit(
             action="FRAME_FORWARDED",
             result=direction,
@@ -170,7 +239,10 @@ def harness_process_main(
             if not ready:
                 _flush_delayed(upstream_schedulers, upstream, "WORKER_TO_AUTHORITY_DELAYED")
                 if worker is not None:
-                    _flush_delayed(downstream_schedulers, worker, "AUTHORITY_TO_WORKER_DELAYED")
+                    try:
+                        _flush_delayed(downstream_schedulers, worker, "AUTHORITY_TO_WORKER_DELAYED")
+                    except WorkerSocketSendClosed:
+                        _disconnect_worker("WORKER_SOCKET_SEND_CLOSED")
                 continue
 
             for key, _mask in ready:
@@ -215,14 +287,18 @@ def harness_process_main(
                         worker_shutdown_expected = True
                     worker.setblocking(True)
                     try:
-                        _queue_or_send(
-                            message,
-                            worker,
-                            downstream_schedulers,
-                            direction="AUTHORITY_TO_WORKER",
-                        )
+                        try:
+                            _queue_or_send(
+                                message,
+                                worker,
+                                downstream_schedulers,
+                                direction="AUTHORITY_TO_WORKER",
+                            )
+                        except WorkerSocketSendClosed:
+                            _disconnect_worker("WORKER_SOCKET_SEND_CLOSED")
                     finally:
-                        worker.setblocking(False)
+                        if worker is not None:
+                            worker.setblocking(False)
                     continue
 
                 if key.data == "worker":
@@ -231,43 +307,7 @@ def harness_process_main(
                         worker.setblocking(True)
                         message = recv_envelope(worker)
                     except TruncatedFrameError:
-                        try:
-                            selector.unregister(worker)
-                        except Exception:
-                            pass
-                        worker.close()
-                        worker = None
-                        if worker_shutdown_expected:
-                            logger.emit(
-                                action="WORKER_DISCONNECTED",
-                                result="EXPECTED_AFTER_SHUTDOWN",
-                                details={"worker_pid": worker_pid, "worker_id": worker_id},
-                            )
-                        elif worker_pid is not None:
-                            failure_counter += 1
-                            failure = make_envelope(
-                                message_id=f"harness:{pid}:failure:{failure_counter}",
-                                message_kind="PROCESS_FAILURE",
-                                sender_role=C8WireRole.FAULT_TRANSPORT_HARNESS,
-                                receiver_role=C8WireRole.CONTROL_PLANE_AUTHORITY,
-                                subject_type="PROCESS",
-                                subject_id=worker_id or f"worker-pid-{worker_pid}",
-                                payload_schema=FAILURE_SCHEMA,
-                                payload={
-                                    "pid": worker_pid,
-                                    "worker_id": worker_id,
-                                    "reason": "WORKER_SOCKET_CLOSED",
-                                },
-                            )
-                            upstream.setblocking(True)
-                            try:
-                                send_envelope(upstream, failure)
-                            finally:
-                                upstream.setblocking(False)
-                            logger.emit(action="MESSAGE_SENT", result="PROCESS_FAILURE", message=failure)
-                        worker_pid = None
-                        worker_id = None
-                        worker_shutdown_expected = False
+                        _disconnect_worker("WORKER_SOCKET_CLOSED")
                         continue
                     finally:
                         if worker is not None:
