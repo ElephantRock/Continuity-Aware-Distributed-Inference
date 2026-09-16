@@ -1,0 +1,101 @@
+name: c83a1-c2-entry-amendment
+
+on:
+  push:
+    branches:
+      - c8/c2-replay-feasibility-repair
+      - main
+    paths:
+      - .github/workflows/c83a1-c2-entry-amendment.yml
+      - experiments/c83_replay_protocol.py
+      - experiments/c83_replay_protocol_v3.py
+      - tests/experiments/test_c83_replay_protocol_v3.py
+      - spec/65-c8.3a1-c2-entry-amendment.md
+      - simulator/fault_campaign.py
+      - simulator/fault_linkage.py
+      - simulator/fault_oracle.py
+      - simulator/faults.py
+      - simulator/resources.py
+      - simulator/semantic_adapter.py
+      - simulator/engine.py
+      - continuity/**
+      - prototype/**
+  pull_request:
+    paths:
+      - .github/workflows/c83a1-c2-entry-amendment.yml
+      - experiments/c83_replay_protocol.py
+      - experiments/c83_replay_protocol_v3.py
+      - tests/experiments/test_c83_replay_protocol_v3.py
+      - spec/65-c8.3a1-c2-entry-amendment.md
+      - simulator/fault_campaign.py
+      - simulator/fault_linkage.py
+      - simulator/fault_oracle.py
+      - simulator/faults.py
+      - simulator/resources.py
+      - simulator/semantic_adapter.py
+      - simulator/engine.py
+      - continuity/**
+      - prototype/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  C83A_V2_MERGE: 'd8e05ef0fe4ab6bf469202b4a2476dcbb12eede5'
+  C83A_V2_FINGERPRINT: '40780a318a5a692c713d7d27ded86d1f0fc6cd920d1c1ef82114889f9d9e099a'
+
+jobs:
+  amendment:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify immutable clean checkout
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git cat-file -e "${C83A_V2_MERGE}^{commit}"
+          git merge-base --is-ancestor "$C83A_V2_MERGE" HEAD
+
+      - name: Prove reviewed v2 semantic and substrate tree is unchanged
+        run: |
+          git diff --exit-code "$C83A_V2_MERGE" HEAD -- \
+            experiments/c83_replay_protocol.py \
+            experiments/c8_protocol.py \
+            experiments/correctness.py \
+            tests/counterexamples/test_failure_model_traces.py \
+            simulator \
+            continuity \
+            prototype
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+          check-latest: false
+
+      - name: Install test runner only
+        run: python -m pip install 'pytest==8.4.2'
+
+      - name: Run mapping-only amendment tests
+        run: python -m pytest -q tests/experiments/test_c83_replay_protocol_v3.py
+
+      - name: Record candidate protocol identity
+        run: |
+          python - <<'PY'
+          from experiments import c83_replay_protocol as v2
+          from experiments import c83_replay_protocol_v3 as v3
+          assert v2.C83A_PROTOCOL_FINGERPRINT == '${{ env.C83A_V2_FINGERPRINT }}'
+          assert v3.C83A_COMPARATIVE_RESULT_INSPECTION == 'NONE'
+          v3.validate_protocol_identity(require_frozen=False)
+          print('predecessor_protocol_fingerprint=' + v3.C83A_PREDECESSOR_PROTOCOL_FINGERPRINT)
+          print('candidate_protocol_fingerprint=' + v3.protocol_fingerprint())
+          print('comparative_result_inspection=' + v3.C83A_COMPARATIVE_RESULT_INSPECTION)
+          print('amendment_scope=C2_ENTRY_POINT_DESCRIPTION_ONLY')
+          PY
