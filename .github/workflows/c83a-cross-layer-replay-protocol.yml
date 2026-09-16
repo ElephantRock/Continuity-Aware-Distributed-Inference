@@ -8,7 +8,8 @@ on:
     paths:
       - .github/workflows/c83a-cross-layer-replay-protocol.yml
       - experiments/c83_replay_protocol.py
-      - tests/experiments/test_c83_replay_protocol.py
+      - tests/experiments/test_c83_replay_protocol*.py
+      - tests/counterexamples/test_failure_model_traces.py
       - spec/63-c8.3a-cross-layer-replay-protocol.md
       - experiments/c8_protocol.py
       - experiments/correctness.py
@@ -19,7 +20,8 @@ on:
     paths:
       - .github/workflows/c83a-cross-layer-replay-protocol.yml
       - experiments/c83_replay_protocol.py
-      - tests/experiments/test_c83_replay_protocol.py
+      - tests/experiments/test_c83_replay_protocol*.py
+      - tests/counterexamples/test_failure_model_traces.py
       - spec/63-c8.3a-cross-layer-replay-protocol.md
       - experiments/c8_protocol.py
       - experiments/correctness.py
@@ -55,11 +57,12 @@ jobs:
           git cat-file -e "${C82_MERGE}^{commit}"
           git merge-base --is-ancestor "$C82_MERGE" HEAD
 
-      - name: Fence frozen C8.1/C8.2 semantic and substrate dependencies
+      - name: Fence frozen C8.1/C8.2 semantic and replay-anchor dependencies
         run: |
           git diff --exit-code "$C82_MERGE" HEAD -- \
             experiments/c8_protocol.py \
             experiments/correctness.py \
+            tests/counterexamples/test_failure_model_traces.py \
             prototype \
             continuity \
             simulator
@@ -92,7 +95,7 @@ jobs:
           PY
 
       - name: Run fail-closed replay protocol tests
-        run: python -m pytest -q tests/experiments/test_c83_replay_protocol.py
+        run: python -m pytest -q tests/experiments/test_c83_replay_protocol*.py
 
       - name: Record protocol freeze boundary
         run: |
