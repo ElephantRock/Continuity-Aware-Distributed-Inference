@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from experiments.c83_replay_protocol import C83A_TRACE_SPECS, C83Layer
 from experiments.c83_replay_results import (
+    _replay_failure_row,
     _row,
     _scientific_row,
     semantic_state_fingerprint,
@@ -34,6 +35,32 @@ def test_row_reorders_projection_by_frozen_contract_before_hashing() -> None:
             "request.authoritative_output_id": "o2",
         }
     )
+
+
+def test_replay_failure_row_preserves_denominator_without_semantic_violation() -> None:
+    spec = C83A_TRACE_SPECS[0]
+    checkpoint = spec.checkpoints[1]
+    topology = {
+        "authority_pid": 101,
+        "fault_harness_pid": 102,
+        "worker_pids": [103, 104],
+        "authority_port": 31001,
+        "worker_port": 31002,
+        "transport_id": "LOOPBACK_TCP_LENGTH_PREFIXED_CANONICAL_JSON_V1",
+        "real_process_boundary": True,
+    }
+    row = _replay_failure_row(
+        spec=spec,
+        checkpoint=checkpoint,
+        execution_git_commit=EXECUTION_SHA,
+        topology=topology,
+    )
+    assert row["raw_outcome"] == "REPLAY_EXECUTION_FAILURE"
+    assert row["normalized_outcome"] == "FAIL"
+    assert row["opportunities"] == 1
+    assert row["violations"] == 0
+    assert row["explicit_non_success"] is True
+    assert row["replay_execution_failure"] is True
 
 
 def test_scientific_row_normalizes_volatile_real_process_identifiers() -> None:
