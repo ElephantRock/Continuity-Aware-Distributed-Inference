@@ -44,6 +44,7 @@ permissions:
 env:
   C83A_V2_MERGE: 'd8e05ef0fe4ab6bf469202b4a2476dcbb12eede5'
   C83A_V2_FINGERPRINT: '40780a318a5a692c713d7d27ded86d1f0fc6cd920d1c1ef82114889f9d9e099a'
+  C83A_V3_FINGERPRINT: '8441753a3773070a2a53c5896df3a8ca20803d82ad228bc6ad8e992c779a097c'
 
 jobs:
   amendment:
@@ -86,16 +87,19 @@ jobs:
       - name: Run mapping-only amendment tests
         run: python -m pytest -q tests/experiments/test_c83_replay_protocol_v3.py
 
-      - name: Record candidate protocol identity
+      - name: Verify frozen v3 protocol identity
         run: |
           python - <<'PY'
+          import os
           from experiments import c83_replay_protocol as v2
           from experiments import c83_replay_protocol_v3 as v3
-          assert v2.C83A_PROTOCOL_FINGERPRINT == '${{ env.C83A_V2_FINGERPRINT }}'
+          assert v2.C83A_PROTOCOL_FINGERPRINT == os.environ['C83A_V2_FINGERPRINT']
+          assert v3.C83A_PROTOCOL_FINGERPRINT == os.environ['C83A_V3_FINGERPRINT']
+          assert v3.protocol_fingerprint() == os.environ['C83A_V3_FINGERPRINT']
           assert v3.C83A_COMPARATIVE_RESULT_INSPECTION == 'NONE'
-          v3.validate_protocol_identity(require_frozen=False)
+          v3.validate_protocol_identity()
           print('predecessor_protocol_fingerprint=' + v3.C83A_PREDECESSOR_PROTOCOL_FINGERPRINT)
-          print('candidate_protocol_fingerprint=' + v3.protocol_fingerprint())
+          print('c83a_v3_protocol_fingerprint=' + v3.C83A_PROTOCOL_FINGERPRINT)
           print('comparative_result_inspection=' + v3.C83A_COMPARATIVE_RESULT_INSPECTION)
           print('amendment_scope=C2_ENTRY_POINT_DESCRIPTION_ONLY')
           PY
