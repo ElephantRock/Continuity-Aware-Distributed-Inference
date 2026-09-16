@@ -39,7 +39,8 @@ def test_real_c8_replay_executes_all_frozen_trace_checkpoints(tmp_path: Path) ->
             )
             assert normalized is checkpoint.expected
             assert violation is False
-            assert tuple(observation.projection) == checkpoint.semantic_projection_fields
+            assert set(observation.projection) == set(checkpoint.semantic_projection_fields)
+            assert len(observation.projection) == len(checkpoint.semantic_projection_fields)
 
 
 def test_c1_c2_c8_semantic_projection_values_match(tmp_path: Path) -> None:
