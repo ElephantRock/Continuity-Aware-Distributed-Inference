@@ -75,8 +75,13 @@ def _row(
     checkpoint = next(
         item for item in spec.checkpoints if item.checkpoint_id == observation.checkpoint_id
     )
-    if tuple(observation.projection) != checkpoint.semantic_projection_fields:
-        raise ValueError("semantic projection field order differs from frozen checkpoint contract")
+    expected_fields = checkpoint.semantic_projection_fields
+    if set(observation.projection) != set(expected_fields) or len(observation.projection) != len(expected_fields):
+        raise ValueError("semantic projection fields differ from frozen checkpoint contract")
+    ordered_projection = {
+        field: observation.projection[field]
+        for field in expected_fields
+    }
     normalized, forbidden_violation = normalize_raw_outcome(
         spec.trace_id,
         checkpoint.checkpoint_id,
@@ -96,7 +101,7 @@ def _row(
         "violations": 1 if checkpoint.opportunity and forbidden_violation else 0,
         "explicit_non_success": normalized in _EXPLICIT_NON_SUCCESS,
         "replay_execution_failure": False,
-        "semantic_state_fingerprint": semantic_state_fingerprint(observation.projection),
+        "semantic_state_fingerprint": semantic_state_fingerprint(ordered_projection),
         "topology_provenance": dict(topology) if topology is not None else None,
         "fault_script_fingerprint": (
             spec.fault_script_fingerprint() if layer is C83Layer.C8 else None
