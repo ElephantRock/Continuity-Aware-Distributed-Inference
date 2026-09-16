@@ -1,0 +1,188 @@
+name: c83b-cross-layer-replay-results
+
+on:
+  push:
+    branches:
+      - c8/cross-layer-replay-execution
+      - main
+    paths:
+      - .github/workflows/c83b-cross-layer-replay-results.yml
+      - experiments/c83_replay_results.py
+      - experiments/c83_replay_runtime.py
+      - experiments/c83_replay_semantics.py
+      - experiments/c83_replay_protocol.py
+      - experiments/c8_protocol.py
+      - experiments/correctness.py
+      - tests/experiments/test_c83_replay_results.py
+      - tests/experiments/test_c83_replay_runtime.py
+      - tests/experiments/test_c83_replay_semantics.py
+      - tests/experiments/test_c83_replay_protocol.py
+      - tests/experiments/test_c83_replay_protocol_dependencies.py
+      - tests/counterexamples/test_failure_model_traces.py
+      - spec/64-c8.3b-cross-layer-replay-execution.md
+      - prototype/**
+      - continuity/**
+      - simulator/**
+      - pyproject.toml
+  pull_request:
+    paths:
+      - .github/workflows/c83b-cross-layer-replay-results.yml
+      - experiments/c83_replay_results.py
+      - experiments/c83_replay_runtime.py
+      - experiments/c83_replay_semantics.py
+      - experiments/c83_replay_protocol.py
+      - experiments/c8_protocol.py
+      - experiments/correctness.py
+      - tests/experiments/test_c83_replay_results.py
+      - tests/experiments/test_c83_replay_runtime.py
+      - tests/experiments/test_c83_replay_semantics.py
+      - tests/experiments/test_c83_replay_protocol.py
+      - tests/experiments/test_c83_replay_protocol_dependencies.py
+      - tests/counterexamples/test_failure_model_traces.py
+      - spec/64-c8.3b-cross-layer-replay-execution.md
+      - prototype/**
+      - continuity/**
+      - simulator/**
+      - pyproject.toml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONHASHSEED: '0'
+  C83A_MERGE: 'd8e05ef0fe4ab6bf469202b4a2476dcbb12eede5'
+  C83A_PROTOCOL_FINGERPRINT: '40780a318a5a692c713d7d27ded86d1f0fc6cd920d1c1ef82114889f9d9e099a'
+  C81_PROTOCOL_FINGERPRINT: '616cc4daa4c167152875522767a8cc968da25c63d6acc099c265bc3554641cb6'
+
+jobs:
+  execute:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify immutable exact-head checkout
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git cat-file -e "${C83A_MERGE}^{commit}"
+          git merge-base --is-ancestor "$C83A_MERGE" HEAD
+
+      - name: Fence frozen C8.3a and semantic/substrate parents
+        run: |
+          git diff --exit-code "$C83A_MERGE" HEAD -- \
+            experiments/c83_replay_protocol.py \
+            experiments/c8_protocol.py \
+            experiments/correctness.py \
+            tests/counterexamples/test_failure_model_traces.py \
+            prototype \
+            continuity \
+            simulator
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12.14'
+          check-latest: false
+
+      - name: Install test runner only
+        run: python -m pip install 'pytest==8.4.2'
+
+      - name: Verify frozen protocol and evidence boundary
+        run: |
+          python - <<'PY'
+          import os
+          from experiments.c8_protocol import C8_PROTOCOL_FINGERPRINT
+          from experiments.c83_replay_protocol import C83A_PROTOCOL_FINGERPRINT, validate_protocol_identity
+          from experiments.c83_replay_results import C83B_BASE_COMMIT, C83B_GATE_G3_PERFORMANCE_INSPECTION
+
+          assert C8_PROTOCOL_FINGERPRINT == os.environ['C81_PROTOCOL_FINGERPRINT']
+          assert C83A_PROTOCOL_FINGERPRINT == os.environ['C83A_PROTOCOL_FINGERPRINT']
+          assert C83B_BASE_COMMIT == os.environ['C83A_MERGE']
+          assert C83B_GATE_G3_PERFORMANCE_INSPECTION == 'NONE'
+          validate_protocol_identity()
+          PY
+
+      - name: Run C8.3 protocol and execution tests
+        run: |
+          python -m pytest -q \
+            tests/experiments/test_c83_replay_protocol.py \
+            tests/experiments/test_c83_replay_protocol_dependencies.py \
+            tests/experiments/test_c83_replay_semantics.py \
+            tests/experiments/test_c83_replay_runtime.py \
+            tests/experiments/test_c83_replay_results.py
+
+      - name: Execute canonical campaign 1
+        run: |
+          rm -rf /tmp/c83b-run1-work
+          python -m experiments.c83_replay_results \
+            --repo-root . \
+            --work-root /tmp/c83b-run1-work \
+            --output /tmp/c83b-run1.json \
+            --second-output /tmp/c83b-run1-copy.json \
+            | tee /tmp/c83b-run1-summary.txt
+          cmp /tmp/c83b-run1.json /tmp/c83b-run1-copy.json
+
+      - name: Execute independent canonical campaign 2
+        run: |
+          rm -rf /tmp/c83b-run2-work
+          python -m experiments.c83_replay_results \
+            --repo-root . \
+            --work-root /tmp/c83b-run2-work \
+            --output /tmp/c83b-run2.json \
+            --second-output /tmp/c83b-run2-copy.json \
+            | tee /tmp/c83b-run2-summary.txt
+          cmp /tmp/c83b-run2.json /tmp/c83b-run2-copy.json
+
+      - name: Verify independent scientific replay identity
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from experiments.c83_replay_results import scientific_payload
+
+          left = json.loads(Path('/tmp/c83b-run1.json').read_text())
+          right = json.loads(Path('/tmp/c83b-run2.json').read_text())
+          assert left['execution_git_commit'] == os.environ['EXPECTED_SHA']
+          assert right['execution_git_commit'] == os.environ['EXPECTED_SHA']
+          assert left['c83a_protocol_fingerprint'] == os.environ['C83A_PROTOCOL_FINGERPRINT']
+          assert right['c83a_protocol_fingerprint'] == os.environ['C83A_PROTOCOL_FINGERPRINT']
+          assert left['gate_g3_performance_inspection'] == 'NONE'
+          assert right['gate_g3_performance_inspection'] == 'NONE'
+          assert left['scientific_fingerprint'] == right['scientific_fingerprint']
+          assert left['summary'] == right['summary']
+          assert scientific_payload(left) == scientific_payload(right)
+          assert left['summary']['trace_count'] == 7
+          assert left['summary']['layer_checkpoint_row_count'] == 30
+          assert left['summary']['opportunity_count_by_layer'] == {'C1': 7, 'C2': 7, 'C8': 7}
+          print('execution_git_commit=' + left['execution_git_commit'])
+          print('scientific_fingerprint=' + left['scientific_fingerprint'])
+          print('run1_artifact_sha256=' + __import__('hashlib').sha256(Path('/tmp/c83b-run1.json').read_bytes()).hexdigest())
+          print('run2_artifact_sha256=' + __import__('hashlib').sha256(Path('/tmp/c83b-run2.json').read_bytes()).hexdigest())
+          print('summary=' + json.dumps(left['summary'], sort_keys=True, separators=(',', ':')))
+          print('gate_g3_performance_inspection=NONE')
+          PY
+
+      - name: Stage raw physical replay artifacts
+        run: |
+          mkdir -p /tmp/c83b-artifact
+          cp /tmp/c83b-run1.json /tmp/c83b-artifact/c83b-cross-layer-replay-run1.json
+          cp /tmp/c83b-run2.json /tmp/c83b-artifact/c83b-cross-layer-replay-run2.json
+          cp /tmp/c83b-run1-summary.txt /tmp/c83b-artifact/run1-summary.txt
+          cp /tmp/c83b-run2-summary.txt /tmp/c83b-artifact/run2-summary.txt
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: c83b-cross-layer-replay-results
+          path: /tmp/c83b-artifact
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
