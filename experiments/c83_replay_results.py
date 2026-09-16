@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from experiments.c83_replay_protocol import (
     C83A_COMPARISON_SCHEMA,
     C83A_PROTOCOL_FINGERPRINT,
+    C83A_REPLAY_EXECUTION_FAILURE_RAW,
     C83A_ROW_SCHEMA,
     C83A_TRACE_SPECS,
     C83Layer,
@@ -78,10 +79,7 @@ def _row(
     expected_fields = checkpoint.semantic_projection_fields
     if set(observation.projection) != set(expected_fields) or len(observation.projection) != len(expected_fields):
         raise ValueError("semantic projection fields differ from frozen checkpoint contract")
-    ordered_projection = {
-        field: observation.projection[field]
-        for field in expected_fields
-    }
+    ordered_projection = {field: observation.projection[field] for field in expected_fields}
     normalized, forbidden_violation = normalize_raw_outcome(
         spec.trace_id,
         checkpoint.checkpoint_id,
@@ -103,9 +101,40 @@ def _row(
         "replay_execution_failure": False,
         "semantic_state_fingerprint": semantic_state_fingerprint(ordered_projection),
         "topology_provenance": dict(topology) if topology is not None else None,
-        "fault_script_fingerprint": (
-            spec.fault_script_fingerprint() if layer is C83Layer.C8 else None
+        "fault_script_fingerprint": spec.fault_script_fingerprint() if layer is C83Layer.C8 else None,
+    }
+    return validate_layer_row(row)
+
+
+def _replay_failure_row(
+    *,
+    spec: Any,
+    checkpoint: Any,
+    execution_git_commit: str,
+    topology: Mapping[str, Any],
+) -> dict[str, Any]:
+    row = {
+        "schema": C83A_ROW_SCHEMA,
+        "trace_id": spec.trace_id,
+        "trial_id": _trial_id(spec.trace_id),
+        "execution_git_commit": execution_git_commit,
+        "layer": C83Layer.C8.value,
+        "checkpoint_id": checkpoint.checkpoint_id,
+        "raw_outcome": C83A_REPLAY_EXECUTION_FAILURE_RAW,
+        "normalized_outcome": C83NormalizedOutcome.FAIL.value,
+        "opportunities": 1 if checkpoint.opportunity else 0,
+        "violations": 0,
+        "explicit_non_success": True,
+        "replay_execution_failure": True,
+        "semantic_state_fingerprint": sha256_hex(
+            {
+                "trace_id": spec.trace_id,
+                "checkpoint_id": checkpoint.checkpoint_id,
+                "replay_execution_failure": True,
+            }
         ),
+        "topology_provenance": dict(topology),
+        "fault_script_fingerprint": spec.fault_script_fingerprint(),
     }
     return validate_layer_row(row)
 
@@ -120,8 +149,7 @@ def _derive_comparison(
             next(
                 row["normalized_outcome"]
                 for row in rows
-                if row["layer"] == layer.value
-                and row["checkpoint_id"] == checkpoint.checkpoint_id
+                if row["layer"] == layer.value and row["checkpoint_id"] == checkpoint.checkpoint_id
             )
             for checkpoint in spec.checkpoints
         ]
@@ -132,33 +160,24 @@ def _derive_comparison(
             next(
                 row["semantic_state_fingerprint"]
                 for row in rows
-                if row["layer"] == layer.value
-                and row["checkpoint_id"] == checkpoint.checkpoint_id
+                if row["layer"] == layer.value and row["checkpoint_id"] == checkpoint.checkpoint_id
             )
             for checkpoint in spec.checkpoints
         ]
         for layer in C83Layer
     }
     expected_vector = [checkpoint.expected.value for checkpoint in spec.checkpoints]
-    expected_match = {
-        layer.value: vectors[layer.value] == expected_vector for layer in C83Layer
-    }
+    expected_match = {layer.value: vectors[layer.value] == expected_vector for layer in C83Layer}
     opportunities = {
-        layer.value: sum(
-            row["opportunities"] for row in rows if row["layer"] == layer.value
-        )
+        layer.value: sum(row["opportunities"] for row in rows if row["layer"] == layer.value)
         for layer in C83Layer
     }
     violations = {
-        layer.value: sum(
-            row["violations"] for row in rows if row["layer"] == layer.value
-        )
+        layer.value: sum(row["violations"] for row in rows if row["layer"] == layer.value)
         for layer in C83Layer
     }
     state_equivalent = len({tuple(items) for items in state_vectors.values()}) == 1
-    semantic_equivalent = (
-        len({tuple(items) for items in vectors.values()}) == 1 and state_equivalent
-    )
+    semantic_equivalent = len({tuple(items) for items in vectors.values()}) == 1 and state_equivalent
     opportunity_counts_match = len(set(opportunities.values())) == 1
     execution_failure_count = sum(1 for row in rows if row["replay_execution_failure"])
     rankable = execution_failure_count == 0 and opportunity_counts_match
@@ -196,11 +215,7 @@ def _scientific_row(row: Mapping[str, Any]) -> dict[str, Any]:
     topology = row["topology_provenance"]
     topology_shape = None
     if topology is not None:
-        pids = [
-            topology["authority_pid"],
-            topology["fault_harness_pid"],
-            *topology["worker_pids"],
-        ]
+        pids = [topology["authority_pid"], topology["fault_harness_pid"], *topology["worker_pids"]]
         topology_shape = {
             "transport_id": topology["transport_id"],
             "real_process_boundary": topology["real_process_boundary"],
@@ -238,10 +253,7 @@ def scientific_payload(result: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def summarize(
-    rows: list[dict[str, Any]],
-    comparisons: list[dict[str, Any]],
-) -> dict[str, Any]:
+def summarize(rows: list[dict[str, Any]], comparisons: list[dict[str, Any]]) -> dict[str, Any]:
     opportunity_count_by_layer = {
         layer.value: sum(row["opportunities"] for row in rows if row["layer"] == layer.value)
         for layer in C83Layer
@@ -260,20 +272,14 @@ def summarize(
         "trace_count": len(comparisons),
         "layer_checkpoint_row_count": len(rows),
         "rankable_trace_count": sum(bool(item["rankable"]) for item in comparisons),
-        "semantic_equivalence_mismatch_count": sum(
-            not bool(item["semantic_equivalent"]) for item in comparisons
-        ),
-        "state_equivalence_mismatch_count": sum(
-            not bool(item["state_equivalent"]) for item in comparisons
-        ),
+        "semantic_equivalence_mismatch_count": sum(not bool(item["semantic_equivalent"]) for item in comparisons),
+        "state_equivalence_mismatch_count": sum(not bool(item["state_equivalent"]) for item in comparisons),
         "expected_outcome_mismatch_count": expected_outcome_mismatch_count,
         "opportunity_count_by_layer": opportunity_count_by_layer,
         "violation_count_by_layer": violation_count_by_layer,
         "explicit_non_success_count": explicit_non_success_count,
         "physical_replay_execution_failure_count": execution_failure_count,
-        "correctness_pass_trace_count": sum(
-            bool(item["correctness_pass"]) for item in comparisons
-        ),
+        "correctness_pass_trace_count": sum(bool(item["correctness_pass"]) for item in comparisons),
     }
 
 
@@ -288,20 +294,28 @@ def generate_result(repo_root: str | Path, work_root: str | Path) -> dict[str, A
         c1 = run_c1_trace(spec.trace_id)
         c2 = run_c2_trace(spec.trace_id)
         runtime = C83RealReplayRuntime(spec.trace_id, work / spec.trace_id)
-        c8 = runtime.run()
-        topology = runtime.topology()
+        c8: tuple[ReplayObservation, ...] | None
+        try:
+            c8 = runtime.run()
+            topology = runtime.topology()
+        except Exception as exc:
+            try:
+                topology = runtime.topology()
+            except Exception as topology_exc:
+                raise RuntimeError(
+                    f"C8 replay for {spec.trace_id} failed before complete topology provenance"
+                ) from topology_exc
+            c8 = None
 
         expected_ids = tuple(checkpoint.checkpoint_id for checkpoint in spec.checkpoints)
-        for observations in (c1, c2, c8):
+        for observations in (c1, c2):
             if tuple(item.checkpoint_id for item in observations) != expected_ids:
                 raise RuntimeError(f"checkpoint order drift for {spec.trace_id}")
+        if c8 is not None and tuple(item.checkpoint_id for item in c8) != expected_ids:
+            raise RuntimeError(f"C8 checkpoint order drift for {spec.trace_id}")
 
         trace_rows: list[dict[str, Any]] = []
-        for layer, observations in (
-            (C83Layer.C1, c1),
-            (C83Layer.C2, c2),
-            (C83Layer.C8, c8),
-        ):
+        for layer, observations in ((C83Layer.C1, c1), (C83Layer.C2, c2)):
             for observation in observations:
                 trace_rows.append(
                     _row(
@@ -309,13 +323,31 @@ def generate_result(repo_root: str | Path, work_root: str | Path) -> dict[str, A
                         execution_git_commit=execution_git_commit,
                         layer=layer,
                         observation=observation,
-                        topology=topology if layer is C83Layer.C8 else None,
                     )
                 )
+        if c8 is None:
+            trace_rows.extend(
+                _replay_failure_row(
+                    spec=spec,
+                    checkpoint=checkpoint,
+                    execution_git_commit=execution_git_commit,
+                    topology=topology,
+                )
+                for checkpoint in spec.checkpoints
+            )
+        else:
+            trace_rows.extend(
+                _row(
+                    spec=spec,
+                    execution_git_commit=execution_git_commit,
+                    layer=C83Layer.C8,
+                    observation=observation,
+                    topology=topology,
+                )
+                for observation in c8
+            )
         rows.extend(trace_rows)
-        comparisons.append(
-            _derive_comparison(spec, execution_git_commit, trace_rows)
-        )
+        comparisons.append(_derive_comparison(spec, execution_git_commit, trace_rows))
 
     result: dict[str, Any] = {
         "schema": C83B_RESULT_SCHEMA,
