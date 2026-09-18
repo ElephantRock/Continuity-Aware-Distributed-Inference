@@ -9,8 +9,8 @@ from experiments import c83_replay_protocol as _v2
 
 
 C83A_PROTOCOL_SCHEMA = "cadi.c8.3a.cross-layer-replay-protocol.v3"
-C83A_BASE_COMMIT = _v2.C83A_BASE_COMMIT
 C83A_REPAIRED_SUBSTRATE_COMMIT = "d08283ec8e13567609b4b472ce6e45587d93d9ea"
+C83A_BASE_COMMIT = C83A_REPAIRED_SUBSTRATE_COMMIT
 C83A_C81_PROTOCOL_FINGERPRINT = _v2.C83A_C81_PROTOCOL_FINGERPRINT
 C83A_COMPARATIVE_RESULT_INSPECTION = "NONE"
 C83A_ROW_SCHEMA = _v2.C83A_ROW_SCHEMA
@@ -74,6 +74,7 @@ def _fingerprint(value: object) -> str:
 def protocol_payload() -> dict[str, Any]:
     payload = dict(_v2.protocol_payload())
     payload["schema"] = C83A_PROTOCOL_SCHEMA
+    payload["base_commit"] = C83A_BASE_COMMIT
     payload["trace_specs"] = [item.to_dict() for item in C83A_TRACE_SPECS]
     payload["amendment"] = {
         "predecessor_protocol_fingerprint": C83A_PREDECESSOR_PROTOCOL_FINGERPRINT,
@@ -119,6 +120,8 @@ def validate_mapping_only_amendment() -> None:
 def validate_protocol_identity(*, require_frozen: bool = True) -> None:
     _v2.validate_protocol_identity()
     validate_mapping_only_amendment()
+    if C83A_BASE_COMMIT != C83A_REPAIRED_SUBSTRATE_COMMIT:
+        raise RuntimeError("C8.3a v3 base commit must be the repaired C8.2.1 substrate")
     if C83A_COMPARATIVE_RESULT_INSPECTION != "NONE":
         raise RuntimeError("C8.3a v3 must remain pre-result")
     if require_frozen:
