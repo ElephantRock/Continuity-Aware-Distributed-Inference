@@ -112,6 +112,8 @@ jobs:
           assert v2.C83A_PROTOCOL_FINGERPRINT == '${{ env.C83A_V2_FINGERPRINT }}'
           assert v3.C83A_PREDECESSOR_PROTOCOL_FINGERPRINT == '${{ env.C83A_V2_FINGERPRINT }}'
           assert v3.C83A_REPAIRED_SUBSTRATE_COMMIT == '${{ env.C82_1_MERGE }}'
+          assert v3.C83A_BASE_COMMIT == '${{ env.C82_1_MERGE }}'
+          assert v3.protocol_payload()['base_commit'] == '${{ env.C82_1_MERGE }}'
           assert v3.C83A_COMPARATIVE_RESULT_INSPECTION == 'NONE'
           v3.validate_protocol_identity(require_frozen=False)
           actual = v3.protocol_fingerprint()
