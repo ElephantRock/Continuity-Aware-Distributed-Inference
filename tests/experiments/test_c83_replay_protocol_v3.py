@@ -69,6 +69,8 @@ def test_v3_named_c2_mechanics_exist() -> None:
 
 def test_v3_candidate_binds_repaired_substrate_and_stays_pre_result() -> None:
     assert v3.C83A_REPAIRED_SUBSTRATE_COMMIT == REPAIRED_SUBSTRATE
+    assert v3.C83A_BASE_COMMIT == REPAIRED_SUBSTRATE
+    assert v3.protocol_payload()["base_commit"] == REPAIRED_SUBSTRATE
     assert v3.C83A_COMPARATIVE_RESULT_INSPECTION == "NONE"
     assert v3.C83A_PREDECESSOR_PROTOCOL_FINGERPRINT == (
         "40780a318a5a692c713d7d27ded86d1f0fc6cd920d1c1ef82114889f9d9e099a"
