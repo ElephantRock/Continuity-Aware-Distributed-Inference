@@ -13,6 +13,7 @@ from simulator.semantic_adapter import ContinuityAdapter
 
 
 REPAIRED_SUBSTRATE = "d08283ec8e13567609b4b472ce6e45587d93d9ea"
+FROZEN_V3_FINGERPRINT = "b25ac3d7c623c8d2f3a30dd9eca378a9c3e3fc7b7dce3af2455425888428fa22"
 
 
 def test_v3_is_mapping_only_scientific_amendment() -> None:
@@ -67,7 +68,7 @@ def test_v3_named_c2_mechanics_exist() -> None:
     assert callable(DiscreteEventSimulator.run)
 
 
-def test_v3_candidate_binds_repaired_substrate_and_stays_pre_result() -> None:
+def test_v3_frozen_identity_binds_repaired_substrate_and_stays_pre_result() -> None:
     assert v3.C83A_REPAIRED_SUBSTRATE_COMMIT == REPAIRED_SUBSTRATE
     assert v3.C83A_BASE_COMMIT == REPAIRED_SUBSTRATE
     assert v3.protocol_payload()["base_commit"] == REPAIRED_SUBSTRATE
@@ -78,6 +79,6 @@ def test_v3_candidate_binds_repaired_substrate_and_stays_pre_result() -> None:
     assert v3.C83A_PROTOCOL_SCHEMA.endswith(".v3")
     assert v3.C83A_ROW_SCHEMA == v2.C83A_ROW_SCHEMA
     assert v3.C83A_COMPARISON_SCHEMA == v2.C83A_COMPARISON_SCHEMA
-    assert v3.C83A_PROTOCOL_FINGERPRINT is None
-    assert len(v3.protocol_fingerprint()) == 64
-    v3.validate_protocol_identity(require_frozen=False)
+    assert v3.C83A_PROTOCOL_FINGERPRINT == FROZEN_V3_FINGERPRINT
+    assert v3.protocol_fingerprint() == FROZEN_V3_FINGERPRINT
+    v3.validate_protocol_identity()
