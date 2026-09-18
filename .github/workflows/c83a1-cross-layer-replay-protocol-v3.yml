@@ -42,6 +42,7 @@ env:
   C82_1_MERGE: 'd08283ec8e13567609b4b472ce6e45587d93d9ea'
   C81_PROTOCOL_FINGERPRINT: '616cc4daa4c167152875522767a8cc968da25c63d6acc099c265bc3554641cb6'
   C83A_V2_FINGERPRINT: '40780a318a5a692c713d7d27ded86d1f0fc6cd920d1c1ef82114889f9d9e099a'
+  C83A_V3_FINGERPRINT: 'b25ac3d7c623c8d2f3a30dd9eca378a9c3e3fc7b7dce3af2455425888428fa22'
 
 jobs:
   protocol-v3:
@@ -101,7 +102,7 @@ jobs:
       - name: Run repaired real-process substrate conformance tests
         run: python -m pytest -q tests/prototype
 
-      - name: Record candidate or frozen v3 identity
+      - name: Verify frozen v3 identity and evidence boundary
         run: |
           python - <<'PY'
           from experiments.c8_protocol import C8_PROTOCOL_FINGERPRINT
@@ -114,14 +115,11 @@ jobs:
           assert v3.C83A_REPAIRED_SUBSTRATE_COMMIT == '${{ env.C82_1_MERGE }}'
           assert v3.C83A_BASE_COMMIT == '${{ env.C82_1_MERGE }}'
           assert v3.protocol_payload()['base_commit'] == '${{ env.C82_1_MERGE }}'
+          assert v3.C83A_PROTOCOL_FINGERPRINT == '${{ env.C83A_V3_FINGERPRINT }}'
+          assert v3.protocol_fingerprint() == '${{ env.C83A_V3_FINGERPRINT }}'
           assert v3.C83A_COMPARATIVE_RESULT_INSPECTION == 'NONE'
-          v3.validate_protocol_identity(require_frozen=False)
-          actual = v3.protocol_fingerprint()
-          if v3.C83A_PROTOCOL_FINGERPRINT is not None:
-              assert actual == v3.C83A_PROTOCOL_FINGERPRINT
-              print('frozen_protocol_fingerprint=' + actual)
-          else:
-              print('candidate_protocol_fingerprint=' + actual)
+          v3.validate_protocol_identity()
+          print('frozen_protocol_fingerprint=' + v3.C83A_PROTOCOL_FINGERPRINT)
           print('predecessor_protocol_fingerprint=' + v3.C83A_PREDECESSOR_PROTOCOL_FINGERPRINT)
           print('repaired_substrate_commit=' + v3.C83A_REPAIRED_SUBSTRATE_COMMIT)
           print('comparative_result_inspection=' + v3.C83A_COMPARATIVE_RESULT_INSPECTION)
