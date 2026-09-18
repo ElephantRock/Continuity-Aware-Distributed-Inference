@@ -1,4 +1,4 @@
-name: c83a-cross-layer-replay-protocol
+name: c83a-v2-archive-integrity
 
 on:
   push:
@@ -8,26 +8,16 @@ on:
     paths:
       - .github/workflows/c83a-cross-layer-replay-protocol.yml
       - experiments/c83_replay_protocol.py
-      - tests/experiments/test_c83_replay_protocol*.py
-      - tests/counterexamples/test_failure_model_traces.py
+      - tests/experiments/test_c83_replay_protocol.py
       - spec/63-c8.3a-cross-layer-replay-protocol.md
       - experiments/c8_protocol.py
-      - experiments/correctness.py
-      - prototype/**
-      - continuity/**
-      - simulator/**
   pull_request:
     paths:
       - .github/workflows/c83a-cross-layer-replay-protocol.yml
       - experiments/c83_replay_protocol.py
-      - tests/experiments/test_c83_replay_protocol*.py
-      - tests/counterexamples/test_failure_model_traces.py
+      - tests/experiments/test_c83_replay_protocol.py
       - spec/63-c8.3a-cross-layer-replay-protocol.md
       - experiments/c8_protocol.py
-      - experiments/correctness.py
-      - prototype/**
-      - continuity/**
-      - simulator/**
   workflow_dispatch:
 
 permissions:
@@ -36,36 +26,24 @@ permissions:
 env:
   C82_MERGE: '85a0ef4be82d45dc5e309332c5f41d067e4c952a'
   C81_PROTOCOL_FINGERPRINT: '616cc4daa4c167152875522767a8cc968da25c63d6acc099c265bc3554641cb6'
-  C83A_PROTOCOL_FINGERPRINT: '40780a318a5a692c713d7d27ded86d1f0fc6cd920d1c1ef82114889f9d9e099a'
+  C83A_V2_FINGERPRINT: '40780a318a5a692c713d7d27ded86d1f0fc6cd920d1c1ef82114889f9d9e099a'
 
 jobs:
-  protocol:
+  archive-integrity:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - name: Verify immutable exact-head checkout
+      - name: Verify immutable clean checkout
         env:
           EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           test -z "$(git status --porcelain --untracked-files=all)"
-          git cat-file -e "${C82_MERGE}^{commit}"
-          git merge-base --is-ancestor "$C82_MERGE" HEAD
-
-      - name: Fence frozen C8.1/C8.2 semantic and replay-anchor dependencies
-        run: |
-          git diff --exit-code "$C82_MERGE" HEAD -- \
-            experiments/c8_protocol.py \
-            experiments/correctness.py \
-            tests/counterexamples/test_failure_model_traces.py \
-            prototype \
-            continuity \
-            simulator
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
@@ -75,7 +53,7 @@ jobs:
       - name: Install test runner only
         run: python -m pip install 'pytest==8.4.2'
 
-      - name: Verify frozen protocol identity before tests
+      - name: Verify immutable v2 protocol identity
         run: |
           python - <<'PY'
           from experiments.c8_protocol import C8_PROTOCOL_FINGERPRINT
@@ -88,20 +66,18 @@ jobs:
           )
           assert C8_PROTOCOL_FINGERPRINT == '${{ env.C81_PROTOCOL_FINGERPRINT }}'
           assert C83A_BASE_COMMIT == '${{ env.C82_MERGE }}'
-          assert C83A_PROTOCOL_FINGERPRINT == '${{ env.C83A_PROTOCOL_FINGERPRINT }}'
+          assert C83A_PROTOCOL_FINGERPRINT == '${{ env.C83A_V2_FINGERPRINT }}'
           assert protocol_fingerprint() == C83A_PROTOCOL_FINGERPRINT
           assert C83A_COMPARATIVE_RESULT_INSPECTION == 'NONE'
           validate_protocol_identity()
           PY
 
-      - name: Run fail-closed replay protocol tests
-        run: python -m pytest -q tests/experiments/test_c83_replay_protocol*.py
+      - name: Run archived v2 protocol contract tests
+        run: python -m pytest -q tests/experiments/test_c83_replay_protocol.py
 
-      - name: Record protocol freeze boundary
+      - name: Record archival boundary
         run: |
-          echo "c82_merge=$C82_MERGE"
-          echo "c81_protocol_fingerprint=$C81_PROTOCOL_FINGERPRINT"
-          echo "c83a_protocol_fingerprint=$C83A_PROTOCOL_FINGERPRINT"
+          echo "c83a_v2_status=ARCHIVED_IMMUTABLE_PREDECESSOR"
+          echo "c83a_v2_protocol_fingerprint=$C83A_V2_FINGERPRINT"
+          echo "live_substrate_fence_owner=C8.3a_v3"
           echo "comparative_result_inspection=NONE"
-          echo "headline_c8_measurement_inspection=NONE"
-          echo "c83a_evidence=PROTOCOL_AND_ADAPTER_FREEZE_ONLY"
